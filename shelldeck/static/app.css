@@ -2322,6 +2322,25 @@ textarea:focus {
   border-radius: 2px;
 }
 
+/* ------------------------------------------------------------ devices */
+
+.dev-name {
+  font-weight: 600;
+}
+
+.dev-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.dev-dot.on {
+  background: var(--ok);
+}
+
 /* ------------------------------------------------------------ phones */
 
 @media (max-width: 560px) {
@@ -2353,5 +2372,31 @@ textarea:focus {
 
   .hist-table .hist-actions {
     grid-column: 1 / -1;
+  }
+
+  /* devices: name + button, then where from + last active */
+  .dev-table thead,
+  .dev-table td:nth-child(3) {
+    display: none;
+  }
+
+  .dev-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 10px;
+  }
+
+  .dev-table td {
+    border: 0 !important;
+  }
+
+  .dev-table tr + tr {
+    border-top: 1px solid var(--border);
+  }
+
+  .dev-table td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 1;
   }
 }

@@ -41,10 +41,12 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Monochrome logo: `static/icon.svg`, plus PNGs 32/192/512 and a web manifest.
   - Boot animation; motion throughout, disabled under `prefers-reduced-motion`.
 - **Auth.** A password is mandatory: the first visit creates it (8+ chars). A remote first visit also needs the host's setup code. Logins are per browser (cookie `sd_session`, sha256 in `auth_sessions`) and lock after 30 min idle; only non-GET requests and terminal input count as activity.
+  - **One device at a time** (`server._active`, a session hash in memory): `_claim()` in the guard and both sockets lets a browser act only if it is the active one or no live one is (restarts and idle expiry free it). A login (`_login_response`) replaces this browser's old session, becomes active, and closes other sockets with 4423; idle browsers get `423 in_use` and a "Use here" lock screen (password). `/api/auth/*` stays exempt.
+  - `auth_sessions.via` is `local` / `network` / `share:<host>`. Stopping or replacing a share deletes its rows (`_revoke`); `init_db` drops `share:%` rows on start. `/api/devices` lists live logins; `DELETE /api/devices/{hash|others}` revokes. UI: `static/devices.js` (sidebar Devices view).
   - The password changes only in Settings, with current + new + confirm, and the change signs out every other browser. There is no way to remove it.
   - The host CLI uses `cli-token` (the `X-Shelldeck-Token` header).
   - Emergency, host only: `sd login-link` and `sd reset-password`.
-  - `sd share`: foreground cloudflared quick tunnel. The CLI waits for "Registered tunnel connection", then `POST /api/share` (CLI token) sets `server._share` (host, sha256 of a link token, tunnel logins) and returns `/share/<token>`, printed with a segno QR. `_trusted()` refuses the tunnel host unless the request opens that link or carries its `sd_share` cookie; the password is still required. `DELETE /api/share` (on Ctrl+C) clears it and signs tunnel logins out. Tunnel requests are remote (`X-Forwarded-For`/`CF-Connecting-IP`).
+  - `sd share`: foreground cloudflared quick tunnel. The CLI waits for "Registered tunnel connection", then `POST /api/share` (CLI token) sets `server._share` (host, sha256 of a link token) and returns `/share/<token>`, printed with a segno QR. `_trusted()` refuses the tunnel host unless the request opens that link or carries its `sd_share` cookie; the password is still required. `DELETE /api/share` (on Ctrl+C) clears it and signs tunnel logins out. Tunnel requests are remote (`X-Forwarded-For`/`CF-Connecting-IP`).
   - `serve` refuses plain HTTP on non-loopback addresses without `--cert/--key` or `--insecure-http`.
   - The old seeded `nopassword` is deleted on start.
 - **Bookmarks.** Insert by default; Shift+Enter or Shift+click runs.
@@ -79,6 +81,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - `app.css`.
   - `app.js`: state, `Term` class, layout tree and free canvas, sidebar, palette, shortcuts, boot.
   - `views.js`: bookmarks, scheduler, tasks, settings, add-project, alarms.
+  - `devices.js`: Devices view (signed-in browsers, in use / idle, revoke).
   - `history.js`: Command history view (`/api/history`, `commands` table, filled by `{"type":"command"}` socket messages from the UI) and the search-all dialog (`/api/search` over `PtyManager.searchable`).
   - Clickable paths: `pathLinks()` in app.js asks `/api/fs/check` which candidates exist (cached 10s, since `cd` changes them), and `/api/open` launches a `vscode://` URL or the default app via `os.startfile`/`xdg-open`, never a shell. It refuses executables.
   - Ports: `stats.listening()` maps pids to LISTEN ports; `S.ports` feeds the pane-header chips.

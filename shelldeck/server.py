@@ -183,6 +183,18 @@ def _who(conn) -> tuple[str, str | None] | None:
     return ("browser", h) if h else None
 
 
+# One device uses shelldeck at a time; the others stay signed in but idle until they log in again.
+_active: dict[str, str | None] = {"h": None}
+
+
+def _claim(h: str) -> bool:
+    """True when browser session `h` may act: it is the active one, or no live session is."""
+    if _active["h"] != h and auth.alive(_active["h"]):
+        return False
+    _active["h"] = h
+    return True
+
+
 def _denied() -> JSONResponse:
     return err("locked" if auth.has_password() else "setup_required", 401)
 
@@ -198,6 +210,8 @@ async def guard(request: Request, call_next):
         if not who:
             return _denied()
         request.state.session = who[1]
+        if who[1] and not _claim(who[1]):
+            return err("in_use", 423)
         if who[1] and request.method != "GET":  # polling GETs are not activity
             auth.touch(who[1])
     return await call_next(request)
@@ -234,11 +248,21 @@ async def shutdown():
 # ---------------------------------------------------------------------------
 
 
-def _login_response(request: Request, body: dict, res=None):
-    """Start a login session: cookie on `res` (JSON body by default)."""
-    token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}")
+def _via(request: Request) -> str:
     if _via_share(request):
-        _share["sessions"].add(auth.session_hash(token))
+        return f"share:{_share['host']}"
+    return "local" if _is_local(request) else "network"
+
+
+async def _login_response(request: Request, body: dict, res=None):
+    """Start a login session (cookie on `res`, JSON body by default). It becomes the active device:
+    this browser's previous login is replaced and every other device goes idle."""
+    if old := auth.session_hash(request.cookies.get(auth.COOKIE)):
+        auth.end_session(old)
+    token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}", _via(request))
+    h = auth.session_hash(token)
+    _active["h"] = h
+    await _close_session_sockets(lambda owner: owner != h, IN_USE)
     res = res or JSONResponse(body)
     res.set_cookie(
         auth.COOKIE, token, httponly=True, samesite="strict", path="/",
@@ -263,6 +287,7 @@ async def auth_status(request: Request):
         "has_password": auth.has_password(),
         "setup_code_required": not auth.has_password() and not _is_local(request),
         "authenticated": bool(who),
+        "in_use_elsewhere": bool(who and who[1] and who[1] != _active["h"] and auth.alive(_active["h"])),
         "idle_timeout": auth.LOCK_TIMEOUT_SECONDS,
         "min_length": auth.MIN_PASSWORD,
     }
@@ -285,7 +310,7 @@ async def auth_setup(request: Request, payload: dict):
         return err(problem)
     auth.set_password(password)
     log.info("password created from %s", _client(request))
-    return _login_response(request, {"status": "ok"})
+    return await _login_response(request, {"status": "ok"})
 
 
 @app.post("/api/auth/login")
@@ -299,7 +324,7 @@ async def auth_login(request: Request, payload: dict):
     if not ok:
         log.warning("failed login from %s", _client(request))
         return err("invalid_password", 401)
-    return _login_response(request, {"status": "ok"})
+    return await _login_response(request, {"status": "ok"})
 
 
 _login_links: dict[str, float] = {}  # one-time code -> expiry
@@ -325,7 +350,7 @@ async def share_start(request: Request, payload: dict):
         return err("invalid_host")
     await _share_stop()
     token = secrets.token_urlsafe(32)
-    _share.update(host=host, key=hashlib.sha256(token.encode()).hexdigest(), sessions=set())
+    _share.update(host=host, key=hashlib.sha256(token.encode()).hexdigest())
     log.info("sharing via %s", host)
     return {"path": f"/share/{token}"}
 
@@ -340,11 +365,11 @@ async def share_stop(request: Request):
 
 async def _share_stop() -> None:
     """Close the gate and sign out every browser that logged in through the tunnel."""
-    sessions = _share.get("sessions", set())
+    if not _share:
+        return
+    gone = db.delete_auth_sessions_via(f"share:{_share['host']}")
     _share.clear()
-    for h in sessions:
-        auth.end_session(h)
-    await _close_session_sockets(lambda owner: owner in sessions)
+    await _revoke(gone)
 
 
 @app.get("/share/{token}")
@@ -362,7 +387,7 @@ async def auth_use_link(request: Request, code: str):
     expiry = _login_links.pop(code, 0)
     if expiry < time.time() or not auth.has_password():
         return err("link_expired", 403)
-    return _login_response(request, {}, RedirectResponse("/", status_code=303))
+    return await _login_response(request, {}, RedirectResponse("/", status_code=303))
 
 
 @app.post("/api/auth/logout")
@@ -375,6 +400,44 @@ async def auth_logout(request: Request):
     res = JSONResponse({"status": "locked"})
     res.delete_cookie(auth.COOKIE, path="/")
     return res
+
+
+@app.get("/api/devices")
+async def devices(request: Request):
+    """Browsers signed in: where from, when, and which one is in use."""
+    online: dict[str, int] = {}
+    for owner in socket_owner.values():
+        if owner:
+            online[owner] = online.get(owner, 0) + 1
+    rows = []
+    for r in db.list_auth_sessions():
+        h = r["token_hash"]
+        if not auth.alive(h):
+            continue
+        ip, _, agent = (r["client"] or "").partition(" ")
+        rows.append({
+            "id": h, "ip": ip, "agent": agent, "via": r["via"] or "local",
+            "created_at": r["created_at"], "last_seen": r["last_seen"],
+            "active": h == _active["h"], "current": h == request.state.session, "sockets": online.get(h, 0),
+        })
+    return {"devices": rows, "share": _share.get("host")}
+
+
+@app.delete("/api/devices/{device_id}")
+async def revoke_device(request: Request, device_id: str):
+    """Sign one browser out, or with id "others" every browser but this one."""
+    if device_id == "others":
+        return await _revoke([d["token_hash"] for d in db.list_auth_sessions() if d["token_hash"] != request.state.session])
+    return await _revoke([device_id])
+
+
+async def _revoke(hashes: list[str]) -> dict:
+    for h in hashes:
+        auth.end_session(h)
+        if _active["h"] == h:
+            _active["h"] = None
+    await _close_session_sockets(lambda owner: owner in hashes)
+    return {"revoked": len(hashes)}
 
 
 @app.put("/api/auth/password")
@@ -743,11 +806,14 @@ async def _close(ws: WebSocket, code: int = 1000) -> None:
         pass
 
 
-async def _close_session_sockets(match) -> None:
+IN_USE = 4423  # socket close code: another device took over
+
+
+async def _close_session_sockets(match, code: int = 1008) -> None:
     """Close sockets whose login (session hash; None for the CLI) matches."""
     for ws, owner in list(socket_owner.items()):
         if owner and match(owner):
-            await _close(ws, 1008)
+            await _close(ws, code)
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +959,9 @@ async def alarms_ws(ws: WebSocket):
     if not who:
         await ws.close(code=1008)
         return
+    if who[1] and not _claim(who[1]):
+        await ws.close(code=IN_USE)
+        return
     await ws.accept()
     alarm_sockets.add(ws)
     socket_owner[ws] = who[1]
@@ -913,6 +982,9 @@ async def terminal_ws(ws: WebSocket, session_id: str):
     who = _who(ws) if _trusted(ws) else None
     if not who:
         await ws.close(code=1008)
+        return
+    if who[1] and not _claim(who[1]):
+        await ws.close(code=IN_USE)
         return
     login = who[1]
     session = db.get_session(session_id)

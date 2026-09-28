@@ -444,7 +444,7 @@ class Term {
     ws.onclose = (ev) => {
       if (this.closed) return;
       if (ev.code === 4404 || ev.code === 1000) return this.exited();
-      if (ev.code === 1008) return bus.dispatchEvent(new Event("locked")); // logging in reloads the page
+      if (ev.code === 1008 || ev.code === 4423) return bus.dispatchEvent(new Event("locked")); // logging in reloads the page
       this.status("Reconnecting…");
       const delay = Math.min(10000, 500 * 2 ** this.retry++);
       clearTimeout(this.retryTimer);
@@ -1452,12 +1452,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   $("#term-actions").hidden = view !== "terminals";
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
@@ -1603,6 +1603,7 @@ function commandPalette() {
     ["Search all terminals", "search", () => searchAllDialog(), "Ctrl+Shift+F"],
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
+    ["Devices", "devices", () => switchView("devices")],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
     ["Open scheduler", "clock", () => switchView("scheduler"), "Ctrl+Alt+S"],
@@ -1718,7 +1719,7 @@ let authMode = null; // "login" | "setup" while the lock screen is up
 /** Lock screen: log in, or create the first password. */
 async function showAuth(status = null) {
   status ||= await api("/api/auth/status").catch(() => ({ has_password: true }));
-  const mode = status.has_password ? "login" : "setup";
+  const mode = !status.has_password ? "setup" : status.in_use_elsewhere ? "inuse" : "login";
   if (!$("#lock").hidden && authMode === mode) return;
   authMode = mode;
   const form = $("#lock-form");
@@ -1733,6 +1734,13 @@ async function showAuth(status = null) {
       <p class="faint small">You are connecting from another machine. The setup code is printed where shelldeck runs, and saved in its data folder as <code>setup-code</code>.</p>` : ""}
       <div class="error" id="lock-error"></div>
       <button class="btn primary" type="submit">Create password</button>`
+      : mode === "inuse"
+      ? `<img src="/static/icon.svg" alt="" width="40" height="40" />
+      <h2>In use on another device</h2>
+      <p class="muted">shelldeck is used on one device at a time. Enter the password to use it here; the other device goes idle.</p>
+      <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
+      <div class="error" id="lock-error"></div>
+      <button class="btn primary" type="submit">Use here</button>`
       : `<img src="/static/icon.svg" alt="" width="40" height="40" />
       <h2>shelldeck is locked</h2>
       <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
@@ -1775,7 +1783,7 @@ function connectAlarms() {
     if (msg.type === "alarm_snapshot") msg.alarms.forEach((t) => views.showAlarm(t, false));
   };
   ws.onclose = (ev) => {
-    if (ev.code !== 1008) setTimeout(connectAlarms, 3000);
+    if (ev.code !== 1008 && ev.code !== 4423) setTimeout(connectAlarms, 3000);
   };
 }
 
@@ -1868,7 +1876,7 @@ async function init() {
   wireLock();
   views.init();
   const status = await api("/api/auth/status").catch(() => null);
-  if (!status?.authenticated) {
+  if (!status?.authenticated || status.in_use_elsewhere) {
     await finishBoot();
     return showAuth(status);
   }

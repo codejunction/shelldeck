@@ -141,10 +141,19 @@ def _h(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def new_session(client: str) -> str:
+def new_session(client: str, via: str = "local") -> str:
     token = secrets.token_urlsafe(32)
-    db.add_auth_session(_h(token), time.time(), client)
+    db.add_auth_session(_h(token), time.time(), client, via)
     return token
+
+
+def alive(h: str | None) -> bool:
+    """A session (by hash) that still exists and hasn't idled out."""
+    if not h:
+        return False
+    hit = _cache.get(h)
+    row = hit[1] if hit and time.time() - hit[0] < _CACHE_TTL else db.get_auth_session(h)
+    return bool(row) and time.time() - row["last_seen"] <= LOCK_TIMEOUT_SECONDS
 
 
 def session_hash(token: str | None) -> str | None:

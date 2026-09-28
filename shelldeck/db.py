@@ -136,7 +136,8 @@ def init_db() -> None:
                 token_hash TEXT PRIMARY KEY,
                 created_at REAL NOT NULL,
                 last_seen REAL NOT NULL,
-                client TEXT
+                client TEXT,
+                via TEXT
             );
 
             -- command history (sessions/projects may be deleted later; keep the text)
@@ -162,6 +163,9 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "name" not in cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
+        if "via" not in {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)")}:
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN via TEXT")
+        conn.execute("DELETE FROM auth_sessions WHERE via LIKE 'share:%'")  # shares end with the server
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         if "color" not in cols:
             conn.execute("ALTER TABLE projects ADD COLUMN color INTEGER")
@@ -317,13 +321,28 @@ def list_sessions_with_project() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def add_auth_session(token_hash: str, now: float, client: str) -> None:
+def add_auth_session(token_hash: str, now: float, client: str, via: str = "local") -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO auth_sessions (token_hash, created_at, last_seen, client) VALUES (?, ?, ?, ?)",
-            (token_hash, now, now, client[:200]),
+            "INSERT INTO auth_sessions (token_hash, created_at, last_seen, client, via) VALUES (?, ?, ?, ?, ?)",
+            (token_hash, now, now, client[:200], via),
         )
         conn.commit()
+
+
+def list_auth_sessions() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM auth_sessions ORDER BY last_seen DESC")]
+
+
+def delete_auth_sessions_via(via: str) -> list[str]:
+    """Delete the logins made through `via` (e.g. one share); returns their hashes."""
+    with _connect() as conn:
+        gone = [r[0] for r in conn.execute("SELECT token_hash FROM auth_sessions WHERE via = ?", (via,))]
+        conn.execute("DELETE FROM auth_sessions WHERE via = ?", (via,))
+        conn.commit()
+        return gone
 
 
 def get_auth_session(token_hash: str) -> dict | None:
