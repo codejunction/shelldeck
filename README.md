@@ -190,6 +190,7 @@ sd share          # starts shelldeck if needed, prints a QR code and a link; Ctr
 
 - **Encrypted.** The other device talks HTTPS to Cloudflare, which relays it through cloudflared's outbound encrypted tunnel to shelldeck on `127.0.0.1`. No ports are opened.
 - **Two locks.** The random `trycloudflare.com` address alone is refused; only the printed link (a one-per-share token made on the host) lets a browser in, and then it still needs your password. A password must exist before sharing.
+- **Phones.** On touch screens a key bar adds Esc, Tab, Ctrl (applies to the next letter), arrows and `| ~ / -`; dialogs open as bottom sheets.
 - **Stopping.** Ctrl+C closes the tunnel, voids the link and signs out every browser that logged in through it. Each `sd share` gets a new address and link.
 
 **HTTPS on the VM's address,** with a real certificate (Tailscale `tailscale cert`, Let's Encrypt, your reverse proxy) or a self-signed one:

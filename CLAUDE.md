@@ -123,6 +123,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Split containers use `split-row` / `split-col`. `row` / `col` are taken by button rows and kanban columns.
   - `#app` needs `grid-template-rows: minmax(0, 1fr)`, or overflowing panes stretch the whole page.
 - **Animations:** terminals and sidebar rows don't animate on open. The sidebar re-renders every 5s, so new motion must not replay on refresh.
+- **Touch screens** (`pointer: coarse`): `#keybar` (Esc/Tab/sticky Ctrl/arrows; `withCtrl()` in the `onData` path) and the DOM renderer instead of WebGL, whose canvas came up blank at DPR 3. Phone CSS is the `max-width: 560px` block at the end of app.css.
 - **Keystroke tracking:** ignore focus reports `ESC[I` / `ESC[O`; they are not edits.
 - **Shell pitfall:** in the Bash tool, large quoted heredocs sometimes fail to parse. Write patch scripts to `.devhome/*.py` and run them instead.
 
