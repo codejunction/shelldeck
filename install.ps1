@@ -1,6 +1,6 @@
 # shelldeck installer for Windows.
 #   irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 | iex
-# Installs uv if missing, then shelldeck as a uv tool (uv fetches Python 3.12+ itself if needed).
+# Installs uv if missing, then shelldeck (or upgrades it) as a uv tool (uv fetches Python 3.12+ itself if needed).
 # SHELLDECK_SOURCE overrides what gets installed (a wheel path, or git+https://github.com/codejunction/shelldeck).
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +19,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 $bin = (uv tool dir --bin)  # honours UV_TOOL_BIN_DIR
 
 Say "installing $source ..."
-uv tool install --force --python '>=3.12' $source
+uv tool install --force --upgrade --python '>=3.12' $source
 if ($LASTEXITCODE) { throw "uv tool install failed ($LASTEXITCODE)" }
 if (-not $env:UV_NO_MODIFY_PATH) { uv tool update-shell *> $null }
 if (-not ($env:Path -split ';' -contains $bin)) { $env:Path = "$bin;$env:Path" }

@@ -134,3 +134,9 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 - Keep code minimal: stdlib and existing deps first; mark deliberate shortcuts with `ponytail:` comments.
 - Verify UI changes in a real browser (`playwright-cli`, Edge) before claiming done.
 - Update `README.md` when user-visible behaviour changes.
+- **Every release updates the docs in the same release PR, before tagging:**
+  - `pyproject.toml` version, then `uv lock`.
+  - `CHANGELOG.md`: a new `## [x.y.z] - YYYY-MM-DD` section (Added / Changed / Fixed / Removed) covering every merged change since the last tag (`git log vPREV..HEAD`), plus its link at the bottom.
+  - `README.md`: new commands, options, settings, install or security behaviour; `CONTRIBUTING.md` if the workflow changed.
+  - This file, for new modules, flows, gotchas or release steps.
+  - Then merge, tag `vX.Y.Z` on `main`, and confirm the release run, PyPI and the GitHub release.
