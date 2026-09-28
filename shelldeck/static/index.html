@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>shelldeck</title>
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/static/icon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/static/icon-192.png" />
+    <link rel="manifest" href="/static/manifest.webmanifest" />
+    <meta name="theme-color" content="#0a0a0b" />
+    <link rel="stylesheet" href="/static/vendor/xterm.css" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/vendor/xterm.js"></script>
+    <script src="/static/vendor/addon-fit.js"></script>
+    <script src="/static/vendor/addon-web-links.js"></script>
+    <script src="/static/vendor/addon-webgl.js"></script>
+    <script src="/static/vendor/addon-search.js"></script>
+    <script src="/static/vendor/addon-serialize.js"></script>
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <div id="boot" aria-hidden="true">
+      <div class="boot-mark">
+        <svg viewBox="0 0 32 32"><rect x="0.5" y="0.5" width="31" height="31" rx="8" fill="#0a0a0b" stroke="#3f3f46"/><path class="chev" d="M9 11l5 5-5 5" fill="none" stroke="#fafafa" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path class="cursor" d="M17 21h6" stroke="#fafafa" stroke-width="3" stroke-linecap="round"/></svg>
+        <span class="boot-name">shelldeck<span class="boot-cover"></span></span>
+      </div>
+    </div>
+    <div id="app">
+      <aside id="sidebar" aria-label="Projects">
+        <div class="sb-head">
+          <div class="brand"><img src="/static/icon.svg" alt="" width="18" height="18" /> shelldeck</div>
+          <button class="icon-btn" data-action="toggle-sidebar" title="Hide sidebar (Ctrl+Alt+E)" aria-label="Hide sidebar"><i data-icon="panel"></i></button>
+        </div>
+        <button class="sb-new" data-action="new-terminal"><i data-icon="plus"></i><span>New terminal</span><kbd>Ctrl Alt N</kbd></button>
+        <button class="sb-search" data-action="palette"><i data-icon="search"></i><span>Search</span><kbd>Ctrl K</kbd></button>
+        <div class="sb-section">
+          <span>Projects</span>
+          <button class="icon-btn sm" data-action="add-project" title="Add project" aria-label="Add project"><i data-icon="folder-plus"></i></button>
+        </div>
+        <nav id="projects" class="sb-projects"></nav>
+        <div class="sb-foot">
+          <button class="sb-link" data-action="view" data-view="terminals"><i data-icon="terminal"></i>Terminals</button>
+          <button class="sb-link" data-action="view" data-view="bookmarks"><i data-icon="bookmark"></i>Bookmarks</button>
+          <button class="sb-link" data-action="view" data-view="scheduler"><i data-icon="clock"></i>Scheduler</button>
+          <button class="sb-link" data-action="view" data-view="tasks"><i data-icon="kanban"></i>Tasks</button>
+          <button class="sb-link" data-action="view" data-view="history"><i data-icon="history"></i>History</button>
+          <button class="sb-link" data-action="view" data-view="monitor"><i data-icon="activity"></i>Task manager</button>
+          <div class="sb-row">
+            <button class="sb-link" data-action="settings"><i data-icon="settings"></i>Settings</button>
+            <span id="conn" class="conn" title="Server connection"></span>
+          </div>
+        </div>
+        <div class="sb-resize" data-resize="sidebar" aria-hidden="true"></div>
+      </aside>
+      <div id="scrim" data-action="toggle-sidebar"></div>
+
+      <main id="main">
+        <header id="topbar">
+          <button class="icon-btn" id="sb-open" data-action="toggle-sidebar" title="Show sidebar (Ctrl+Alt+E)" aria-label="Show sidebar"><i data-icon="panel"></i></button>
+          <div id="crumbs" class="crumbs"></div>
+          <button id="sysmon" class="sysmon" data-action="view" data-view="monitor" title="Task manager (Ctrl+Alt+M)" aria-label="System usage, open task manager"></button>
+          <div class="top-actions" id="term-actions">
+            <button class="icon-btn" data-action="bookmark-picker" title="Run bookmark (Ctrl+Alt+B)" aria-label="Run bookmark"><i data-icon="bookmark"></i></button>
+            <button class="icon-btn" data-action="split" data-dir="row" title="Split right (Ctrl+Alt+\)" aria-label="Split right"><i data-icon="split-h"></i></button>
+            <button class="icon-btn" data-action="tile" title="Tile all windows" aria-label="Tile all windows" hidden><i data-icon="grid"></i></button>
+            <button class="icon-btn" data-action="split" data-dir="col" title="Split down (Ctrl+Alt+-)" aria-label="Split down"><i data-icon="split-v"></i></button>
+          </div>
+        </header>
+
+        <section id="view-terminals" class="view">
+          <div id="layout"></div>
+          <div id="empty" class="empty">
+            <div class="empty-card">
+              <img src="/static/icon.svg" alt="" width="40" height="40" />
+              <h2>No terminal open</h2>
+              <p>Add a project folder, then open a terminal in it.</p>
+              <div class="row">
+                <button class="btn primary" data-action="add-project"><i data-icon="folder-plus"></i>Add project</button>
+                <button class="btn" data-action="new-terminal"><i data-icon="plus"></i>New terminal</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section id="view-bookmarks" class="view page" hidden></section>
+        <section id="view-scheduler" class="view page" hidden></section>
+        <section id="view-tasks" class="view page" hidden></section>
+        <section id="view-monitor" class="view page" hidden></section>
+        <section id="view-history" class="view page" hidden></section>
+      </main>
+    </div>
+
+    <div id="term-store" hidden></div>
+    <div id="dialog-root"></div>
+    <div id="menu-root"></div>
+    <div id="toasts" aria-live="polite"></div>
+    <div id="lock" hidden>
+      <form class="lock-card" id="lock-form"></form>
+    </div>
+  </body>
+</html>

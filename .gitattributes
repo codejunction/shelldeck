@@ -1,0 +1,3 @@
+# shell integration scripts run in bash/zsh/fish: CRLF breaks them
+shelldeck/integration/** text eol=lf
+*.sh text eol=lf

@@ -1,0 +1,44 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `sd`
+        2. Open a pwsh terminal in a project
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: shelldeck version
+      placeholder: "0.0.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows 11, Windows 10, Linux, macOS, Other]
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: Shell and browser
+      placeholder: pwsh 7.5, Edge 140
+  - type: textarea
+    id: log
+    attributes:
+      label: Log output
+      description: Relevant lines from `~/.config/shelldeck/shelldeck.log`, if any.
+      render: text
