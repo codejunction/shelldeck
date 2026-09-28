@@ -35,7 +35,7 @@ irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 | 
 curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh | sh
 ```
 
-The installer sets up [uv](https://docs.astral.sh/uv/) if you don't have it, then installs shelldeck with its own Python 3.12+. Already use Python tooling? Any of these work too:
+The installer sets up [uv](https://docs.astral.sh/uv/) if you don't have it, then installs shelldeck with its own Python 3.12+. Run it again to update to the latest release (or `uv tool upgrade shelldeck`); stop the server first with `sd stop` so Windows can replace `sd.exe`. Already use Python tooling? Any of these work too:
 
 ```sh
 uv tool install shelldeck      # or: pipx install shelldeck, or: pip install shelldeck

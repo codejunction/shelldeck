@@ -1,7 +1,7 @@
 #!/bin/sh
 # shelldeck installer for Linux (and macOS, untested).
 #   curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh | sh
-# Installs uv if missing, then shelldeck as a uv tool (uv fetches Python 3.12+ itself if needed).
+# Installs uv if missing, then shelldeck (or upgrades it) as a uv tool (uv fetches Python 3.12+ itself if needed).
 # SHELLDECK_SOURCE overrides what gets installed (a wheel path, or git+https://github.com/codejunction/shelldeck).
 set -eu
 
@@ -25,7 +25,7 @@ fi
 bin="$(uv tool dir --bin)"  # honours UV_TOOL_BIN_DIR
 
 say "installing $source ..."
-uv tool install --force --python '>=3.12' "$source"
+uv tool install --force --upgrade --python '>=3.12' "$source"
 [ -n "${UV_NO_MODIFY_PATH:-}" ] || uv tool update-shell >/dev/null 2>&1 || true
 
 echo
