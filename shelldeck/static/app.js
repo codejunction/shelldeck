@@ -197,6 +197,7 @@ class Term {
     this.replaying = false;
     this.xterm.onData((data) => {
       if (this.replaying) return;
+      data = withCtrl(data);
       this.track(data);
       this.send({ type: "input", data });
     });
@@ -378,7 +379,8 @@ class Term {
     container.append(this.el);
     if (!this.opened) {
       this.xterm.open(this.el);
-      try {
+      // phones: WebGL canvases came up blank at high pixel ratios; the DOM renderer is fine there
+      if (!matchMedia("(pointer: coarse)").matches) try {
         const gl = new WebglAddon.WebglAddon();
         gl.onContextLoss(() => gl.dispose());
         this.xterm.loadAddon(gl);
@@ -1777,9 +1779,42 @@ function connectAlarms() {
   };
 }
 
+// ----------------------------------------------------------------- phone keys
+
+// keys a phone keyboard lacks; Ctrl applies to the next typed letter
+const KEYS = { esc: "", tab: "	", up: "[A", down: "[B", right: "[C", left: "[D" };
+let ctrlNext = false;
+
+function setCtrl(on) {
+  ctrlNext = on;
+  $("#keybar [data-key=ctrl]").setAttribute("aria-pressed", String(on));
+}
+
+function withCtrl(data) {
+  if (!ctrlNext || data.length !== 1) return data;
+  setCtrl(false);
+  const c = data.toUpperCase().charCodeAt(0);
+  return c >= 64 && c < 96 ? String.fromCharCode(c - 64) : data;
+}
+
+function wireKeybar() {
+  const bar = $("#keybar");
+  bar.addEventListener("pointerdown", (e) => e.preventDefault()); // keep the soft keyboard open
+  bar.addEventListener("click", (e) => {
+    const k = e.target.closest("[data-key]")?.dataset.key;
+    const t = S.terms.get(S.focused);
+    if (!k || !t) return;
+    if (k === "ctrl") return setCtrl(!ctrlNext);
+    const data = withCtrl(KEYS[k] ?? k);
+    t.track(data);
+    t.send({ type: "input", data });
+  });
+}
+
 // ----------------------------------------------------------------- init
 
 function wireGlobal() {
+  wireKeybar();
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("click", (e) => {
     const a = e.target.closest("[data-action]");

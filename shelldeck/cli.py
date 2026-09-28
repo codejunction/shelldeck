@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -299,6 +300,51 @@ def login_link():
     path = _api("/api/auth/login-link", "POST", {})["path"]
     typer.echo(_url(path))
     typer.echo("One use, valid for 5 minutes. Through an SSH tunnel, open it on your machine as-is.")
+
+
+def _show_share(url: str) -> None:
+    import segno
+
+    if sys.stdout.isatty():
+        segno.make(url, error="l").terminal(compact=(sys.stdout.encoding or "").lower().startswith("utf"))
+    typer.echo(f"\n  {url}\n")
+    typer.echo("  Scan or open it on the other device, then log in with your shelldeck password.")
+    typer.echo("  Without this link the tunnel URL is refused. Ctrl+C stops sharing and signs those browsers out.")
+
+
+@app.command()
+def share():
+    """Reach this shelldeck from another device: HTTPS Cloudflare quick tunnel, QR link, then your password."""
+    exe = shutil.which("cloudflared")
+    if not exe:
+        hint = "winget install Cloudflare.cloudflared" if sys.platform == "win32" else "see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+        typer.echo(f"cloudflared is not installed ({hint})", err=True)
+        raise typer.Exit(1)
+    ensure_server()
+    if not _api("/api/auth/status").get("has_password"):
+        typer.echo("Set a password first: open shelldeck on this machine (`sd`), then run `sd share` again.", err=True)
+        raise typer.Exit(1)
+    # the tunnel ends at our own loopback server, whose certificate (if any) is self-signed
+    cmd = [exe, "tunnel", "--no-autoupdate", "--url", _url()] + (["--no-tls-verify"] if _scheme() == "https" else [])
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
+    host = shared = None
+    try:
+        for line in proc.stderr:  # cloudflared logs to stderr: the URL first, then each edge connection
+            if not host and (m := re.search(r"https://([a-z0-9-]+\.trycloudflare\.com)", line)):
+                host = m.group(1)
+            elif host and not shared and "Registered tunnel connection" in line:
+                shared = f"https://{host}" + _api("/api/share", "POST", {"host": host})["path"]
+                _show_share(shared)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
+        if shared and _health() == "ok":
+            _api("/api/share", "DELETE")
+    if not shared:
+        typer.echo("cloudflared exited without a tunnel URL; run it by hand to see why.", err=True)
+        raise typer.Exit(1)
+    typer.echo("sharing stopped")
 
 
 @app.command()

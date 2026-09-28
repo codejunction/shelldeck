@@ -366,3 +366,37 @@ def test_projects_get_distinct_colors(client, tmp_path):
     assert colors == [0, 1, 2]
     assert client.put("/api/settings", json={"layout_mode": "free"}).json()["layout_mode"] == "free"
     assert client.put("/api/settings", json={"layout_mode": "grid"}).status_code == 400
+
+
+def test_share_gate_needs_link_then_password(browser):
+    b = browser
+    b.post("/api/auth/setup", json={"password": "longenough", "confirm": "longenough"})
+    cli = {"X-Shelldeck-Token": auth.read_cli_token()}
+    tunnel = {"host": "abc-def.trycloudflare.com", "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9"}
+    assert b.get("/", headers=tunnel).status_code == 403  # not shared
+    assert b.post("/api/share", json={"host": tunnel["host"]}).status_code == 403  # browsers can't open it
+    assert b.post("/api/share", json={"host": "bad host"}, headers=cli).status_code == 400
+    path = b.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json()["path"]
+
+    # the bare tunnel URL and a wrong token get nothing; the link sets the gate cookie
+    assert b.get("/", headers=tunnel).status_code == 403
+    assert b.get("/share/wrong", headers=tunnel).status_code == 403
+    r = b.get(path, headers=tunnel, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/" and "secure" in r.headers["set-cookie"].lower()
+    gate = {**tunnel, "cookie": f"{server.SHARE_COOKIE}={path.rsplit('/', 1)[1]}"}
+    assert b.get("/", headers=gate).status_code == 200
+
+    # the password is still required, and tunnel visitors are remote
+    assert b.get("/api/projects", headers=gate).json() == {"error": "locked"}
+    assert b.post("/api/auth/login-link", headers=gate).status_code == 403
+    r = b.post("/api/auth/login", json={"password": "longenough"}, headers={**gate, "origin": "https://" + tunnel["host"]})
+    assert r.status_code == 200
+    login = r.headers["set-cookie"].split(";")[0]
+    authed = {**tunnel, "cookie": f"{gate['cookie']}; {login}"}
+    assert b.get("/api/projects", headers=authed).status_code == 200
+
+    # stopping closes the gate and signs out tunnel logins
+    assert b.delete("/api/share", headers=cli).status_code == 200
+    assert b.get("/", headers=authed).status_code == 403
+    auth._cache.clear()
+    assert b.get("/api/projects", headers={"cookie": login}).status_code == 401

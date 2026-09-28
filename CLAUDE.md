@@ -44,6 +44,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - The password changes only in Settings, with current + new + confirm, and the change signs out every other browser. There is no way to remove it.
   - The host CLI uses `cli-token` (the `X-Shelldeck-Token` header).
   - Emergency, host only: `sd login-link` and `sd reset-password`.
+  - `sd share`: foreground cloudflared quick tunnel. The CLI waits for "Registered tunnel connection", then `POST /api/share` (CLI token) sets `server._share` (host, sha256 of a link token, tunnel logins) and returns `/share/<token>`, printed with a segno QR. `_trusted()` refuses the tunnel host unless the request opens that link or carries its `sd_share` cookie; the password is still required. `DELETE /api/share` (on Ctrl+C) clears it and signs tunnel logins out. Tunnel requests are remote (`X-Forwarded-For`/`CF-Connecting-IP`).
   - `serve` refuses plain HTTP on non-loopback addresses without `--cert/--key` or `--insecure-http`.
   - The old seeded `nopassword` is deleted on start.
 - **Bookmarks.** Insert by default; Shift+Enter or Shift+click runs.
@@ -122,6 +123,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Split containers use `split-row` / `split-col`. `row` / `col` are taken by button rows and kanban columns.
   - `#app` needs `grid-template-rows: minmax(0, 1fr)`, or overflowing panes stretch the whole page.
 - **Animations:** terminals and sidebar rows don't animate on open. The sidebar re-renders every 5s, so new motion must not replay on refresh.
+- **Touch screens** (`pointer: coarse`): `#keybar` (Esc/Tab/sticky Ctrl/arrows; `withCtrl()` in the `onData` path) and the DOM renderer instead of WebGL, whose canvas came up blank at DPR 3. Phone CSS is the `max-width: 560px` block at the end of app.css.
 - **Keystroke tracking:** ignore focus reports `ESC[I` / `ESC[O`; they are not edits.
 - **Shell pitfall:** in the Bash tool, large quoted heredocs sometimes fail to parse. Write patch scripts to `.devhome/*.py` and run them instead.
 

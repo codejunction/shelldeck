@@ -1700,7 +1700,42 @@ textarea:focus {
   }
 }
 
+#keybar {
+  display: none;
+}
+
 @media (pointer: coarse) {
+  #keybar {
+    display: flex;
+    gap: 4px;
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    overflow-x: auto;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  #main:has(#view-terminals[hidden]) #keybar,
+  #main:has(#layout:empty) #keybar {
+    display: none;
+  }
+
+  #keybar button {
+    flex: 1 0 auto;
+    min-width: 40px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: 500 13px "Cascadia Mono", Consolas, monospace;
+  }
+
+  #keybar button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--primary-fg);
+  }
+
   .proj-row,
   .sess-row,
   .sb-link,
@@ -2285,4 +2320,38 @@ textarea:focus {
   background: var(--accent-soft);
   color: var(--accent);
   border-radius: 2px;
+}
+
+/* ------------------------------------------------------------ phones */
+
+@media (max-width: 560px) {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* history rows stack: command on top, then time / exit / duration, then actions */
+  .hist-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 10px;
+  }
+
+  .hist-table td {
+    border: 0 !important;
+  }
+
+  .hist-table tr + tr {
+    border-top: 1px solid var(--border);
+  }
+
+  .hist-table .hist-cmd {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    max-width: none;
+  }
+
+  .hist-table .hist-actions {
+    grid-column: 1 / -1;
+  }
 }

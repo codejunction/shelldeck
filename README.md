@@ -9,7 +9,7 @@
 Real shells (PowerShell, cmd, Git Bash, WSL, bash, zsh, fish) grouped by project,<br>
 in split or free-floating panes that survive restarts.
 
-[![PyPI](https://img.shields.io/pypi/v/shelldeck?color=8b5cf6&label=pypi)](https://pypi.org/project/shelldeck/)
+[![PyPI](https://img.shields.io/pypi/v/shelldeck?color=8b5cf6&cacheSeconds=3600)](https://pypi.org/project/shelldeck/)
 [![Python](https://img.shields.io/pypi/pyversions/shelldeck?color=8b5cf6)](https://pypi.org/project/shelldeck/)
 [![CI](https://github.com/codejunction/shelldeck/actions/workflows/ci.yml/badge.svg)](https://github.com/codejunction/shelldeck/actions/workflows/ci.yml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-8b5cf6)](#install)
@@ -160,6 +160,7 @@ sd schedule list|add|run|toggle|delete|logs
 sd task list|add|move|delete|alarms
 sd serve [--host H]                  run the server in the foreground
 sd stop                              stop the background server (closes all terminals)
+sd share                             share over an HTTPS Cloudflare tunnel with a QR link (needs cloudflared)
 sd login-link                        emergency: one-time login URL (host only)
 sd reset-password                    emergency: forget the password (host only)
 ```
@@ -180,6 +181,17 @@ Run shelldeck on a server or VM and use it from your laptop.
 sd serve                                  # on the VM: stays on 127.0.0.1:5455
 ssh -N -L 5455:127.0.0.1:5455 you@vm      # on your machine, then open http://127.0.0.1:5455
 ```
+
+**`sd share` (any device, no setup).** Needs [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`winget install Cloudflare.cloudflared`); no Cloudflare account.
+
+```sh
+sd share          # starts shelldeck if needed, prints a QR code and a link; Ctrl+C stops sharing
+```
+
+- **Encrypted.** The other device talks HTTPS to Cloudflare, which relays it through cloudflared's outbound encrypted tunnel to shelldeck on `127.0.0.1`. No ports are opened.
+- **Two locks.** The random `trycloudflare.com` address alone is refused; only the printed link (a one-per-share token made on the host) lets a browser in, and then it still needs your password. A password must exist before sharing.
+- **Phones.** On touch screens a key bar adds Esc, Tab, Ctrl (applies to the next letter), arrows and `| ~ / -`; dialogs open as bottom sheets.
+- **Stopping.** Ctrl+C closes the tunnel, voids the link and signs out every browser that logged in through it. Each `sd share` gets a new address and link.
 
 **HTTPS on the VM's address,** with a real certificate (Tailscale `tailscale cert`, Let's Encrypt, your reverse proxy) or a self-signed one:
 
