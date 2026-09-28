@@ -110,3 +110,27 @@ def test_search_formats(codebase):
 def test_search_rejects_bad_format(codebase):
     r = runner.invoke(cli.app, ["search", "x", "--root", str(codebase), "-f", "xml"])
     assert r.exit_code == 1
+
+
+def test_share_waits_for_tunnel_then_prints_link_and_cleans_up(monkeypatch, capsys):
+    calls = []
+
+    class FakeTunnel:
+        stderr = iter([
+            "INF |  https://abc-def.trycloudflare.com  |\n",
+            "INF Registered tunnel connection connIndex=0\n",
+        ])
+        terminate = lambda self: calls.append("terminate")  # noqa: E731
+
+    def api(path, method="GET", payload=None):
+        calls.append((method, path))
+        return {"has_password": True} if path == "/api/auth/status" else {"path": "/share/tok"}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "cloudflared")
+    monkeypatch.setattr(cli, "ensure_server", lambda: None)
+    monkeypatch.setattr(cli, "_health", lambda: "ok")
+    monkeypatch.setattr(cli, "_api", api)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kw: calls.append(argv[1:4]) or FakeTunnel())
+    cli.share()
+    assert "https://abc-def.trycloudflare.com/share/tok" in capsys.readouterr().out
+    assert calls[1:] == [["tunnel", "--no-autoupdate", "--url"], ("POST", "/api/share"), "terminate", ("DELETE", "/api/share")]

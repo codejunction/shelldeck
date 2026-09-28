@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -67,10 +68,28 @@ def err(code: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
-def _trusted(headers) -> bool:
-    """Same-origin check. Browsers always send Origin cross-site; the CLI sends none."""
+# `sd share`: the tunnel's public hostname, sha256 of its link token, and the logins made through it
+_share: dict = {}
+SHARE_COOKIE = "sd_share"
+
+
+def _share_key(token: str | None) -> bool:
+    return bool(token and _share) and hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), _share["key"])
+
+
+def _via_share(conn) -> bool:
+    return bool(_share) and conn.headers.get("host", "").rsplit(":", 1)[0] == _share["host"]
+
+
+def _trusted(conn) -> bool:
+    """Same-origin check. Browsers always send Origin cross-site; the CLI sends none.
+    The share tunnel's host also needs the cookie its link sets (or to be opening that link)."""
+    headers = conn.headers
     host = headers.get("host", "")
-    if ALLOWED_HOSTS is not None and host.rsplit(":", 1)[0] not in ALLOWED_HOSTS:
+    if _via_share(conn):
+        if not (conn.url.path.startswith("/share/") or _share_key(conn.cookies.get(SHARE_COOKIE))):
+            return False
+    elif ALLOWED_HOSTS is not None and host.rsplit(":", 1)[0] not in ALLOWED_HOSTS:
         return False
     origin = headers.get("origin")
     return not origin or urlsplit(origin).netloc == host
@@ -152,7 +171,8 @@ def _client(conn) -> str:
 
 def _is_local(conn) -> bool:
     """A request from the host itself (not through a reverse proxy)."""
-    return _client(conn) in LOOPBACK and "x-forwarded-for" not in conn.headers
+    proxied = "x-forwarded-for" in conn.headers or "cf-connecting-ip" in conn.headers  # e.g. `sd share`
+    return _client(conn) in LOOPBACK and not proxied
 
 
 def _who(conn) -> tuple[str, str | None] | None:
@@ -169,7 +189,7 @@ def _denied() -> JSONResponse:
 
 @app.middleware("http")
 async def guard(request: Request, call_next):
-    if not _trusted(request.headers):
+    if not _trusted(request):
         return err("forbidden_origin", 403)
     path = request.url.path
     request.state.session = None
@@ -217,6 +237,8 @@ async def shutdown():
 def _login_response(request: Request, body: dict, res=None):
     """Start a login session: cookie on `res` (JSON body by default)."""
     token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}")
+    if _via_share(request):
+        _share["sessions"].add(auth.session_hash(token))
     res = res or JSONResponse(body)
     res.set_cookie(
         auth.COOKIE, token, httponly=True, samesite="strict", path="/",
@@ -291,6 +313,48 @@ async def auth_login_link(request: Request):
     code = secrets.token_urlsafe(24)
     _login_links[code] = time.time() + 300
     return {"path": f"/api/auth/link/{code}"}
+
+
+@app.post("/api/share")
+async def share_start(request: Request, payload: dict):
+    """Host CLI only: open the gate for an `sd share` tunnel host; returns its one link."""
+    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        return err("host_cli_only", 403)
+    host = str(payload.get("host", "")).lower()
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
+        return err("invalid_host")
+    await _share_stop()
+    token = secrets.token_urlsafe(32)
+    _share.update(host=host, key=hashlib.sha256(token.encode()).hexdigest(), sessions=set())
+    log.info("sharing via %s", host)
+    return {"path": f"/share/{token}"}
+
+
+@app.delete("/api/share")
+async def share_stop(request: Request):
+    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        return err("host_cli_only", 403)
+    await _share_stop()
+    return {"status": "ok"}
+
+
+async def _share_stop() -> None:
+    """Close the gate and sign out every browser that logged in through the tunnel."""
+    sessions = _share.get("sessions", set())
+    _share.clear()
+    for h in sessions:
+        auth.end_session(h)
+    await _close_session_sockets(lambda owner: owner in sessions)
+
+
+@app.get("/share/{token}")
+async def share_open(request: Request, token: str):
+    """The QR link: sets the tunnel cookie, then the usual password login takes over."""
+    if not (_via_share(request) and _share_key(token)):
+        return err("link_expired", 403)
+    res = RedirectResponse("/", status_code=303)  # drops the token from the address bar
+    res.set_cookie(SHARE_COOKIE, token, httponly=True, samesite="lax", secure=True, path="/", max_age=24 * 3600)
+    return res
 
 
 @app.get("/api/auth/link/{code}")
@@ -825,7 +889,7 @@ def _attach(session: dict, rows: int, cols: int) -> None:
 
 @app.websocket("/ws/alarms")
 async def alarms_ws(ws: WebSocket):
-    who = _who(ws) if _trusted(ws.headers) else None
+    who = _who(ws) if _trusted(ws) else None
     if not who:
         await ws.close(code=1008)
         return
@@ -846,7 +910,7 @@ async def alarms_ws(ws: WebSocket):
 
 @app.websocket("/ws/{session_id}")
 async def terminal_ws(ws: WebSocket, session_id: str):
-    who = _who(ws) if _trusted(ws.headers) else None
+    who = _who(ws) if _trusted(ws) else None
     if not who:
         await ws.close(code=1008)
         return

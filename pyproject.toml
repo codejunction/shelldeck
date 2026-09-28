@@ -29,6 +29,7 @@ dependencies = [
   "rich>=13",
   "apscheduler>=3.10,<4",
   "psutil>=5.9",
+  "segno>=1.6",
 ]
 
 [project.urls]
