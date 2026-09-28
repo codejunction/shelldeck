@@ -15,6 +15,20 @@ permissions:
   contents: read
 
 jobs:
+  branch-name:
+    # main only takes PRs from feature/<name> or fix/<name> (and Dependabot's own branches)
+    name: branch name
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$HEAD" in
+            feature/?*|fix/?*|dependabot/?*) echo "ok: $HEAD" ;;
+            *) echo "::error::Branch '$HEAD' must be named feature/<name> or fix/<name>"; exit 1 ;;
+          esac
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -128,6 +128,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 ## Conventions
 
 - Commits: Conventional Commits in caveman-commit style, authored by the user. No AI attribution or `Co-Authored-By` trailer.
+- Branches: `main` is protected (`.github/rulesets/main.json`: PR only, all CI checks green, squash merge, linear history). Work on `feature/<name>` or `fix/<name>`, which CI's `branch name` check enforces, and open a PR into `main`. Never push to `main`. If you rename a CI job or matrix entry, update the required checks in the ruleset too.
 - Keep code minimal: stdlib and existing deps first; mark deliberate shortcuts with `ponytail:` comments.
 - Verify UI changes in a real browser (`playwright-cli`, Edge) before claiming done.
 - Update `README.md` when user-visible behaviour changes.

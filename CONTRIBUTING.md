@@ -15,6 +15,15 @@ SHELLDECK_HOME=.devhome/cfg uv run shelldeck --port 5466 serve   # dev server wi
 
 On Windows PowerShell, set the variable with `$env:SHELLDECK_HOME = ".devhome/cfg"` first. Port 5466 keeps a dev server clear of your everyday one on 5455.
 
+## Branches and pull requests
+
+`main` is protected: nobody pushes to it directly, including maintainers. Every change goes through a pull request:
+
+1. Branch off `main` as `feature/<name>` for new features or `fix/<name>` for bug fixes, e.g. `feature/split-presets` or `fix/escape-in-dialogs`. CI rejects other branch names.
+2. Push the branch and open a pull request into `main`.
+3. All CI checks (lint, the test matrix and the installers) must pass, and review threads must be resolved.
+4. The PR is squash-merged, so write its title as a Conventional Commit; it becomes the commit message on `main`.
+
 ## Before you open a pull request
 
 ```sh
@@ -30,6 +39,6 @@ uv run pytest -q
 
 ## Releasing (maintainers)
 
-1. Bump `version` in `pyproject.toml` and move the "Unreleased" notes in `CHANGELOG.md` under the new version.
-2. Commit, then tag and push: `git tag v0.0.2 && git push origin main v0.0.2`.
+1. On a `fix/release-0.0.2` branch, bump `version` in `pyproject.toml` and move the "Unreleased" notes in `CHANGELOG.md` under the new version. Merge it through a PR.
+2. Tag the merged commit on `main` and push the tag: `git switch main && git pull && git tag v0.0.2 && git push origin v0.0.2`.
 3. The Release workflow runs the tests, checks that the tag matches the version, publishes to PyPI and creates the GitHub release.
