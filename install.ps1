@@ -5,7 +5,6 @@
 
 $ErrorActionPreference = 'Stop'
 $source = if ($env:SHELLDECK_SOURCE) { $env:SHELLDECK_SOURCE } else { 'shelldeck' }
-$bin = Join-Path $HOME '.local\bin'
 
 function Say($text, $color = 'Gray') { Write-Host "  $text" -ForegroundColor $color }
 
@@ -15,8 +14,9 @@ Say 'shelldeck installer' Magenta
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Say 'installing uv (https://docs.astral.sh/uv) ...'
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-    $env:Path = "$bin;$env:Path"
+    $env:Path = "$(Join-Path $HOME '.local\bin');$env:Path"
 }
+$bin = (uv tool dir --bin)  # honours UV_TOOL_BIN_DIR
 
 Say "installing $source ..."
 uv tool install --force --python '>=3.12' $source

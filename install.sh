@@ -6,7 +6,6 @@
 set -eu
 
 source="${SHELLDECK_SOURCE:-shelldeck}"
-bin="$HOME/.local/bin"
 
 if [ -t 1 ]; then c_head='\033[1;35m' c_ok='\033[1;32m' c_off='\033[0m'; else c_head='' c_ok='' c_off=''; fi
 say() { printf '  %b%s%b\n' "${2:-}" "$1" "$c_off"; }
@@ -21,8 +20,9 @@ if ! command -v uv >/dev/null 2>&1; then
   else
     wget -qO- https://astral.sh/uv/install.sh | sh
   fi
-  PATH="$bin:$PATH"
+  PATH="$HOME/.local/bin:$PATH"
 fi
+bin="$(uv tool dir --bin)"  # honours UV_TOOL_BIN_DIR
 
 say "installing $source ..."
 uv tool install --force --python '>=3.12' "$source"

@@ -56,8 +56,8 @@ jobs:
         run: |
           $env:SHELLDECK_SOURCE = (Get-Item dist/*.whl).FullName
           ./install.ps1
-          & "$HOME\.local\bin\sd.exe" --help
+          & (Join-Path (uv tool dir --bin) sd.exe) --help  # setup-uv moves UV_TOOL_BIN_DIR
       - if: runner.os == 'Linux'
         run: |
           SHELLDECK_SOURCE="$(ls "$PWD"/dist/*.whl)" sh ./install.sh
-          ~/.local/bin/sd --help
+          "$(uv tool dir --bin)/sd" --help
