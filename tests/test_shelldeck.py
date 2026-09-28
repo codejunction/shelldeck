@@ -23,6 +23,7 @@ def client(tmp_path, monkeypatch):
 def browser(tmp_path, monkeypatch):
     """A client with no CLI token: it must log in like a browser."""
     auth._failures.clear()
+    monkeypatch.setitem(server._active, "h", None)
     monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
     monkeypatch.setattr(server, "ALLOWED_HOSTS", {"testserver"})
     with TestClient(server.app) as c:
@@ -394,9 +395,49 @@ def test_share_gate_needs_link_then_password(browser):
     login = r.headers["set-cookie"].split(";")[0]
     authed = {**tunnel, "cookie": f"{gate['cookie']}; {login}"}
     assert b.get("/api/projects", headers=authed).status_code == 200
+    vias = {d["via"] for d in b.get("/api/devices", headers=authed).json()["devices"]}
+    assert vias == {"local", "share:" + tunnel["host"]}
 
     # stopping closes the gate and signs out tunnel logins
     assert b.delete("/api/share", headers=cli).status_code == 200
     assert b.get("/", headers=authed).status_code == 403
     auth._cache.clear()
     assert b.get("/api/projects", headers={"cookie": login}).status_code == 401
+
+
+def test_devices_one_active_takeover_and_revoke(browser, tmp_path):
+    a = browser
+    a.post("/api/auth/setup", json={"password": "longenough", "confirm": "longenough"})
+    sid = a.post("/api/sessions", json={"cwd": str(tmp_path)}).json()["id"]
+    c = TestClient(server.app)
+    assert c.post("/api/auth/login", json={"password": "longenough"}).status_code == 200
+
+    # c logged in last, so c is in use and a is idle (API 423, sockets closed with 4423)
+    assert c.get("/api/projects").status_code == 200
+    assert a.get("/api/projects").status_code == 423
+    assert a.get("/api/auth/status").json()["in_use_elsewhere"] is True
+    with pytest.raises(WebSocketDisconnect) as ex, a.websocket_connect(f"/ws/{sid}"):
+        pass
+    assert ex.value.code == server.IN_USE
+    devs = c.get("/api/devices").json()["devices"]
+    assert len(devs) == 2 and [d["current"] for d in devs if d["active"]] == [True]
+
+    # a takes over with the password; its old login is replaced, not duplicated
+    assert a.post("/api/auth/login", json={"password": "longenough"}).status_code == 200
+    assert a.get("/api/projects").status_code == 200 and c.get("/api/projects").status_code == 423
+    assert len(a.get("/api/devices").json()["devices"]) == 2
+
+    # a revokes c; c is signed out
+    other = next(d["id"] for d in a.get("/api/devices").json()["devices"] if not d["current"])
+    assert a.delete(f"/api/devices/{other}").json() == {"revoked": 1}
+    assert c.get("/api/projects").status_code == 401
+    assert [d["current"] for d in a.get("/api/devices").json()["devices"]] == [True]
+
+    # "others" keeps this browser; once the active one logs out, an idle one may act again
+    c.post("/api/auth/login", json={"password": "longenough"})
+    assert c.delete("/api/devices/others").json() == {"revoked": 1}
+    assert a.get("/api/projects").status_code == 401
+    d = TestClient(server.app)
+    d.post("/api/auth/login", json={"password": "longenough"})
+    d.post("/api/auth/logout")
+    assert c.get("/api/projects").status_code == 200

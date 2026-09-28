@@ -95,6 +95,7 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 ### Secure by default
 
 - **Password required.** Every browser logs in separately and locks after 30 minutes idle.
+- **One device at a time.** Any number of browsers can stay signed in, but only one uses shelldeck; logging in on another takes over and idles the rest. The **Devices** page lists every signed-in browser (where from, last active, in use or idle) and revokes any of them.
 - **Local only.** shelldeck listens on `127.0.0.1` and refuses requests from other websites.
 - **Remote use** goes over an SSH tunnel or HTTPS. See [Remote access](#remote-access).
 
@@ -191,7 +192,7 @@ sd share          # starts shelldeck if needed, prints a QR code and a link; Ctr
 - **Encrypted.** The other device talks HTTPS to Cloudflare, which relays it through cloudflared's outbound encrypted tunnel to shelldeck on `127.0.0.1`. No ports are opened.
 - **Two locks.** The random `trycloudflare.com` address alone is refused; only the printed link (a one-per-share token made on the host) lets a browser in, and then it still needs your password. A password must exist before sharing.
 - **Phones.** On touch screens a key bar adds Esc, Tab, Ctrl (applies to the next letter), arrows and `| ~ / -`; dialogs open as bottom sheets.
-- **Stopping.** Ctrl+C closes the tunnel, voids the link and signs out every browser that logged in through it. Each `sd share` gets a new address and link.
+- **Stopping.** Ctrl+C closes the tunnel, voids the link and signs out every browser that logged in through it (they also vanish from **Devices**; a server restart clears them too). Each `sd share` gets a new address and link.
 
 **HTTPS on the VM's address,** with a real certificate (Tailscale `tailscale cert`, Let's Encrypt, your reverse proxy) or a self-signed one:
 
@@ -207,6 +208,7 @@ sd serve --host 0.0.0.0 --cert cert.pem --key key.pem
 
 - **Local only.** The server binds to `127.0.0.1` and rejects HTTP and WebSocket requests whose `Host` or `Origin` isn't the app itself, so other websites can't reach your shells.
 - **Passwords** are stored as PBKDF2-SHA256 (600k iterations). A login is a random token in an `HttpOnly`, `SameSite=Strict` cookie, and only its SHA-256 is stored. After 5 wrong passwords, each further try waits longer.
+- **Devices.** Each login records where it came from (this machine, the network, or a share). Only one login is in use at a time; the others get `423` until they enter the password again. Revoke any login from the Devices page.
 - **The CLI** authenticates with a token file in the data folder, readable only by your account and rotated on every server start.
 - **Forgot the password?** On the host machine, `sd login-link` prints a one-time login URL valid for 5 minutes, and `sd reset-password` removes the password. There is deliberately no way to do either from the browser.
 - **Your data** lives in `~/.config/shelldeck/` (database, log and saved terminal history). Set `SHELLDECK_HOME` to move it.
