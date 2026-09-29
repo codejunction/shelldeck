@@ -79,7 +79,7 @@ def test_agents(client, tmp_path, monkeypatch):
     try:
         time.sleep(0.5)
         assert agents.running({"me": os.getpid()}) == {"me": ("claude", "opus")}
-        assert stats.collect({"me": os.getpid()})["sessions"]["me"]["agent"] == {"key": "claude", "label": "Claude Code", "model": "opus"}
+        assert stats.collect({"me": os.getpid()})["sessions"]["me"]["agent"] == {"key": "claude", "label": "Claude Code", "model": "opus", "context": None}
     finally:
         child.kill()
     data = client.get("/api/agents").json()
@@ -107,6 +107,44 @@ def test_agents(client, tmp_path, monkeypatch):
     assert client.get("/api/sessions/nope/screen").status_code == 404
     assert client.post(f"/api/sessions/{sid}/input", json={"text": "hi"}).json()["error"] == "not_running"
     assert client.post(f"/api/sessions/{sid}/input", json={}).json()["error"] == "text_required"
+
+
+def test_agent_context(tmp_path, monkeypatch):
+    """Context window use read from Claude Code's and Codex's own logs (this process plays the agent)."""
+    import json
+    import os
+    from pathlib import Path
+
+    from shelldeck import agents
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    agents._files.clear()
+    pid = os.getpid()
+
+    claude = tmp_path / ".claude"
+    (claude / "sessions").mkdir(parents=True)
+    (claude / "projects" / "D--x").mkdir(parents=True)
+    (claude / "sessions" / f"{pid}.json").write_text(json.dumps({"sessionId": "s1", "status": "idle"}))
+    usage = {"input_tokens": 10, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 49000, "output_tokens": 990}
+    lines = [
+        {"type": "assistant", "message": {"model": "claude-sonnet-4-6", "usage": usage}},
+        {"type": "assistant", "isSidechain": True, "message": {"model": "claude-haiku-4-5", "usage": {"input_tokens": 5}}},
+        {"type": "user", "message": {"content": "hi"}},
+    ]
+    (claude / "projects" / "D--x" / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+    assert agents.context(pid, "claude") == {"used": 51000, "window": 200_000, "estimated": True, "state": "idle", "model": "claude-sonnet-4-6"}
+    assert agents.CLAUDE_1M.search("claude-opus-5-5") and not agents.CLAUDE_1M.search("claude-opus-4-6")
+
+    rollout = tmp_path / ".codex" / "sessions" / "2026" / "09" / "30" / "rollout-x.jsonl"
+    rollout.parent.mkdir(parents=True)
+    events = [
+        {"type": "session_meta", "payload": {"cwd": os.getcwd()}},
+        {"type": "event_msg", "payload": {"type": "task_started", "model_context_window": 258400}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"total_tokens": 64600}}}},
+    ]
+    rollout.write_text("\n".join(json.dumps(x) for x in events))
+    assert agents.context(pid, "codex") == {"used": 64600, "window": 258400}
+    assert agents.context(pid, "aider") is None
 
 
 def test_history_search_and_open(client, tmp_path, monkeypatch):

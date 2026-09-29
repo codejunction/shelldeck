@@ -1,5 +1,5 @@
 // Resource usage: top-bar meters and the Task manager page. One poller feeds both.
-import { S, agentChip, findSession, portChips, projectColor, renderSidebar, sessionTitle, shellLabel, showSession } from "./app.js";
+import { S, agentChip, ctxPct, findSession, fmtTokens, portChips, projectColor, renderSidebar, sessionTitle, shellLabel, showSession, updateAgentStates } from "./app.js";
 import { $, api, esc } from "./ui.js";
 
 const POLL_MS = 2000;
@@ -44,8 +44,10 @@ function updatePorts() {
 function updateAgents() {
   const next = {};
   for (const [sid, u] of Object.entries(stats.sessions)) if (u.agent) next[sid] = u.agent;
-  if (JSON.stringify(next) === JSON.stringify(S.agents)) return;
+  const before = JSON.stringify([S.agents, S.agentState]);
   S.agents = next;
+  updateAgentStates();
+  if (JSON.stringify([S.agents, S.agentState]) === before) return;
   for (const pane of document.querySelectorAll(".pane[data-sid]")) {
     pane.classList.toggle("ai", !!next[pane.dataset.sid]);
     const el = pane.querySelector(".pane-head .agent");
@@ -79,7 +81,18 @@ function renderMeters() {
   el.innerHTML =
     meter("CPU", s.cpu, `${Math.round(s.cpu)}%`, `CPU ${s.cpu.toFixed(1)}%`) +
     meter("RAM", memPct, `${(s.mem_used / 2 ** 30).toFixed(1)}/${Math.round(s.mem_total / 2 ** 30)}G`, `Memory ${fmtBytes(s.mem_used)} of ${fmtBytes(s.mem_total)} (${Math.round(memPct)}%)`) +
-    (s.gpu ? meter("GPU", s.gpu.util, `${Math.round(s.gpu.util)}%`, `${s.gpu.name}: ${s.gpu.util}% · VRAM ${fmtBytes(s.gpu.mem_used)} of ${fmtBytes(s.gpu.mem_total)}`) : "");
+    (s.gpu ? meter("GPU", s.gpu.util, `${Math.round(s.gpu.util)}%`, `${s.gpu.name}: ${s.gpu.util}% · VRAM ${fmtBytes(s.gpu.mem_used)} of ${fmtBytes(s.gpu.mem_total)}`) : "") +
+    ctxMeter();
+}
+
+// context window of the agent in the focused terminal (Claude Code, Codex, Devin)
+function ctxMeter() {
+  const a = S.focused && S.agents[S.focused];
+  const pct = ctxPct(a);
+  if (pct === null) return "";
+  const c = a.context;
+  return meter("CTX", pct, `${fmtTokens(c.used)}/${fmtTokens(c.window)}`,
+    `${a.label} context: ${fmtTokens(c.used)} of ${fmtTokens(c.window)} tokens (${pct}%)${c.estimated ? ", window estimated" : ""}`);
 }
 
 function spark(values) {

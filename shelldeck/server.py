@@ -880,11 +880,20 @@ async def clear_history():
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]")
 
 
+CURSOR_FORWARD = re.compile(r"\x1b\[(\d*)C")
+
+
+def _plain(output: str) -> str:
+    """Terminal output as text. The rendered snapshot writes runs of blanks as cursor-forward, so those become spaces."""
+    text = CURSOR_FORWARD.sub(lambda m: " " * min(int(m.group(1) or 1), 500), output.replace("\r\n", "\n"))
+    return ANSI.sub("", text)
+
+
 def _search(q: str, per_session: int = 20, total: int = 400) -> list[dict]:
     needle = q.casefold()
     results = []
     for s in db.list_sessions_with_project():
-        text = ANSI.sub("", manager.searchable(s["id"]).replace("\r\n", "\n"))
+        text = _plain(manager.searchable(s["id"]))
         hits = [{"line": no, "text": line.strip()[:300]} for no, line in enumerate(text.split("\n")) if needle in line.casefold()]
         if hits:
             results.append({"session_id": s["id"], "count": len(hits), "hits": hits[-per_session:]})
@@ -978,7 +987,7 @@ async def session_screen(session_id: str, lines: int = 60):
             if sb.snapshot is not before:
                 break
             await asyncio.sleep(0.05)
-    text = ANSI.sub("", manager.searchable(session_id).replace("\r\n", "\n"))
+    text = _plain(manager.searchable(session_id))
     rows = [line.rstrip() for line in text.split("\n")]
     while rows and not rows[-1]:
         rows.pop()

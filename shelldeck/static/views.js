@@ -1,9 +1,9 @@
-import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedProjects, palette, refreshProjects, shellLabel } from "./app.js";
+import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedProjects, palette, refreshProjects, sessionTitle, shellLabel } from "./app.js";
 import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
 import { renderAgents } from "./agents.js";
-import { $, $$, api, authError, confirmDialog, dialog, esc, fmtTime, fromLocalInput, hydrateIcons, icon, toLocalInput, toast, toastError, withEyes } from "./ui.js";
+import { $, $$, api, authError, confirmDialog, dialog, esc, fmtTime, fromLocalInput, hydrateIcons, icon, menu, toLocalInput, toast, toastError, withEyes } from "./ui.js";
 
 let bookmarks = [];
 let current = null; // visible page view
@@ -381,7 +381,7 @@ function taskDialog(task, column, onDone) {
       </div>
       <label class="field"><span>Tags (comma separated)</span><input type="text" name="tags" value="${esc(v.tags)}" /></label>
       <div class="error"></div></form>`,
-    foot: `${task ? `<button class="btn danger" data-a="del">${icon("trash")}Delete</button>` : ""}<span class="spacer"></span><button class="btn" data-close>Cancel</button><button class="btn primary" data-a="save">Save</button>`,
+    foot: `${task ? `<button class="btn danger" data-a="del">${icon("trash")}Delete</button>` : ""}${task && Object.keys(S.agents).length ? `<button class="btn" data-a="agent" title="Type this task into a running AI agent">${icon("sparkle")}Send to agent</button>` : ""}<span class="spacer"></span><button class="btn" data-close>Cancel</button><button class="btn primary" data-a="save">Save</button>`,
   });
   const form = $("form", d.el);
   const save = async (e) => {
@@ -410,12 +410,33 @@ function taskDialog(task, column, onDone) {
   d.el.addEventListener("click", async (e) => {
     const a = e.target.closest("[data-a]")?.dataset.a;
     if (a === "save") save(e);
+    if (a === "agent") {
+      const items = Object.entries(S.agents).map(([sid, ag]) => {
+        const s = findSession(sid);
+        return { label: `${ag.label} · ${s ? sessionTitle(s) : sid}`, hint: s?.project.name || "", icon: "sparkle", onClick: () => sendTask(task, sid, ag).then((ok) => ok && (d.close(), onDone())) };
+      });
+      menu(e.target.closest("[data-a]"), [{ header: "Send to" }, ...items]);
+    }
     if (a === "del" && (await confirmDialog(`Delete task "${task.title}"?`, { ok: "Delete", danger: true }))) {
       await api(`/api/tasks/${task.id}`, { method: "DELETE" }).catch(toastError);
       d.close();
       onDone();
     }
   });
+}
+
+/** Type a task into an agent's terminal (one line, so a TUI doesn't submit early) and mark it in progress. */
+async function sendTask(task, sid, agent) {
+  const text = `Task: ${task.title}${task.description ? ` - ${task.description}` : ""}`.replace(/\s+/g, " ").trim();
+  try {
+    await api(`/api/sessions/${sid}/input`, { method: "POST", body: { text } });
+    if (task.column !== "inprogress" && task.column !== "done") await api(`/api/tasks/${task.id}/move`, { method: "POST", body: { column: "inprogress" } });
+    toast({ title: `Sent to ${agent.label}`, body: task.title });
+    return true;
+  } catch (err) {
+    toastError(err);
+    return false;
+  }
 }
 
 // ----------------------------------------------------------------- alarms

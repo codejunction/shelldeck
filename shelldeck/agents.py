@@ -151,6 +151,134 @@ def devin_models(cache: Path) -> list[str]:
     return sorted(names)
 
 
+def _devin_windows() -> dict[str, int]:
+    """Devin model id (sessions.model, e.g. swe-1-6) -> context window, from field 23.4 of each entry."""
+    exe = shutil.which("devin")
+    cache = Path(exe).resolve().parent.parent / "model_configs.bin" if exe else None
+    if not cache or not cache.exists():
+        return {}
+    key = cache.stat().st_mtime
+    if _cache.get("devin_windows", (None,))[0] != key:
+        out = {}
+        for field, entry in _proto(cache.read_bytes()):
+            parts = dict(_proto(entry)) if field == 1 else {}
+            if 22 in parts and 23 in parts and isinstance(size := dict(_proto(parts[23])).get(4), int):
+                out[parts[22].decode("utf-8", "replace")] = size
+        _cache["devin_windows"] = (key, out)
+    return _cache["devin_windows"][1]
+
+
+_cache: dict[str, tuple] = {}
+_files: dict[tuple[int, str], Path] = {}  # (agent pid, agent) -> the session log it writes
+
+
+def _tail_lines(path: Path, size: int = 512 * 1024) -> list[str]:
+    """Last lines of a JSONL log, newest first (the first may be cut, so JSON errors are skipped)."""
+    with path.open("rb") as f:
+        f.seek(max(0, path.stat().st_size - size))
+        return f.read().decode("utf-8", "replace").splitlines()[::-1]
+
+
+# Claude logs no window size. 1M models per Devin's model catalog (Opus 4.7/4.8, every 5.x); the rest 200k.
+# ponytail: static rule, marked estimated in the UI; update when new models ship
+CLAUDE_1M = re.compile(r"claude-(?:opus-4-[78]|(?:opus|sonnet|fable)-5)|claude-5")
+
+
+def _claude_context(p: psutil.Process) -> dict | None:
+    home = Path.home() / ".claude"
+    info = _json(home / "sessions" / f"{p.pid}.json")
+    log = _files.get((p.pid, "claude"))
+    if not log or log.stem != info.get("sessionId"):
+        log = next((home / "projects").glob(f"*/{info['sessionId']}.jsonl"), None)
+        if not log:
+            return {"state": info.get("status")}
+        _files[(p.pid, "claude")] = log
+    for line in _tail_lines(log):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        u = (d.get("message") or {}).get("usage") if d.get("type") == "assistant" and not d.get("isSidechain") else None
+        if u:
+            used = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+            model = d["message"].get("model") or ""
+            window = 1_000_000 if "[1m]" in model or CLAUDE_1M.search(model) or used > 200_000 else 200_000
+            return {"used": used, "window": window, "estimated": True, "state": info.get("status"), "model": model}
+    return {"state": info.get("status")}
+
+
+def _codex_context(p: psutil.Process) -> dict | None:
+    log = _files.get((p.pid, "codex"))
+    if not log:
+        # the newest rollout started in this folder after the process did
+        start, cwd = p.create_time() - 5, os.path.normcase(p.cwd())
+        logs = sorted((Path.home() / ".codex" / "sessions").glob("*/*/*/rollout-*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in logs[:30]:
+            if f.stat().st_mtime < start:
+                break
+            with f.open(encoding="utf-8", errors="replace") as fh:
+                meta = json.loads(fh.readline() or "{}").get("payload") or {}
+            if os.path.normcase(meta.get("cwd") or "") == cwd:
+                log = _files[(p.pid, "codex")] = f
+                break
+        if not log:
+            return None
+    window = used = None
+    for line in _tail_lines(log):  # newest first: the latest usage and the latest window, whichever comes first
+        try:
+            payload = json.loads(line).get("payload") or {}
+        except ValueError:
+            continue
+        info = payload.get("info") or {}
+        window = window or payload.get("model_context_window") or info.get("model_context_window")
+        if used is None and payload.get("type") == "token_count" and info.get("last_token_usage"):
+            used = info["last_token_usage"].get("total_tokens") or 0
+        if window and used is not None:
+            break
+    return {"used": used or 0, "window": window} if window else None
+
+
+def _devin_context(p: psutil.Process) -> dict | None:
+    db = _devin_db()
+    if not db:
+        return None
+    cmd = p.cmdline()
+    sid = next((cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a in ("-r", "--resume")), None)
+    with closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1)) as conn:
+        if sid:
+            row = conn.execute("SELECT id, model FROM sessions WHERE id = ?", (sid,)).fetchone()
+        else:  # the newest session in this folder started after the process did
+            row = conn.execute(
+                "SELECT id, model FROM sessions WHERE working_directory = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
+                (p.cwd(), int(p.create_time()) - 5),
+            ).fetchone()
+        if not row:
+            return None
+        msgs = conn.execute(
+            "SELECT chat_message FROM message_nodes WHERE session_id = ? ORDER BY row_id DESC LIMIT 50", (row[0],)
+        ).fetchall()
+    window = _devin_windows().get(row[1])
+    for (msg,) in msgs:
+        m = (json.loads(msg).get("metadata") or {}).get("metrics") or {}
+        if m.get("input_tokens") is not None:
+            used = sum(m.get(k) or 0 for k in ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens"))
+            return {"used": used, "window": window, "model": row[1]} if window else {"used": used, "model": row[1]}
+    return {"used": 0, "window": window} if window else None
+
+
+CONTEXT = {"claude": _claude_context, "codex": _codex_context, "devin": _devin_context}
+
+
+def context(pid: int, key: str) -> dict | None:
+    """How full the agent's context window is: {used, window, estimated?, state?} from its own logs."""
+    if key not in CONTEXT:
+        return None
+    try:
+        return CONTEXT[key](psutil.Process(pid))
+    except (psutil.Error, OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        return None
+
+
 def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:
     """session id -> (agent, model) for terminals (shell pid) with an agent running under them."""
     out = {}
@@ -224,6 +352,8 @@ def devin_sessions(limit: int = 50) -> list[dict]:
 def forget(alive: set[int]) -> None:
     for pid in [p for p in _seen if p not in alive]:
         del _seen[pid]
+    for k in [k for k in _files if k[0] not in alive]:
+        del _files[k]
 
 
 def default_model(key: str) -> str | None:

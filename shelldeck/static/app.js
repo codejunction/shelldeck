@@ -19,7 +19,8 @@ export const S = {
   order: store.get("order", []),
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
-  agents: {}, // sid -> {key, label, model}: AI coding agent running in it, from the stats poller
+  agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
+  agentState: {}, // sid -> working | waiting | approval (updateAgentStates)
   online: true,
 };
 
@@ -435,6 +436,9 @@ class Term {
         } else {
           this.xterm.write(msg.data);
           this.changed = true;
+          const now = Date.now();
+          if (now - (this.lastOut || 0) > AGENT_QUIET_MS) this.busySince = now; // a new burst of output
+          this.lastOut = now;
           markUnread(this.sid);
         }
       }
@@ -574,8 +578,60 @@ export function portChips(sid) {
 export function agentChip(sid) {
   const a = S.agents[sid];
   if (!a) return "";
-  const tip = `${a.label} is running in this terminal${a.model ? ` (model ${a.model})` : ""}`;
-  return `<span class="ai-chip" title="${esc(tip)}">${icon("sparkle")}<b>AI</b>${esc(a.label)}${a.model ? `<small>${esc(a.model)}</small>` : ""}</span>`;
+  const model = a.model || a.context?.model;
+  const state = S.agentState[sid];
+  const pct = ctxPct(a);
+  const tip = [
+    `${a.label} is running in this terminal${model ? ` (model ${model})` : ""}`,
+    state === "approval" ? "It is asking for your approval." : state === "waiting" ? "It is waiting for you." : state === "working" ? "It is working." : "",
+    pct === null ? "" : `Context: ${fmtTokens(a.context.used)} of ${fmtTokens(a.context.window)} tokens (${pct}%)${a.context.estimated ? ", window estimated" : ""}`,
+  ].filter(Boolean).join("\n");
+  return `<span class="ai-chip ${state || ""}" title="${esc(tip)}">${icon("sparkle")}<b>${state === "approval" || state === "waiting" ? "NEEDS YOU" : "AI"}</b>${esc(a.label)}${model ? `<small>${esc(model)}</small>` : ""}${pct === null ? "" : `<small class="ctx" data-level="${pct >= 85 ? "high" : pct >= 60 ? "mid" : ""}">${pct}%</small>`}</span>`;
+}
+
+/** Percent of the agent's context window in use, or null when unknown. */
+export function ctxPct(a) {
+  const c = a?.context;
+  return c?.window && c.used != null ? Math.min(100, Math.round((100 * c.used) / c.window)) : null;
+}
+
+export function fmtTokens(n) {
+  return n >= 1e6 ? `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+// ------------------------------------------------ agent needs you: waiting for input or approval
+const AGENT_QUIET_MS = 4000; // no output this long after working = the agent stopped
+const AGENT_BUSY_MS = 5000; // output for at least this long counts as working (not a redraw or echo)
+// permission prompts of Claude Code, Codex, Devin and friends
+const APPROVAL_RE = /do you want to (?:proceed|make this edit|create|run)|allow (?:this|once|always)|\(y\/n\)|\[y\/n\]|yes, and don't ask|enter to (?:confirm|approve)|trust this folder/i;
+
+/** The visible screen as text (TUIs park the cursor away from their prompts, so read it all). */
+function screenTail(t) {
+  const buf = t.xterm.buffer.active;
+  const out = [];
+  for (let y = buf.viewportY; y < buf.viewportY + t.xterm.rows; y++) out.push(buf.getLine(y)?.translateToString(true) || "");
+  return out.join("\n");
+}
+
+/** working | waiting | approval | undefined, per agent terminal. Called by the 2s stats poller. */
+export function updateAgentStates() {
+  const now = Date.now();
+  for (const [sid, a] of Object.entries(S.agents)) {
+    const t = S.terms.get(sid);
+    const quiet = !t?.lastOut || now - t.lastOut > AGENT_QUIET_MS;
+    let state;
+    const was = S.agentState[sid];
+    if (t && quiet && APPROVAL_RE.test(screenTail(t))) state = "approval";
+    else if (a.context?.state === "busy") state = "working"; // Claude Code reports it
+    else if (t && !quiet) state = now - t.busySince > AGENT_BUSY_MS ? "working" : was; // still drawing: not settled yet
+    else if (was) state = "waiting";
+    S.agentState[sid] = state;
+    if ((state === "waiting" || state === "approval") && was === "working") {
+      const s = findSession(sid);
+      notify(sid, `${a.label} ${state === "approval" ? "needs your approval" : "is waiting for you"}`, s ? `${sessionTitle(s)} · ${s.project.name}` : "", "warn");
+    }
+  }
+  for (const sid of Object.keys(S.agentState)) if (!S.agents[sid]) delete S.agentState[sid];
 }
 
 const CMD_MAX = 32;
@@ -589,25 +645,30 @@ function fmtDur(ms) {
 }
 
 function notifyDone(t, cmd, ms) {
-  const away = document.hidden || !document.hasFocus();
-  if (!away && S.view === "terminals" && S.focused === t.sid) return;
   const s = findSession(t.sid);
   const title = `${t.exit ? "Failed" : "Finished"}: ${shortCmd(cmd) || "command"}`;
   const body = `${s ? `${sessionTitle(s)} · ` : ""}${fmtDur(ms)}${t.exit ? ` · exit ${t.exit}` : ""}`;
+  notify(t.sid, title, body, t.exit ? "error" : "");
+}
+
+/** Toast (plus a desktop notification when the window is in the background), unless sid is on screen. */
+function notify(sid, title, body, kind = "") {
+  const away = document.hidden || !document.hasFocus();
+  if (!away && S.view === "terminals" && S.focused === sid) return;
   const show = () => {
     window.focus();
-    showSession(t.sid);
+    showSession(sid);
   };
   const canAsk = "Notification" in window && Notification.permission === "default";
   toast({
     title,
     body,
-    kind: t.exit ? "error" : "",
+    kind,
     timeout: 10000,
     actions: [{ label: "Show", onClick: show }, ...(canAsk ? [{ label: "Enable desktop alerts", onClick: () => Notification.requestPermission() }] : [])],
   });
   if (away && "Notification" in window && Notification.permission === "granted") {
-    const n = new Notification(title, { body, icon: "/static/icon-192.png", tag: t.sid });
+    const n = new Notification(title, { body, icon: "/static/icon-192.png", tag: sid });
     n.onclick = () => {
       show();
       n.close();
@@ -1257,7 +1318,7 @@ export function renderSidebar() {
             (s) => `<div class="sess-row ${S.unread.has(s.id) ? "unread" : ""} ${visible.has(s.id) ? "visible" : ""} ${s.id === S.focused && S.view === "terminals" ? "active" : ""}" data-sid="${s.id}" draggable="true" data-act="open" title="${esc(s.cwd || "")}">
               <span class="dot ${s.alive ? "alive" : ""}"></span>
               <span class="name">${esc(sessionTitle(s))}</span>
-              ${S.agents[s.id] ? `<span class="badge ai" title="${esc(S.agents[s.id].label)} running">${icon("sparkle")}${esc(S.agents[s.id].label)}</span>` : `<span class="badge">${esc(shellLabel(s.shell))}</span>`}
+              ${S.agents[s.id] ? `<span class="badge ai ${["waiting", "approval"].includes(S.agentState[s.id]) ? "needs" : ""}" title="${esc(S.agents[s.id].label)} ${["waiting", "approval"].includes(S.agentState[s.id]) ? "needs you" : "running"}">${icon("sparkle")}${esc(S.agents[s.id].label)}</span>` : `<span class="badge">${esc(shellLabel(s.shell))}</span>`}
               <span class="row-actions">
                 <button class="icon-btn sm" data-act="smenu" title="More" aria-label="Terminal actions">${icon("more")}</button>
                 <button class="icon-btn sm danger" data-act="kill" title="Close terminal" aria-label="Close terminal">${icon("x")}</button>

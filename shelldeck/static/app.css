@@ -2175,6 +2175,50 @@ textarea:focus {
   fill: currentColor;
 }
 
+.ai-chip .ctx {
+  padding-left: 5px;
+  border-left: 1px solid var(--border-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-chip .ctx[data-level="mid"] {
+  color: var(--warn);
+}
+
+.ai-chip .ctx[data-level="high"] {
+  color: var(--bad);
+}
+
+.ai-chip.working svg {
+  animation: ai-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ai-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ai-chip.waiting,
+.ai-chip.approval,
+.badge.ai.needs {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.ai-chip.waiting b,
+.ai-chip.approval b,
+.ai-chip.waiting svg,
+.ai-chip.approval svg,
+.badge.ai.needs,
+.badge.ai.needs svg {
+  color: var(--warn);
+}
+
+.pane.ai:has(.ai-chip.waiting, .ai-chip.approval) .pane-head {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 16%, transparent), transparent 60%);
+}
+
 .badge.ai {
   display: inline-flex;
   align-items: center;

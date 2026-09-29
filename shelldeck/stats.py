@@ -78,6 +78,7 @@ def tree(pid: int, seen: set[int]) -> dict | None:
     mem = count = 0
     top: tuple[str, float] | None = None
     agent: tuple[str, str | None] | None = None
+    agent_pid = 0
     pids = []
     for p in procs:
         try:
@@ -86,7 +87,7 @@ def tree(pid: int, seen: set[int]) -> dict | None:
             m = p.memory_info().rss
             name = p.name()
             if agent is None and p.pid != pid:  # outermost agent; its own children (MCP servers, tools) don't count
-                agent = agents.identify(p)
+                agent, agent_pid = agents.identify(p), p.pid
         except psutil.Error:
             continue
         seen.add(p.pid)
@@ -97,7 +98,8 @@ def tree(pid: int, seen: set[int]) -> dict | None:
         if p.pid != pid and (top is None or c >= top[1]):
             top = (name, c)
     return {"cpu": round(cpu, 1), "mem": mem, "procs": count, "top": top[0] if top else None, "pids": pids,
-            "agent": {"key": agent[0], "label": agents.AGENTS[agent[0]][0], "model": agent[1]} if agent else None}
+            "agent": {"key": agent[0], "label": agents.AGENTS[agent[0]][0], "model": agent[1],
+                      "context": agents.context(agent_pid, agent[0])} if agent else None}
 
 
 def listening() -> dict[int, set[int]]:
