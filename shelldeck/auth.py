@@ -20,9 +20,11 @@ from . import db
 
 LOCK_TIMEOUT_SECONDS = 30 * 60
 MIN_PASSWORD = 8
+SHARE_MIN_PASSWORD = 12  # `sd share` puts the login page on the internet
 COOKIE = "sd_session"
 TOKEN_HEADER = "x-shelldeck-token"
 _PASSWORD_KEY = "auth_password_hash"
+_STRONG_KEY = "auth_password_strong"  # "1" when the password is long enough to share
 _TOUCH_EVERY = 60  # seconds; last_seen writes are throttled
 _CACHE_TTL = 5  # seconds a session lookup is trusted before re-reading the db
 
@@ -57,7 +59,20 @@ def has_password() -> bool:
 
 def check_password(password: str) -> bool:
     stored = db.get_setting(_PASSWORD_KEY)
-    return bool(stored) and _verify_password(password, stored)
+    ok = bool(stored) and _verify_password(password, stored)
+    if ok:
+        _note_strength(password)  # passwords set before this flag existed get it at their next login
+    return ok
+
+
+def _note_strength(password: str) -> None:
+    strong = "1" if len(password) >= SHARE_MIN_PASSWORD else ""
+    if db.get_setting(_STRONG_KEY, "") != strong:
+        db.set_setting(_STRONG_KEY, strong)
+
+
+def strong_password() -> bool:
+    return db.get_setting(_STRONG_KEY, "") == "1"
 
 
 def validate_new(password: str, confirm: str) -> str | None:
@@ -71,6 +86,7 @@ def validate_new(password: str, confirm: str) -> str | None:
 
 def set_password(password: str) -> None:
     db.set_setting(_PASSWORD_KEY, _hash_password(password))
+    _note_strength(password)
     _file("setup-code").unlink(missing_ok=True)
 
 
@@ -128,6 +144,7 @@ def init_auth() -> str | None:
 def reset() -> str:
     """Emergency, host-only: forget the password and every login. Returns the new setup code."""
     db.delete_setting(_PASSWORD_KEY)
+    db.delete_setting(_STRONG_KEY)
     db.delete_auth_sessions()
     _file("setup-code").unlink(missing_ok=True)
     _cache.clear()

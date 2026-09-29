@@ -1,10 +1,12 @@
 import json
 import os
+import queue
 import re
 import shutil
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -308,13 +310,53 @@ def _show_share(url: str) -> None:
     if sys.stdout.isatty():
         segno.make(url, error="l").terminal(compact=(sys.stdout.encoding or "").lower().startswith("utf"))
     typer.echo(f"\n  {url}\n")
-    typer.echo("  Scan or open it on the other device, then log in with your shelldeck password.")
-    typer.echo("  Without this link the tunnel URL is refused. Ctrl+C stops sharing and signs those browsers out.")
+    typer.echo("  Open it on the other device within 10 minutes. It works once; allow the device here, then log in")
+    typer.echo("  with your password. Another device: `sd share --new-link`. Ctrl+C stops sharing and signs them out.")
+
+
+def _watch_share() -> None:
+    """Renew the share's lease (the server closes it ~60s after this stops) and ask here before a
+    device that opened the link gets in."""
+    asks: queue.Queue = queue.Queue()
+
+    def poll() -> None:
+        asked: set[str] = set()
+        while True:
+            try:
+                for p in _api("/api/share").get("pending", []):
+                    if p["id"] not in asked:
+                        asked.add(p["id"])
+                        asks.put(p)
+            except typer.Exit:
+                pass  # server busy or restarting; try again
+            time.sleep(3)
+
+    def ask() -> None:
+        while True:
+            p = asks.get()
+            typer.echo(f"\n  A device opened the link: {p['ip']}\n  {p['agent'][:100]}")
+            allow = input("  Allow it? [y/N] ").strip().lower() in ("y", "yes")
+            try:
+                _api("/api/share/decide", "POST", {"id": p["id"], "allow": allow})
+                typer.echo("  allowed; it can log in with your password now" if allow else "  denied")
+            except typer.Exit:
+                typer.echo("  that request expired; open a new link")
+
+    for target in (poll, ask):
+        threading.Thread(target=target, daemon=True).start()
 
 
 @app.command()
-def share():
-    """Reach this shelldeck from another device: HTTPS Cloudflare quick tunnel, QR link, then your password."""
+def share(
+    new_link: bool = typer.Option(False, "--new-link", help="Print a fresh one-use link for the running share."),
+):
+    """Reach this shelldeck from another device: HTTPS Cloudflare quick tunnel, one-use QR link, host approval, then your password."""
+    if new_link:
+        if not (_health() == "ok" and _api("/api/share").get("host")):
+            typer.echo("not sharing; start with `sd share`", err=True)
+            raise typer.Exit(1)
+        _show_share(f"https://{_api('/api/share')['host']}" + _api("/api/share/link", "POST", {})["path"])
+        return
     exe = shutil.which("cloudflared")
     if not exe:
         hint = "winget install Cloudflare.cloudflared" if sys.platform == "win32" else "see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
@@ -323,6 +365,13 @@ def share():
     ensure_server()
     if not _api("/api/auth/status").get("has_password"):
         typer.echo("Set a password first: open shelldeck on this machine (`sd`), then run `sd share` again.", err=True)
+        raise typer.Exit(1)
+    if not _api("/api/share").get("strong_password"):
+        typer.echo(
+            f"Sharing puts the login page on the internet, so it needs a password of {auth.SHARE_MIN_PASSWORD}+ characters.\n"
+            "Change it in Settings (or, if it is already that long, log in once), then run `sd share` again.",
+            err=True,
+        )
         raise typer.Exit(1)
     # the tunnel ends at our own loopback server, whose certificate (if any) is self-signed
     cmd = [exe, "tunnel", "--no-autoupdate", "--url", _url()] + (["--no-tls-verify"] if _scheme() == "https" else [])
@@ -335,6 +384,7 @@ def share():
             elif host and not shared and "Registered tunnel connection" in line:
                 shared = f"https://{host}" + _api("/api/share", "POST", {"host": host})["path"]
                 _show_share(shared)
+                _watch_share()
     except KeyboardInterrupt:
         pass
     finally:

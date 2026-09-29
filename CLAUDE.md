@@ -46,7 +46,12 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - The password changes only in Settings, with current + new + confirm, and the change signs out every other browser. There is no way to remove it.
   - The host CLI uses `cli-token` (the `X-Shelldeck-Token` header).
   - Emergency, host only: `sd login-link` and `sd reset-password`.
-  - `sd share`: foreground cloudflared quick tunnel. The CLI waits for "Registered tunnel connection", then `POST /api/share` (CLI token) sets `server._share` (host, sha256 of a link token) and returns `/share/<token>`, printed with a segno QR. `_trusted()` refuses the tunnel host unless the request opens that link or carries its `sd_share` cookie; the password is still required. `DELETE /api/share` (on Ctrl+C) clears it and signs tunnel logins out. Tunnel requests are remote (`X-Forwarded-For`/`CF-Connecting-IP`).
+  - `sd share`: foreground cloudflared quick tunnel. The CLI waits for "Registered tunnel connection", then `POST /api/share` (CLI token; `409 weak_password` unless `auth.strong_password()`, i.e. 12+ chars, flagged on set/login) sets `server._share` and returns a link `/share/<token>`, printed with a segno QR.
+    - **Link:** one unused link at a time (sha256 in `_share["link"]`), one use, `LINK_TTL` 10 min; `sd share --new-link` → `POST /api/share/link`.
+    - **Approval:** opening the link makes a pending grant (sha256 of a random `sd_share` cookie) and serves `_WAIT_PAGE`, which polls `/share/status`. `_watch_share()` in the CLI polls `GET /api/share` (the lease heartbeat, which lists pending grants) and asks `Allow it? [y/N]` on a second thread → `POST /api/share/decide`. `_trusted()` refuses the tunnel host except `/share/*` unless the grant is `ok`; the password is still required.
+    - **Lease:** `_share_on()` is false after `SHARE_LEASE` (60s) without a heartbeat; `_share_reaper` then runs `_share_stop`. `DELETE /api/share` (on Ctrl+C) clears it and signs tunnel logins out. Revoking a share login deletes its grant (`grant["session"]`).
+    - Tunnel requests are remote (`X-Forwarded-For`/`CF-Connecting-IP`). Cloudflare terminates TLS and sees plaintext; the README says so.
+  - `guard` adds `SECURITY_HEADERS` (no framing, nosniff, no referrer) to every response and `Cache-Control: no-store` to `/api/*`.
   - `serve` refuses plain HTTP on non-loopback addresses without `--cert/--key` or `--insecure-http`.
   - The old seeded `nopassword` is deleted on start.
 - **Bookmarks.** Insert by default; Shift+Enter or Shift+click runs.
