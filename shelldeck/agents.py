@@ -1,9 +1,12 @@
 """AI coding agents: which CLIs exist, which one runs in a terminal, and with what model."""
 
 import json
+import os
 import re
 import shutil
+import sqlite3
 import tomllib
+from contextlib import closing
 from pathlib import Path
 
 import psutil
@@ -26,7 +29,11 @@ AGENTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]]
     "droid": ("Factory Droid", ("droid",), (), ()),
     "crush": ("Crush", ("crush",), (), ()),
     "kiro": ("Kiro CLI", ("kiro-cli",), (), ()),
+    # found, never launched: a devin(.exe) outside Devin's cli/ install folder (see identify)
+    "devin_desktop": ("Devin desktop", (), (), ()),
 }
+# helper processes of an agent, not an agent session: Claude's browser bridge, Electron children
+HELPER_ARGS = ("--chrome-native-host", "--type=")
 INTERPRETERS = {"node", "bun", "deno", "python", "python3", "pythonw", "py"}
 _EXE = {name: key for key, a in AGENTS.items() for name in a[1]}
 _seen: dict[int, tuple[str, str | None] | None] = {}  # pid -> (agent, model); a cmdline never changes
@@ -40,6 +47,13 @@ def _flag_model(cmd: list[str]) -> str | None:
     return None
 
 
+def _exe_parts(p: psutil.Process) -> tuple[str, ...]:
+    try:
+        return tuple(x.lower() for x in Path(p.exe()).parts)
+    except (psutil.Error, OSError):
+        return ("cli",)  # unknown: assume the CLI
+
+
 def identify(p: psutil.Process) -> tuple[str, str | None] | None:
     """(agent key, model from --model or its config) when `p` is an agent CLI, else None."""
     if p.pid in _seen:
@@ -51,7 +65,11 @@ def identify(p: psutil.Process) -> tuple[str, str | None] | None:
             cmd = p.cmdline()
         except psutil.Error:
             cmd = []
-        if not key:
+        if any(a.startswith(HELPER_ARGS) for a in cmd):
+            key, cmd = None, []
+        elif key == "devin" and "cli" not in (_exe_parts(p)):
+            key = "devin_desktop"  # ponytail: path heuristic, unverified (no desktop install to test on)
+        elif not key:
             joined = " ".join(cmd).replace("\\", "/")
             key = next((k for k, a in AGENTS.items() if any(m in joined for m in a[2])), None)
             # `python -m aider` / `node .../bin/codex`: last path part of the script
@@ -59,9 +77,78 @@ def identify(p: psutil.Process) -> tuple[str, str | None] | None:
             if not key and script:
                 key = _EXE.get(Path(cmd[script]).stem.lower())
             cmd = cmd[script + 1:] if script else []  # `python -m aider`: -m is not a model flag
-    hit = (key, _flag_model(cmd or []) or default_model(key)) if key else None
+    hit = (key, _flag_model(cmd or []) or _env_model(p, key) or _resumed_model(key, cmd or []) or default_model(key)) if key else None
     _seen[p.pid] = hit
     return hit
+
+
+MODEL_ENV = {"claude": "ANTHROPIC_MODEL", "devin": "DEVIN_MODEL", "gemini": "GEMINI_MODEL"}
+
+
+def _env_model(p: psutil.Process, key: str) -> str | None:
+    """The model an env var picks for this process (e.g. `$env:DEVIN_MODEL = 'swe-1.6'; devin`)."""
+    if var := MODEL_ENV.get(key):
+        try:
+            return p.environ().get(var) or None
+        except psutil.Error:
+            pass
+    return None
+
+
+def _varint(b: bytes, i: int) -> tuple[int, int]:
+    n = shift = 0
+    while True:
+        c = b[i]
+        i += 1
+        n |= (c & 0x7F) << shift
+        shift += 7
+        if c < 0x80:
+            return n, i
+
+
+def _resumed_model(key: str, cmd: list[str]) -> str | None:
+    """`devin -r <id>` keeps the model of that session, stored in Devin's session store."""
+    if key != "devin":
+        return None
+    sid = next((cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a in ("-r", "--resume")), None)
+    return next((d["model"] for d in devin_sessions(500) if d["id"] == sid), None) if sid else None
+
+
+def _proto(b: bytes):
+    """(field, value) pairs of a protobuf message; length-delimited values stay bytes."""
+    i = 0
+    while i < len(b):
+        key, i = _varint(b, i)
+        wire = key & 7
+        if wire == 0:
+            v, i = _varint(b, i)
+        elif wire == 2:
+            n, i = _varint(b, i)
+            v, i = b[i:i + n], i + n
+        elif wire in (1, 5):
+            n = 8 if wire == 1 else 4
+            v, i = b[i:i + n], i + n
+        else:
+            raise ValueError(f"wire type {wire}")
+        yield key >> 3, v
+
+
+def devin_models(cache: Path) -> list[str]:
+    """Names `devin --model` accepts, from the model_configs.bin Devin keeps next to its bin/ folder.
+
+    Each entry (field 1) has a display name (1, "Claude Opus 4.7 Medium") and a base model (30.1,
+    "Claude Opus 4.7"); the CLI takes the base name lowercased and dashed: claude-opus-4.7.
+    ponytail: reverse-engineered format; on a parse error the page just shows no models."""
+    names = []
+    for field, entry in _proto(cache.read_bytes()):
+        if field != 1:
+            continue
+        parts = dict(_proto(entry))
+        base = dict(_proto(parts[30])).get(1) if 30 in parts else None
+        name = (base or parts.get(1) or b"").decode("utf-8").strip().lower().replace(" ", "-")
+        if name and name not in names:
+            names.append(name)
+    return sorted(names)
 
 
 def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:
@@ -80,6 +167,58 @@ def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:
             except psutil.Error:
                 continue
     return out
+
+
+def outside(inside: set[int]) -> list[dict]:
+    """Agents running on this machine but not in a shelldeck terminal (desktop apps, other terminals).
+
+    inside: pids already under a shelldeck shell. Only the outermost agent process counts."""
+    found = {}
+    for p in psutil.process_iter():
+        if p.pid in inside:
+            continue
+        try:
+            if hit := identify(p):
+                found[p.pid] = (p, hit)
+        except psutil.Error:
+            continue
+    out = []
+    for pid, (p, (key, model)) in found.items():
+        try:
+            parent = p.parent()
+            if parent and parent.pid in found:
+                continue
+            cwd = p.cwd()
+            host = parent.name().removesuffix(".exe") if parent else ""
+        except psutil.Error:
+            cwd, host = "", ""
+        out.append({"pid": pid, "agent": key, "label": AGENTS[key][0], "model": model, "cwd": cwd, "host": host})
+    return sorted(out, key=lambda a: (a["label"], a["pid"]))
+
+
+def _devin_db() -> Path | None:
+    """Devin keeps every session (CLI and hosted by apps over ACP) in one sessions.db.
+
+    ponytail: Windows path verified; the Linux/macOS locations are guesses."""
+    roots = [Path(os.environ.get("APPDATA", "")), Path.home() / ".local" / "share", Path.home() / ".config"]
+    return next((f for r in roots if (f := r / "devin" / "cli" / "sessions.db").exists()), None)
+
+
+def devin_sessions(limit: int = 50) -> list[dict]:
+    """Recent Devin sessions, newest first (read-only; Devin may be writing)."""
+    db = _devin_db()
+    if not db:
+        return []
+    try:
+        with closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1)) as conn:
+            rows = conn.execute(
+                "SELECT id, title, working_directory, model, backend_type, created_at, last_activity_at FROM sessions "
+                "WHERE hidden = 0 ORDER BY last_activity_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    keys = ("id", "title", "cwd", "model", "backend", "created_at", "last_activity_at")
+    return [dict(zip(keys, r, strict=True)) for r in rows]
 
 
 def forget(alive: set[int]) -> None:
@@ -116,7 +255,9 @@ def models(key: str) -> list[str]:
             catalog, auth = _json(home / ".cache" / "opencode" / "models.json"), home / ".local" / "share" / "opencode" / "auth.json"
             providers = ["opencode", *(_json(auth) if auth.exists() else {})]
             return [f"{p}/{m}" for p in providers for m in catalog.get(p, {}).get("models", {})]
-    except (OSError, ValueError, KeyError, TypeError):
+        if key == "devin" and (exe := shutil.which("devin")):  # <install>/bin/devin(.exe) -> <install>/model_configs.bin
+            return devin_models(Path(exe).resolve().parent.parent / "model_configs.bin")
+    except (OSError, ValueError, KeyError, TypeError, IndexError, UnicodeDecodeError):
         pass
     return list(AGENTS[key][3])
 
@@ -125,6 +266,8 @@ def catalog() -> list[dict]:
     """Every known agent, whether its CLI is on PATH, and the models it offers."""
     out = []
     for key, (label, exes, _, _) in AGENTS.items():
+        if not exes:
+            continue
         path = next((p for e in exes if (p := shutil.which(e))), None)
         out.append({"key": key, "label": label, "command": exes[0], "installed": bool(path), "path": path,
                     "models": models(key) if path else list(AGENTS[key][3]), "default_model": default_model(key) if path else None})
@@ -136,4 +279,12 @@ if __name__ == "__main__":
     assert _flag_model(["codex", "-m", "gpt-5-codex"]) == "gpt-5-codex"
     assert _flag_model(["x", "--model=sonnet"]) == "sonnet"
     assert _flag_model(["x", "--mode", "y"]) is None
+    # one Devin entry: display name (1) + base model (30.1) -> the name `devin --model` takes
+    base = b"\x0a\x0fClaude Opus 4.7"
+    entry = b"\x0a\x16Claude Opus 4.7 Medium" + b"\x18\x01" + b"\xf2\x01" + bytes([len(base)]) + base
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "m.bin").write_bytes(b"\x0a" + bytes([len(entry)]) + entry + b"\x0a\x0b\x0a\x09Kimi K2.6")
+        assert devin_models(Path(d) / "m.bin") == ["claude-opus-4.7", "kimi-k2.6"]
     print("ok")

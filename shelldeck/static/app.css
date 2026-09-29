@@ -2243,6 +2243,12 @@ textarea:focus {
   margin-top: auto;
 }
 
+.mon-table td.ag-clip {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ag-launch select {
   flex: 1;
   min-width: 0;

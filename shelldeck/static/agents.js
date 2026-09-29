@@ -1,5 +1,5 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
-import { S, newTerminal, orderedProjects, projectColor, showSession } from "./app.js";
+import { S, newTerminal, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
 import { api, esc, icon, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
@@ -16,6 +16,7 @@ export async function renderAgents(el) {
     el.dataset.wired = "1";
     el.addEventListener("click", (e) => onClick(e, el));
   }
+  const kept = keep(el);
   try {
     data = await api("/api/agents");
   } catch (e) {
@@ -66,7 +67,64 @@ export async function renderAgents(el) {
       <tbody>${running}</tbody></table></div>
     <div class="ag-head"><h2>Available agents</h2>
       ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
-    <div class="ag-grid">${cards}</div>`;
+    <div class="ag-grid">${cards}</div>
+    ${outsideSection()}
+    ${devinSection()}`;
+  restore(el, kept);
+}
+
+/** Agents found elsewhere on this machine: desktop apps, other terminal windows. */
+function outsideSection() {
+  if (!data.outside?.length) return "";
+  const rows = data.outside
+    .map((a) => `<tr>
+      <td><span class="ai-chip">${icon("sparkle")}<b>AI</b>${esc(a.label)}</span></td>
+      <td class="mono">${esc(a.model || "") || '<span class="faint">default</span>'}</td>
+      <td class="mono">${esc(a.cwd || "")}</td>
+      <td class="faint">${esc(a.host || "")} <span class="mono">pid ${a.pid}</span></td>
+    </tr>`)
+    .join("");
+  return `<div class="ag-head"><h2>Running outside shelldeck</h2></div>
+    <div class="card mon-table"><table><thead><tr><th>Agent</th><th>Model</th><th>Folder</th><th>Started by</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+const SESSION_ID = /^[\w.-]+$/;
+
+/** Every Devin session (CLI, or hosted by an app), resumable in a terminal in its folder. */
+function devinSection() {
+  if (!data.devin_sessions?.length) return "";
+  const rows = data.devin_sessions
+    .map((d) => `<tr>
+      <td class="ag-clip" title="${esc(d.title || "")}">${esc(d.title || "Untitled")}<br><span class="faint mono">${esc(d.id)}</span></td>
+      <td class="mono">${esc(d.model || "")}</td>
+      <td class="mono">${esc(d.cwd || "")}</td>
+      <td class="faint">${esc(d.backend || "")}</td>
+      <td class="faint">${new Date(d.last_activity_at * 1000).toLocaleString()}</td>
+      <td>${SESSION_ID.test(d.id) ? `<button class="btn sm" data-resume="${esc(d.id)}">${icon("play")}Resume</button>` : ""}</td>
+    </tr>`)
+    .join("");
+  return `<div class="ag-head"><h2>Devin sessions</h2><span class="faint">From Devin's own session store, newest first</span></div>
+    <div class="card mon-table"><table><thead><tr><th>Session</th><th>Model</th><th>Folder</th><th>Backend</th><th>Last active</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// the page re-renders every 5s: keep picked models, the project and open model lists
+function keep(el) {
+  return {
+    project: el.querySelector("[data-project]")?.value,
+    models: Object.fromEntries([...el.querySelectorAll(".ag-card")].map((c) => [c.dataset.key, c.querySelector("[data-model]")?.value])),
+    open: new Set([...el.querySelectorAll(".ag-card details[open]")].map((d) => d.closest(".ag-card").dataset.key)),
+  };
+}
+
+function restore(el, k) {
+  const project = el.querySelector("[data-project]");
+  if (project && k.project && [...project.options].some((o) => o.value === k.project)) project.value = k.project;
+  for (const c of el.querySelectorAll(".ag-card")) {
+    const sel = c.querySelector("[data-model]");
+    if (sel && k.models[c.dataset.key]) sel.value = k.models[c.dataset.key];
+    const det = c.querySelector("details");
+    if (det && k.open.has(c.dataset.key)) det.open = true;
+  }
 }
 
 async function onClick(e, el) {
@@ -76,6 +134,8 @@ async function onClick(e, el) {
     await navigator.clipboard.writeText(TEAM_PROMPT).catch(() => {});
     return toast({ title: "Team prompt copied", body: "Paste it into each agent." });
   }
+  const resume = e.target.closest("[data-resume]")?.dataset.resume;
+  if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
   if (!key) return;
   const agent = data.agents.find((a) => a.key === key);
@@ -87,4 +147,19 @@ async function onClick(e, el) {
   await term.ready();
   term.send({ type: "input", data: `${command}\r` });
   term.focus();
+}
+
+/** Open a terminal in the session's folder (added as a project if new) and run `devin -r <id>`. */
+async function resumeDevin(d) {
+  if (!d || !SESSION_ID.test(d.id)) return;
+  try {
+    const s = await api("/api/sessions", { method: "POST", body: { cwd: d.cwd } });
+    await refreshProjects();
+    const term = await showSession(s.id);
+    await term.ready();
+    term.send({ type: "input", data: `devin -r ${d.id}\r` });
+    term.focus();
+  } catch (e) {
+    toastError(e);
+  }
 }

@@ -67,7 +67,7 @@ def test_stats(client):
     assert s["system"]["mem_total"] > 0 and 0 <= s["system"]["cpu"] <= 100 and s["sessions"] == {}
 
 
-def test_agents(client, tmp_path):
+def test_agents(client, tmp_path, monkeypatch):
     import os
     import subprocess
     import sys
@@ -84,6 +84,21 @@ def test_agents(client, tmp_path):
         child.kill()
     data = client.get("/api/agents").json()
     assert data["running"] == [] and {"claude", "codex", "devin"} <= {a["key"] for a in data["agents"]}
+    assert isinstance(data["outside"], list) and isinstance(data["devin_sessions"], list)
+
+    # Devin's session store: newest first, hidden ones skipped
+    import sqlite3
+
+    store = tmp_path / "devin" / "cli" / "sessions.db"
+    store.parent.mkdir(parents=True)
+    with sqlite3.connect(store) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT, working_directory TEXT, backend_type TEXT, model TEXT, "
+                     "created_at INT, last_activity_at INT, title TEXT, hidden INT DEFAULT 0)")
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, 'Windsurf', 'swe-1-6', 1, ?, ?, ?)",
+                         [("old-one", "D:/a", 5, "Old", 0), ("new-one", "D:/b", 9, "New", 0), ("gone", "D:/c", 7, "Hidden", 1)])
+    conn.close()
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert [(d["id"], d["cwd"]) for d in agents.devin_sessions()] == [("new-one", "D:/b"), ("old-one", "D:/a")]
 
     # peers read each other's screen and type into each other
     sid = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()["id"]

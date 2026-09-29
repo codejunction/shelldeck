@@ -489,6 +489,10 @@ def agents(all_: bool = typer.Option(False, "--all", "-a", help="Every project, 
     for r in running:
         you = "  (you)" if r["session_id"] == me else ""
         typer.echo(f"{r['session_id']}  {r['name']}  {r['label']}  model={r['model'] or '?'}  project={r['project']}  cwd={r['cwd']}{you}")
+    if all_ and data.get("outside"):
+        typer.echo("\noutside shelldeck:")
+        for a in data["outside"]:
+            typer.echo(f"pid {a['pid']}  {a['label']}  model={a['model'] or '?'}  cwd={a['cwd']}  started by {a['host'] or '?'}")
     if all_:
         typer.echo("\ninstalled: " + (", ".join(f"{a['command']} ({len(a['models'])} models)" for a in data["agents"] if a["installed"]) or "none"))
 

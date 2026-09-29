@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+import psutil
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -656,14 +657,31 @@ def _shell_pids() -> dict[str, int]:
 @app.get("/api/agents")
 async def list_agents():
     """Known AI coding agents (installed or not, with their models) and the terminals running one."""
-    found = await asyncio.to_thread(agents.running, _shell_pids())
+    shells = _shell_pids()
+    found = await asyncio.to_thread(agents.running, shells)
     by_id = {s["id"]: s for s in db.list_sessions_with_project()}
     running = [
         {"session_id": sid, "name": s.get("name"), "project_id": s.get("project_id"), "project": s.get("project_name"),
          "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model}
         for sid, (key, model) in found.items() if (s := by_id.get(sid))
     ]
-    return {"agents": await asyncio.to_thread(agents.catalog), "running": running}
+    return {
+        "agents": await asyncio.to_thread(agents.catalog),
+        "running": running,
+        "outside": await asyncio.to_thread(agents.outside, _tree_pids(shells)),
+        "devin_sessions": await asyncio.to_thread(agents.devin_sessions),
+    }
+
+
+def _tree_pids(shells: dict[str, int]) -> set[int]:
+    """Every pid under a shelldeck shell (so `outside` skips them)."""
+    pids = set(shells.values())
+    for pid in shells.values():
+        try:
+            pids.update(p.pid for p in psutil.Process(pid).children(recursive=True))
+        except psutil.Error:
+            continue
+    return pids
 
 
 @app.get("/api/shells")
