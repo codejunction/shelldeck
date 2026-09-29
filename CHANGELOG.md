@@ -2,6 +2,25 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.0.4] - 2026-09-29
+
+### Added
+
+- Share approval: opening a share link puts the device on a waiting page until you allow it in the `sd share` window (`Allow it? [y/N]`); then it still needs the password.
+- `sd share --new-link` prints another one-use link for the running share.
+- Security headers on every response (no framing, no MIME sniffing, no referrer) and `Cache-Control: no-store` on the API.
+
+### Changed
+
+- Share links work once and expire after 10 minutes unopened. A new link voids the unused old one.
+- Sharing needs a password of 12+ characters (an existing one that long counts after the next login).
+- Revoking a shared device in Devices also voids its approval, so it needs a new link.
+- README: `sd share` is encrypted in transit but not end to end; Cloudflare can see the traffic.
+
+### Fixed
+
+- A share left open when `sd share` was killed or its window closed: the server now closes a share within a minute of its last heartbeat and signs its browsers out. Devices no longer shows "sharing via" a dead tunnel.
+
 ## [0.0.3] - 2026-09-29
 
 ### Added
@@ -48,6 +67,7 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
+[0.0.4]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.4
 [0.0.3]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.3
 [0.0.2]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.2
 [0.0.1]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.1

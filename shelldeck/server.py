@@ -18,7 +18,7 @@ from urllib.parse import quote, urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, db, gitgraph, shells, stats
@@ -68,26 +68,47 @@ def err(code: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
-# `sd share`: the tunnel's public hostname, sha256 of its link token, and the logins made through it
+# `sd share`: the tunnel's public hostname, the sha256 of its one unused link token (None once used),
+# when that link expires, when the CLI last renewed the lease, and one grant per browser that opened
+# a link: sha256(cookie) -> {id, ip, agent, at, state: pending|ok|denied, session}.
 _share: dict = {}
 SHARE_COOKIE = "sd_share"
+SHARE_LEASE = 60  # seconds without a CLI heartbeat before the share closes itself
+LINK_TTL = 600  # a link must be opened within 10 minutes, once
+APPROVAL_TTL = 300  # a pending device the host didn't answer is dropped after 5 minutes
 
 
-def _share_key(token: str | None) -> bool:
-    return bool(token and _share) and hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), _share["key"])
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _share_on() -> bool:
+    """A share exists and its `sd share` process is still renewing it."""
+    return bool(_share) and time.time() - _share["seen"] < SHARE_LEASE
+
+
+def _share_link_ok(token: str) -> bool:
+    key = _share.get("link")
+    return bool(key) and time.time() < _share["link_until"] and hmac.compare_digest(_sha(token), key)
+
+
+def _grant(conn) -> dict | None:
+    cookie = conn.cookies.get(SHARE_COOKIE)
+    return _share.get("grants", {}).get(_sha(cookie)) if cookie and _share else None
 
 
 def _via_share(conn) -> bool:
-    return bool(_share) and conn.headers.get("host", "").rsplit(":", 1)[0] == _share["host"]
+    return _share_on() and conn.headers.get("host", "").rsplit(":", 1)[0] == _share["host"]
 
 
 def _trusted(conn) -> bool:
     """Same-origin check. Browsers always send Origin cross-site; the CLI sends none.
-    The share tunnel's host also needs the cookie its link sets (or to be opening that link)."""
+    On the share tunnel's host only /share/ pages are open; the rest needs a host-approved grant."""
     headers = conn.headers
     host = headers.get("host", "")
     if _via_share(conn):
-        if not (conn.url.path.startswith("/share/") or _share_key(conn.cookies.get(SHARE_COOKIE))):
+        g = _grant(conn)
+        if not (conn.url.path.startswith("/share/") or (g and g["state"] == "ok")):
             return False
     elif ALLOWED_HOSTS is not None and host.rsplit(":", 1)[0] not in ALLOWED_HOSTS:
         return False
@@ -127,9 +148,11 @@ async def lifespan(app: FastAPI):
     manager.store = db.config_dir() / "scrollback"
     manager.prune({s["id"] for s in db.list_sessions()})
     saver = asyncio.create_task(_save_scrollback())
+    reaper = asyncio.create_task(_share_reaper())
     log.info("shelldeck %s started", VERSION)
     yield
     saver.cancel()
+    reaper.cancel()
     stats.stop()
     sched.shutdown()
     for task in list(readers.values()):
@@ -147,6 +170,15 @@ async def _save_scrollback() -> None:
             await asyncio.to_thread(manager.save)
         except OSError:
             log.warning("saving scrollback failed", exc_info=True)
+
+
+async def _share_reaper() -> None:
+    """Close a share whose `sd share` stopped renewing it (killed, window closed, crashed)."""
+    while True:
+        await asyncio.sleep(10)
+        if _share and not _share_on():
+            log.info("share lease expired; closing it")
+            await _share_stop()
 
 
 class RevalidatedStaticFiles(StaticFiles):
@@ -199,8 +231,24 @@ def _denied() -> JSONResponse:
     return err("locked" if auth.has_password() else "setup_required", 401)
 
 
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
+    response = await _guarded(request, call_next)
+    response.headers.update(SECURITY_HEADERS)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"  # terminal output, history, devices
+    return response
+
+
+async def _guarded(request: Request, call_next):
     if not _trusted(request):
         return err("forbidden_origin", 403)
     path = request.url.path
@@ -262,6 +310,8 @@ async def _login_response(request: Request, body: dict, res=None):
     token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}", _via(request))
     h = auth.session_hash(token)
     _active["h"] = h
+    if _via_share(request) and (g := _grant(request)):
+        g["session"] = h  # revoking this login also voids the grant
     await _close_session_sockets(lambda owner: owner != h, IN_USE)
     res = res or JSONResponse(body)
     res.set_cookie(
@@ -342,17 +392,64 @@ async def auth_login_link(request: Request):
 
 @app.post("/api/share")
 async def share_start(request: Request, payload: dict):
-    """Host CLI only: open the gate for an `sd share` tunnel host; returns its one link."""
+    """Host CLI only: open the gate for an `sd share` tunnel host; returns its first link."""
     if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
         return err("host_cli_only", 403)
+    if not auth.strong_password():
+        return err("weak_password", 409)
     host = str(payload.get("host", "")).lower()
     if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
         return err("invalid_host")
     await _share_stop()
-    token = secrets.token_urlsafe(32)
-    _share.update(host=host, key=hashlib.sha256(token.encode()).hexdigest())
+    _share.update(host=host, seen=time.time(), grants={})
     log.info("sharing via %s", host)
-    return {"path": f"/share/{token}"}
+    return {"path": _new_share_link()}
+
+
+def _new_share_link() -> str:
+    """One link at a time: a new one voids the unused old one."""
+    token = secrets.token_urlsafe(32)
+    _share.update(link=_sha(token), link_until=time.time() + LINK_TTL)
+    return f"/share/{token}"
+
+
+@app.get("/api/share")
+async def share_state(request: Request):
+    """Host CLI heartbeat: renews the lease and lists devices waiting for approval."""
+    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        return err("host_cli_only", 403)
+    if not _share:
+        return {"host": None, "strong_password": auth.strong_password()}
+    now = time.time()
+    _share["seen"] = now
+    grants = _share["grants"]
+    for k in [k for k, g in grants.items() if g["state"] == "pending" and now - g["at"] > APPROVAL_TTL]:
+        del grants[k]
+    pending = [{"id": g["id"], "ip": g["ip"], "agent": g["agent"]} for g in grants.values() if g["state"] == "pending"]
+    return {"host": _share["host"], "pending": pending, "strong_password": auth.strong_password()}
+
+
+@app.post("/api/share/link")
+async def share_link(request: Request):
+    """Host CLI only: a fresh link for another device on the running share."""
+    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        return err("host_cli_only", 403)
+    if not _share_on():
+        return err("not_sharing", 404)
+    return {"path": _new_share_link()}
+
+
+@app.post("/api/share/decide")
+async def share_decide(request: Request, payload: dict):
+    """Host CLI only: allow or deny a device that opened a link."""
+    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        return err("host_cli_only", 403)
+    g = next((g for g in _share.get("grants", {}).values() if g["id"] == payload.get("id")), None)
+    if not g or g["state"] != "pending":
+        return err("not_found", 404)
+    g["state"] = "ok" if payload.get("allow") is True else "denied"
+    log.info("share device %s from %s %s", g["id"], g["ip"], "allowed" if g["state"] == "ok" else "denied")
+    return {"state": g["state"]}
 
 
 @app.delete("/api/share")
@@ -372,13 +469,57 @@ async def _share_stop() -> None:
     await _revoke(gone)
 
 
+_WAIT_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>shelldeck</title><meta name="referrer" content="no-referrer">
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#09090b;color:#e4e4e7;
+font:16px/1.5 Inter,"Segoe UI",system-ui,sans-serif;text-align:center;padding:24px;box-sizing:border-box}
+p{max-width:28em;margin:.4em auto}b{color:#a78bfa}.m{color:#a1a1aa;font-size:14px}</style>
+<main><p><b>shelldeck</b></p><p id="s">Waiting for the host to allow this device…</p>
+<p class="m" id="m">Answer the prompt in the <code>sd share</code> window on the host.</p></main>
+<script>
+const say = (s, m) => { document.getElementById("s").textContent = s; document.getElementById("m").textContent = m; };
+async function poll() {
+  let st = "none";
+  try { st = (await (await fetch("/share/status", { cache: "no-store" })).json()).state; } catch {}
+  if (st === "ok") return location.replace("/");
+  if (st === "denied") return say("The host denied this device.", "Ask for a new link if that was a mistake.");
+  if (st !== "pending") return say("This request expired.", "Ask the host for a new link.");
+  setTimeout(poll, 2000);
+}
+poll();
+</script>"""
+
+
+def _share_page(body: str, status: int = 200):
+    return HTMLResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/share/status")
+async def share_status(request: Request):
+    """The waiting page's poll: pending, ok, denied, or none."""
+    g = _grant(request) if _via_share(request) else None
+    return JSONResponse({"state": g["state"] if g else "none"}, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/share/{token}")
 async def share_open(request: Request, token: str):
-    """The QR link: sets the tunnel cookie, then the usual password login takes over."""
-    if not (_via_share(request) and _share_key(token)):
+    """The QR link: works once, within LINK_TTL. It makes a pending grant that the host must allow in
+    the `sd share` window; after that the usual password login takes over."""
+    if not _via_share(request):
         return err("link_expired", 403)
-    res = RedirectResponse("/", status_code=303)  # drops the token from the address bar
-    res.set_cookie(SHARE_COOKIE, token, httponly=True, samesite="lax", secure=True, path="/", max_age=24 * 3600)
+    if g := _grant(request):  # this browser already opened a link (e.g. a reload)
+        return RedirectResponse("/", status_code=303) if g["state"] == "ok" else _share_page(_WAIT_PAGE)
+    if not _share_link_ok(token):
+        return _share_page(_WAIT_PAGE.replace("poll();", 'say("This link has expired or was already used.", "Ask the host for a new one.");'), 403)
+    _share["link"] = None  # one use
+    cookie = secrets.token_urlsafe(32)
+    _share["grants"][_sha(cookie)] = {
+        "id": secrets.token_hex(4), "ip": _client(request), "agent": request.headers.get("user-agent", "")[:200],
+        "at": time.time(), "state": "pending", "session": None,
+    }
+    log.info("share link opened from %s; waiting for the host", _client(request))
+    res = _share_page(_WAIT_PAGE)
+    res.set_cookie(SHARE_COOKIE, cookie, httponly=True, samesite="lax", secure=True, path="/", max_age=24 * 3600)
     return res
 
 
@@ -420,7 +561,7 @@ async def devices(request: Request):
             "created_at": r["created_at"], "last_seen": r["last_seen"],
             "active": h == _active["h"], "current": h == request.state.session, "sockets": online.get(h, 0),
         })
-    return {"devices": rows, "share": _share.get("host")}
+    return {"devices": rows, "share": _share["host"] if _share_on() else None}
 
 
 @app.delete("/api/devices/{device_id}")
@@ -432,6 +573,9 @@ async def revoke_device(request: Request, device_id: str):
 
 
 async def _revoke(hashes: list[str]) -> dict:
+    grants = _share.get("grants", {})
+    for k in [k for k, g in grants.items() if g["session"] in hashes]:
+        del grants[k]  # a revoked share device needs a new link and approval
     for h in hashes:
         auth.end_session(h)
         if _active["h"] == h:

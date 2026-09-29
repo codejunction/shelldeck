@@ -124,13 +124,22 @@ def test_share_waits_for_tunnel_then_prints_link_and_cleans_up(monkeypatch, caps
 
     def api(path, method="GET", payload=None):
         calls.append((method, path))
-        return {"has_password": True} if path == "/api/auth/status" else {"path": "/share/tok"}
+        return {"has_password": True, "strong_password": True, "path": "/share/tok"}
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "cloudflared")
     monkeypatch.setattr(cli, "ensure_server", lambda: None)
     monkeypatch.setattr(cli, "_health", lambda: "ok")
     monkeypatch.setattr(cli, "_api", api)
+    monkeypatch.setattr(cli, "_watch_share", lambda: calls.append("watch"))
     monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kw: calls.append(argv[1:4]) or FakeTunnel())
-    cli.share()
+    cli.share(new_link=False)
     assert "https://abc-def.trycloudflare.com/share/tok" in capsys.readouterr().out
-    assert calls[1:] == [["tunnel", "--no-autoupdate", "--url"], ("POST", "/api/share"), "terminate", ("DELETE", "/api/share")]
+    assert calls[2:] == [["tunnel", "--no-autoupdate", "--url"], ("POST", "/api/share"), "watch", "terminate", ("DELETE", "/api/share")]
+
+
+def test_share_refuses_a_short_password(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "cloudflared")
+    monkeypatch.setattr(cli, "ensure_server", lambda: None)
+    monkeypatch.setattr(cli, "_api", lambda path, *a: {"has_password": True, "strong_password": False})
+    r = runner.invoke(cli.app, ["share"])
+    assert r.exit_code == 1 and "12+ characters" in r.output
