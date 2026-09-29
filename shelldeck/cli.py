@@ -464,6 +464,60 @@ def info():
     console.print(table)
 
 
+def _session(target: str) -> dict:
+    """A terminal by id, id prefix or name (case-insensitive)."""
+    sessions = _api("/api/sessions")["sessions"]
+    t = target.casefold()
+    hits = [x for x in sessions if x["id"] == target] or [x for x in sessions if (x.get("name") or "").casefold() == t]         or [x for x in sessions if x["id"].startswith(target)]
+    if len(hits) != 1:
+        typer.echo(f"error: {'no' if not hits else 'more than one'} terminal matches {target!r} (see `sd agents --all`)", err=True)
+        raise typer.Exit(1)
+    return hits[0]
+
+
+@app.command()
+def agents(all_: bool = typer.Option(False, "--all", "-a", help="Every project, not just the one this terminal is in.")):
+    """AI agents running in shelldeck terminals (peers you can `sd peek` and `sd tell`)."""
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    data = _api("/api/agents")
+    running = data["running"]
+    if me and not all_:
+        mine = next((r["project_id"] for r in _api("/api/sessions")["sessions"] if r["id"] == me), None)
+        running = [r for r in running if r["project_id"] == mine]
+    if not running:
+        typer.echo("no AI agents running" + ("" if all_ or not me else " in this project (try --all)"))
+    for r in running:
+        you = "  (you)" if r["session_id"] == me else ""
+        typer.echo(f"{r['session_id']}  {r['name']}  {r['label']}  model={r['model'] or '?'}  project={r['project']}  cwd={r['cwd']}{you}")
+    if all_:
+        typer.echo("\ninstalled: " + (", ".join(f"{a['command']} ({len(a['models'])} models)" for a in data["agents"] if a["installed"]) or "none"))
+
+
+@app.command()
+def peek(
+    target: str = typer.Argument(..., help="Terminal id, id prefix or name."),
+    lines: int = typer.Option(40, "--lines", "-n", help="How many of the last lines."),
+):
+    """Print the last lines of another terminal (e.g. to check another agent's progress)."""
+    sys.stdout.reconfigure(errors="replace")  # TUI box drawing on a cp1252 console
+    typer.echo(_api(f"/api/sessions/{_session(target)['id']}/screen?lines={lines}")["text"])
+
+
+@app.command()
+def tell(
+    target: str = typer.Argument(..., help="Terminal id, id prefix or name."),
+    message: str = typer.Argument(..., help="Text to type into it."),
+    raw: bool = typer.Option(False, "--raw", help="Send the text as is: no sender tag, no Enter."),
+):
+    """Type a message into another terminal and press Enter (agent-to-agent messaging)."""
+    s = _session(target)
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    if not raw and me:
+        message = f"[message from terminal {me}; reply with: sd tell {me} \"...\"] {message}"
+    _api(f"/api/sessions/{s['id']}/input", "POST", {"text": message, "enter": not raw})
+    typer.echo(f"sent to {s.get('name') or s['id']}")
+
+
 @app.command()
 def render(
     file: Path = typer.Argument(..., exists=True, dir_okay=False, help="File to render."),

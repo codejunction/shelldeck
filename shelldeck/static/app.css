@@ -2127,6 +2127,127 @@ textarea:focus {
   }
 }
 
+/* ------------------------------------------------------------ AI agents */
+
+.pane.ai .pane-head {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 60%);
+}
+
+.pane.ai .pane-head > i[data-icon="terminal"] {
+  color: var(--accent);
+}
+
+.pane-head .agent {
+  display: inline-flex;
+  flex: none;
+}
+
+.ai-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ai-chip b {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.ai-chip small {
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.ai-chip svg,
+.badge.ai svg {
+  width: 11px;
+  height: 11px;
+  color: var(--accent);
+  fill: currentColor;
+}
+
+.badge.ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 24px 0 10px;
+}
+
+.ag-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.ag-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-card p {
+  margin: 0;
+}
+
+.ag-card.missing {
+  opacity: 0.6;
+}
+
+.ag-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-title svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+}
+
+.ag-models div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 160px;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.ag-launch {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.ag-launch select {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ------------------------------------------------------------ ports, history, search-all */
 
 .pane-head .ports {

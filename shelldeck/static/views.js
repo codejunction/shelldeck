@@ -2,6 +2,7 @@ import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedPro
 import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
+import { renderAgents } from "./agents.js";
 import { $, $$, api, authError, confirmDialog, dialog, esc, fmtTime, fromLocalInput, hydrateIcons, icon, toLocalInput, toast, toastError, withEyes } from "./ui.js";
 
 let bookmarks = [];
@@ -13,7 +14,7 @@ export function init() {}
 export function show(view, el) {
   current = view;
   clearInterval(pollTimer);
-  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices }[view];
+  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, agents: renderAgents }[view];
   render(el);
   if (!["bookmarks", "monitor", "history"].includes(view)) { // monitor refreshes from its own 2s poller
     pollTimer = setInterval(() => {

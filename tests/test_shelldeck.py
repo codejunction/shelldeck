@@ -67,6 +67,33 @@ def test_stats(client):
     assert s["system"]["mem_total"] > 0 and 0 <= s["system"]["cpu"] <= 100 and s["sessions"] == {}
 
 
+def test_agents(client, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from shelldeck import agents, stats
+
+    # a node/python-installed agent is found by its package path, with the --model it was given
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "@anthropic-ai/claude-code", "--model", "opus"])
+    try:
+        time.sleep(0.5)
+        assert agents.running({"me": os.getpid()}) == {"me": ("claude", "opus")}
+        assert stats.collect({"me": os.getpid()})["sessions"]["me"]["agent"] == {"key": "claude", "label": "Claude Code", "model": "opus"}
+    finally:
+        child.kill()
+    data = client.get("/api/agents").json()
+    assert data["running"] == [] and {"claude", "codex", "devin"} <= {a["key"] for a in data["agents"]}
+
+    # peers read each other's screen and type into each other
+    sid = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()["id"]
+    server.manager.scrollback.setdefault(sid, Scrollback()).add("\x1b[32mworking on auth\x1b[0m\r\ndone\r\n\r\n")
+    assert client.get(f"/api/sessions/{sid}/screen", params={"lines": 1}).json()["text"] == "done"
+    assert client.get("/api/sessions/nope/screen").status_code == 404
+    assert client.post(f"/api/sessions/{sid}/input", json={"text": "hi"}).json()["error"] == "not_running"
+    assert client.post(f"/api/sessions/{sid}/input", json={}).json()["error"] == "text_required"
+
+
 def test_history_search_and_open(client, tmp_path, monkeypatch):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("x = 1\n")

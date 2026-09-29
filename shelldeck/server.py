@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, db, gitgraph, shells, stats
+from . import agents, auth, db, gitgraph, shells, stats
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -646,8 +646,24 @@ async def write_settings(payload: dict):
 @app.get("/api/stats")
 async def get_stats():
     """System CPU/RAM/GPU plus usage per running terminal (shell and its child processes)."""
-    pids = {sid: proc.pid for sid, proc in list(manager.procs.items()) if proc.isalive()}
-    return await asyncio.to_thread(stats.collect, pids)
+    return await asyncio.to_thread(stats.collect, _shell_pids())
+
+
+def _shell_pids() -> dict[str, int]:
+    return {sid: proc.pid for sid, proc in list(manager.procs.items()) if proc.isalive()}
+
+
+@app.get("/api/agents")
+async def list_agents():
+    """Known AI coding agents (installed or not, with their models) and the terminals running one."""
+    found = await asyncio.to_thread(agents.running, _shell_pids())
+    by_id = {s["id"]: s for s in db.list_sessions_with_project()}
+    running = [
+        {"session_id": sid, "name": s.get("name"), "project_id": s.get("project_id"), "project": s.get("project_name"),
+         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model}
+        for sid, (key, model) in found.items() if (s := by_id.get(sid))
+    ]
+    return {"agents": await asyncio.to_thread(agents.catalog), "running": running}
 
 
 @app.get("/api/shells")
@@ -924,6 +940,45 @@ async def open_file(payload: dict):
     except OSError as e:
         return err(f"open_failed:{e.strerror or e}")
     return {"status": "ok", "path": str(path)}
+
+
+@app.get("/api/sessions/{session_id}/screen")
+async def session_screen(session_id: str, lines: int = 60):
+    """The last lines of a terminal as plain text (what an agent in another terminal reads)."""
+    if not db.get_session(session_id):
+        return err("session_not_found", 404)
+    # raw ConPTY/TUI output is cursor-addressed; ask an open browser for its rendered screen first
+    sb = manager.scrollback.get(session_id)
+    if sb and (live := list(sockets.get(session_id, ()))):
+        before = sb.snapshot
+        for ws in live:
+            try:
+                await ws.send_text('{"type":"snapshot"}')
+            except Exception:  # noqa: BLE001 - a closing socket
+                pass
+        for _ in range(20):
+            if sb.snapshot is not before:
+                break
+            await asyncio.sleep(0.05)
+    text = ANSI.sub("", manager.searchable(session_id).replace("\r\n", "\n"))
+    rows = [line.rstrip() for line in text.split("\n")]
+    while rows and not rows[-1]:
+        rows.pop()
+    return {"text": "\n".join(rows[-max(1, min(lines, 2000)):])}
+
+
+@app.post("/api/sessions/{session_id}/input")
+async def session_input(session_id: str, payload: dict):
+    """Type text into a running terminal, then Enter unless enter is false."""
+    text = str(payload.get("text") or "")[:20000]
+    if not text:
+        return err("text_required")
+    if not manager.write(session_id, text):
+        return err("not_running", 409)
+    if payload.get("enter", True):
+        await asyncio.sleep(0.3)  # TUIs (Claude Code, Codex) treat text+CR in one burst as a paste, not a submit
+        manager.write(session_id, "\r")
+    return {"status": "ok"}
 
 
 @app.delete("/api/sessions/{session_id}")

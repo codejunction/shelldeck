@@ -80,6 +80,8 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Scheduler** for cron jobs that run in a project folder, with run history and logs.
 - **Task board** with due dates and reminder alarms.
 - **Task manager** with live CPU, RAM and GPU (NVIDIA) usage for the machine and for each terminal's process tree.
+- **AI agents.** A terminal running Claude Code, Codex, Devin CLI, Gemini CLI, Copilot CLI, Cursor Agent, opencode, Aider, Amp, Qwen Code, Goose, Droid, Crush or Kiro gets an **AI** chip in its header with the tool and model. The AI agents page lists the running agents and every known agent CLI with its models (Codex and opencode read their own model caches), and launches one with a chosen model.
+- **Agents that talk to each other.** From inside a terminal, `sd agents` lists the other agents in the project, `sd peek` reads another terminal's screen and `sd tell` types a message into it, tagged with the sender so it can reply. *Copy team prompt* on the AI agents page gives you text to paste into each agent so it knows how.
 
 <table>
   <tr>
@@ -155,6 +157,9 @@ sd PATH                              shorthand for `sd open PATH`
 sd open [PATH] [--shell wsl]         add PATH as a project and open a terminal in it
 sd list                              terminals grouped by project
 sd info                              details of the shelldeck terminal you're in
+sd agents [--all]                    AI agents running in this project's terminals (--all: every project, plus installed CLIs)
+sd peek TERMINAL [-n 40]             last lines of another terminal (id, id prefix or name)
+sd tell TERMINAL "MESSAGE" [--raw]   type a message into another terminal and press Enter
 sd search QUERY [--root DIR]         LLM-free code search with ranked, highlighted snippets
 sd render FILE                       pretty-print code or markdown
 sd schedule list|add|run|toggle|delete|logs

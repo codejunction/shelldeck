@@ -19,6 +19,7 @@ export const S = {
   order: store.get("order", []),
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
+  agents: {}, // sid -> {key, label, model}: AI coding agent running in it, from the stats poller
   online: true,
 };
 
@@ -438,6 +439,11 @@ class Term {
         }
       }
       else if (msg.type === "exit") this.exited();
+      else if (msg.type === "snapshot") { // another terminal's agent is reading this screen (sd peek)
+        this.changed = true;
+        this.lastSnapshot = null;
+        this.snapshot();
+      }
       else if (msg.type === "error") this.status(msg.message);
       else if (msg.type === "clipboard") this.send({ type: "input", data: msg.data });
     };
@@ -562,6 +568,14 @@ function pathLinks(term) {
 
 export function portChips(sid) {
   return (S.ports[sid] || []).map((p) => `<button class="port-chip" data-port="${p}" title="Open http://localhost:${p}">${icon("external")}${p}</button>`).join("");
+}
+
+/** "AI · Claude Code · opus" in the pane header while a coding agent runs in the terminal. */
+export function agentChip(sid) {
+  const a = S.agents[sid];
+  if (!a) return "";
+  const tip = `${a.label} is running in this terminal${a.model ? ` (model ${a.model})` : ""}`;
+  return `<span class="ai-chip" title="${esc(tip)}">${icon("sparkle")}<b>AI</b>${esc(a.label)}${a.model ? `<small>${esc(a.model)}</small>` : ""}</span>`;
 }
 
 const CMD_MAX = 32;
@@ -801,11 +815,12 @@ function fitVisible(immediate = false) {
 function buildPane(sid) {
   const s = findSession(sid);
   const pane = document.createElement("div");
-  pane.className = "pane";
+  pane.className = S.agents[sid] ? "pane ai" : "pane";
   pane.dataset.sid = sid;
   pane.innerHTML = `<div class="pane-head" draggable="true" title="Drag to move or split">
       ${icon("terminal")}
       <span class="title">${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}</small></span>
+      <span class="agent">${agentChip(sid)}</span>
       <span class="ports">${portChips(sid)}</span>
       <button class="icon-btn sm" data-pane="max" title="Maximize (Ctrl+Alt+Enter)" aria-label="Maximize">${icon($("#app").classList.contains("maximized") ? "minimize" : "maximize")}</button>
       <button class="icon-btn sm" data-pane="menu" title="More" aria-label="More">${icon("more")}</button>
@@ -1242,7 +1257,7 @@ export function renderSidebar() {
             (s) => `<div class="sess-row ${S.unread.has(s.id) ? "unread" : ""} ${visible.has(s.id) ? "visible" : ""} ${s.id === S.focused && S.view === "terminals" ? "active" : ""}" data-sid="${s.id}" draggable="true" data-act="open" title="${esc(s.cwd || "")}">
               <span class="dot ${s.alive ? "alive" : ""}"></span>
               <span class="name">${esc(sessionTitle(s))}</span>
-              <span class="badge">${esc(shellLabel(s.shell))}</span>
+              ${S.agents[s.id] ? `<span class="badge ai" title="${esc(S.agents[s.id].label)} running">${icon("sparkle")}${esc(S.agents[s.id].label)}</span>` : `<span class="badge">${esc(shellLabel(s.shell))}</span>`}
               <span class="row-actions">
                 <button class="icon-btn sm" data-act="smenu" title="More" aria-label="Terminal actions">${icon("more")}</button>
                 <button class="icon-btn sm danger" data-act="kill" title="Close terminal" aria-label="Close terminal">${icon("x")}</button>
@@ -1452,12 +1467,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", agents: "AI agents" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   $("#term-actions").hidden = view !== "terminals";
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
@@ -1604,6 +1619,7 @@ function commandPalette() {
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
     ["Devices", "devices", () => switchView("devices")],
+    ["AI agents", "sparkle", () => switchView("agents")],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
     ["Open scheduler", "clock", () => switchView("scheduler"), "Ctrl+Alt+S"],
