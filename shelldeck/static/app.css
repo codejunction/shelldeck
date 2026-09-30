@@ -345,6 +345,17 @@ i[data-icon] svg {
 .sess-row:hover .row-actions,
 .row-actions.open {
   display: flex;
+  animation: fade-in 0.12s ease;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.sess-row:hover .badge {
+  display: none;
 }
 
 .sessions {
@@ -2167,8 +2178,7 @@ textarea:focus {
   font-family: "Cascadia Mono", Consolas, monospace;
 }
 
-.ai-chip svg,
-.badge.ai svg {
+.ai-chip svg {
   width: 11px;
   height: 11px;
   color: var(--accent);
@@ -2199,32 +2209,39 @@ textarea:focus {
   }
 }
 
-.ai-chip.waiting,
-.ai-chip.approval,
-.badge.ai.needs {
+.ai-chip.approval {
   border-color: var(--warn);
   background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
-.ai-chip.waiting b,
 .ai-chip.approval b,
-.ai-chip.waiting svg,
-.ai-chip.approval svg,
-.badge.ai.needs,
-.badge.ai.needs svg {
+.ai-chip.approval svg {
   color: var(--warn);
 }
 
-.pane.ai:has(.ai-chip.waiting, .ai-chip.approval) .pane-head {
+.pane.ai:has(.ai-chip.approval) .pane-head {
   background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 16%, transparent), transparent 60%);
 }
 
-.badge.ai {
+/* sidebar: the AI icon takes the status dot's place in an agent's terminal row */
+.ai-mark {
   display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  border-color: var(--accent);
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 -2px 0 -3px; /* same footprint as the 7px dot, so names stay aligned */
   color: var(--accent);
+}
+
+.ai-mark i[data-icon],
+.ai-mark svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.ai-mark.needs {
+  color: var(--warn);
 }
 
 .ag-head {
@@ -2308,10 +2325,6 @@ textarea:focus {
 
 .pane-head .title .nick {
   color: var(--accent);
-}
-
-.badge.ai.working svg {
-  animation: ai-pulse 1.2s ease-in-out infinite;
 }
 
 .sb-count {

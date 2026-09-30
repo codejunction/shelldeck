@@ -32,6 +32,14 @@ AGENTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]]
     # found, never launched: a devin(.exe) outside Devin's cli/ install folder (see identify)
     "devin_desktop": ("Devin desktop", (), (), ()),
 }
+# Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
+# Keep in sync with QUESTION_RE in static/app.js.
+QUESTION = re.compile(
+    r"do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)"
+    r"|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust"
+    r"|enter to (?:select|confirm|approve)|plan needs changes|\[y/n\]|\(y/n\)",
+    re.I,
+)
 # helper processes of an agent, not an agent session: Claude's browser bridge, Electron children
 HELPER_ARGS = ("--chrome-native-host", "--type=")
 INTERPRETERS = {"node", "bun", "deno", "python", "python3", "pythonw", "py"}

@@ -144,6 +144,27 @@ def test_team(client, tmp_path, monkeypatch):
     h2 = client.post("/api/spawn", json={"parent": a["id"], "task": "another"}).json()["handoff"]
     assert [x["id"] for x in server._orphan(h2["to_sid"])] == [h2["id"]]
     assert db.get_handoff(h2["id"])["status"] == "exited"
+
+    # a sub-agent's question goes to its parent (here a plain shell, so it's broadcast to the user), once
+    import asyncio
+
+    sent = []
+
+    async def fake_broadcast(msg):
+        sent.append(msg)
+        return 0
+
+    monkeypatch.setattr(server, "_broadcast", fake_broadcast)
+    monkeypatch.setattr(server, "QUIET_S", 1e9)  # keep the app's own watcher off these
+    server.ask_buf[kid["id"]] = "\x1b[2J\x1b[5;1HRead 1 file\r\n\x1b[20;1H Do you want to proceed?\r\n \x1b[1m1. Yes\x1b[0m  2. No"
+    server.ask_buf[b["id"]] = "just some output about approvals"
+    assert asyncio.run(server._check_questions(quiet=0)) == [kid["id"]]
+    assert sent[0]["type"] == "question" and sent[0]["nick"] == kid["nick"]
+    assert asyncio.run(server._check_questions(quiet=0)) == []  # nothing new drawn since
+    assert "Do you want to proceed? 1. Yes 2. No" in sent[0]["text"]
+    server.ask_buf[kid["id"]] = "\x1b[20;1H Do you want to proceed?\r\n 1. Yes  2. No"
+    assert asyncio.run(server._check_questions(quiet=0)) == []  # the same prompt redrawn
+    server.ask_buf.clear()
     assert [x["id"] for x in client.get("/api/handoffs", params={"project_id": a["project_id"]}).json()["handoffs"]] == [h2["id"], h["id"]]
 
 

@@ -61,6 +61,13 @@ alarm_sockets: set[WebSocket] = set()
 clipboard = {"data": ""}
 socket_owner: dict[WebSocket, str | None] = {}  # open socket -> login session hash
 last_cwd: dict[str, str] = {}
+# sub-agent terminal -> its output since the last question check, and when it last printed
+ask_buf: dict[str, str] = {}
+last_out_at: dict[str, float] = {}
+QUIET_S = 2.5  # a question counts once the sub-agent's screen stops changing
+BOX = re.compile("[\u2500-\u257f]+")  # rules and frames a TUI draws around its prompts
+REASK_S = 120  # the same question redrawn within this long is not forwarded again
+asked_before: dict[str, tuple[str, float]] = {}  # sub-agent -> (last question forwarded, when)
 STOPPING = asyncio.Event()  # set at shutdown: dying terminals then don't message their parents
 background: set[asyncio.Task] = set()  # fire-and-forget tasks, referenced so they aren't collected
 # shell integration reports the working directory (see shelldeck/integration)
@@ -142,6 +149,7 @@ def get_settings() -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    STOPPING.clear()
     db.init_db()
     if code := auth.init_auth():
         log.warning("no password yet; remote setup code: %s", code)
@@ -151,6 +159,7 @@ async def lifespan(app: FastAPI):
     manager.store = db.config_dir() / "scrollback"
     manager.prune({s["id"] for s in db.list_sessions()})
     saver = asyncio.create_task(_save_scrollback())
+    asker = asyncio.create_task(_watch_questions())
     reaper = asyncio.create_task(_share_reaper())
     # every start refreshes the shelldeck skill of each agent CLI on PATH (dev/test homes skip it);
     # `sd install-skill --remove` turns this off
@@ -162,6 +171,7 @@ async def lifespan(app: FastAPI):
     log.info("shelldeck %s started", VERSION)
     yield
     saver.cancel()
+    asker.cancel()
     reaper.cancel()
     STOPPING.set()
     stats.stop()
@@ -1124,11 +1134,66 @@ async def session_screen(session_id: str, lines: int = 60):
             if sb.snapshot is not before:
                 break
             await asyncio.sleep(0.05)
-    text = _plain(manager.searchable(session_id))
-    rows = [line.rstrip() for line in text.split("\n")]
+    return {"text": _screen_rows(session_id, lines)}
+
+
+def _screen_rows(session_id: str, lines: int) -> str:
+    rows = [line.rstrip() for line in _plain(manager.searchable(session_id)).split("\n")]
     while rows and not rows[-1]:
         rows.pop()
-    return {"text": "\n".join(rows[-max(1, min(lines, 2000)):])}
+    return "\n".join(rows[-max(1, min(lines, 2000)):])
+
+
+async def _watch_questions() -> None:
+    """Sub-agents never ask the user: a question on a sub-agent's screen goes to its parent agent."""
+    while True:
+        await asyncio.sleep(1)
+        try:
+            await _check_questions()
+        except Exception:  # noqa: BLE001 - keep watching
+            log.warning("question check failed", exc_info=True)
+
+
+async def _check_questions(quiet: float | None = None) -> list[str]:
+    """Each sub-agent whose output went quiet: forward a question it drew since the last check. Returns their ids."""
+    asked, quiet = [], QUIET_S if quiet is None else quiet
+    for sid, buf in list(ask_buf.items()):
+        if not buf or time.monotonic() - last_out_at.get(sid, 0) < quiet:
+            continue
+        ask_buf[sid] = ""
+        # ponytail: raw output is cursor-addressed, so this is a regex over what was drawn, not the screen
+        text = _plain(buf)[-6000:]
+        hits = list(agents.QUESTION.finditer(text))
+        if not hits:
+            continue
+        m = hits[-1]
+        key = team.one_line(text[m.start():m.end() + 80])
+        if asked_before.get(sid, ("", 0))[0] == key and time.monotonic() - asked_before[sid][1] < REASK_S:
+            continue  # the same prompt redrawn (resize, status line), not a new question
+        asked_before[sid] = (key, time.monotonic())
+        asked.append(sid)
+        # from the question on: its options follow it; box-drawing rules are noise
+        await _forward_question(sid, team.one_line(BOX.sub(" ", text[m.start():m.start() + 700]), 500))
+    return asked
+
+
+async def _forward_question(sid: str, excerpt: str) -> None:
+    """excerpt: the question and its options, as drawn."""
+    kid = db.get_session(sid)
+    if not kid or STOPPING.is_set():
+        return
+    h = next(iter(db.list_handoffs(to_sid=sid, status="open")), None)
+    nick = kid.get("nick") or sid
+    ho = f" (hand-off {h['id']})" if h else ""
+    log.info("sub-agent %s is asking: %s", nick, excerpt[:200])
+    if kid.get("parent") and await _agent_in(kid["parent"]):
+        await _type(kid["parent"], team.one_line(
+            f"[shelldeck] Your sub-agent {nick}{ho} is waiting on a question: {excerpt} "
+            f"-- Decide and answer it with: sd answer {nick} <keys> (e.g. sd answer {nick} 1, or sd answer {nick} y enter); "
+            # keep the ending: the UI's RELAYED_RE uses it to tell this apart from a question to the user
+            f"sd peek {nick} shows its screen; ask the user only if it is really their call."))
+    else:  # its parent is a plain shell: then the question is the user's
+        await _broadcast({"type": "question", "session_id": sid, "nick": nick, "text": excerpt})
 
 
 @app.post("/api/sessions/{session_id}/input")
@@ -1435,6 +1500,9 @@ async def _pump(session_id: str) -> None:
                     break
                 data += more
             manager.record(session_id, data)
+            if session_id in ask_buf:
+                ask_buf[session_id] = (ask_buf[session_id] + data)[-16000:]
+                last_out_at[session_id] = time.monotonic()
             if (m := CWD_REPORT.findall(data)) and m[-1] != last_cwd.get(session_id):
                 last_cwd[session_id] = m[-1]
                 db.update_session_cwd(session_id, m[-1])
@@ -1476,6 +1544,8 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             distro=settings["wsl_distro"] or None,
             extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent"))) if v},
         )
+    if session.get("parent"):
+        ask_buf.setdefault(sid, "")  # watch this sub-agent for questions (_watch_questions)
     if sid not in readers:
         readers[sid] = asyncio.create_task(_pump(sid))
     db.update_session_size(sid, cols, rows)

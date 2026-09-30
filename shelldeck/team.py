@@ -65,7 +65,7 @@ def spawn_line(key: str, model: str | None, prompt: str) -> str:
 def kickoff(nick: str, parent_nick: str, handoff_id: str) -> str:
     return (f"You are {nick}, a shelldeck sub-agent working for {parent_nick}. Your task is in "
             f".shelldeck/handoffs/{handoff_id}.md. Do it, then run: sd done {handoff_id} followed by a short summary in quotes. "
-            "Use sd tell to ask your parent a question. You cannot spawn other agents.")
+            f"Ask {parent_nick}, not the user, when you need a decision: sd tell {parent_nick}. You cannot spawn other agents.")
 
 
 # ------------------------------------------------------------ handoff files
@@ -137,9 +137,19 @@ person's name (`SHELLDECK_NICK`, e.g. Maya); commands take either.
 - `sd handoffs` lists hand-offs and their status; each task is in `.shelldeck/handoffs/<id>.md`.
 - `sd done <id> "summary"` closes a hand-off you were given (add `--failed` if you could not finish).
   The sender is told automatically; always run it when you finish.
+- `sd close <name>` closes a sub-agent's terminal once its work is done (`--force` if a hand-off is still open).
+- `sd answer <name> <keys>` presses keys in another terminal, e.g. to answer a sub-agent's approval
+  menu: `sd answer Maya 1`, `sd answer Maya y enter`, `sd answer Maya esc`.
+
+You are the control center for the sub-agents you spawn. Their questions and approval prompts come to
+you as `[shelldeck] Your sub-agent ... is waiting on a question` messages, not to the user: read the
+question (`sd peek <name>` for the full screen), decide, and answer with `sd answer` or `sd tell`.
+Ask the user only when the decision is really theirs.
+When a sub-agent's hand-off is done and you checked its work, ask the user whether to close it, and run
+`sd close <name>` only after they agree (or when they tell you to close it).
 
 Rules:
-- A sub-agent (`SHELLDECK_PARENT` is set) cannot spawn more agents; ask your parent instead.
+- A sub-agent (`SHELLDECK_PARENT` is set) cannot spawn more agents, and asks its parent (`sd tell`), not the user.
 - Give each spawn a self-contained task: files, expected result and how to check it.
 - Do not reply to every message with another `sd tell`; finish with `sd done`.
 """
@@ -218,7 +228,7 @@ def _selfcheck() -> None:
     assert pick_model("claude", "medium", "") is None
     assert pick_model("claude", "claude-opus-5-5", "") == "claude-opus-5-5"
     line = spawn_line("devin", "swe-1.6", kickoff("Maya", "Ada", "h1a2b3c"))
-    assert line.startswith('devin --model swe-1.6 -- "You are Maya') and line.endswith('quotes. Use sd tell to ask your parent a question. You cannot spawn other agents."'), line
+    assert line.startswith('devin --model swe-1.6 -- "You are Maya') and line.endswith('quotes. Ask Ada, not the user, when you need a decision: sd tell Ada. You cannot spawn other agents."'), line
     import tempfile
     from unittest import mock
 

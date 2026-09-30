@@ -525,6 +525,45 @@ def tell(
     typer.echo(f"sent to {s.get('nick') or s.get('name') or s['id']}")
 
 
+KEYS = {"enter": "\r", "esc": "\x1b", "tab": "\t", "up": "\x1b[A", "down": "\x1b[B", "left": "\x1b[D", "right": "\x1b[C", "space": " "}
+
+
+@app.command()
+def answer(
+    target: str = typer.Argument(..., help="Terminal nick, id or name (e.g. your sub-agent)."),
+    keys: list[str] = typer.Argument(..., help="Keys to press in order: text, or enter, esc, tab, up, down, left, right, space."),
+):
+    """Press keys in another terminal, e.g. to answer a sub-agent's approval menu: sd answer Maya 1."""
+    s = _session(target)
+    for k in keys:
+        _api(f"/api/sessions/{s['id']}/input", "POST", {"text": KEYS.get(k.lower(), k), "enter": False})
+        time.sleep(0.15)  # one key at a time: TUIs read a burst as a paste
+    typer.echo(f"pressed {' '.join(keys)} in {s.get('nick') or s['id']}")
+
+
+@app.command()
+def close(
+    target: str = typer.Argument(..., help="Terminal nick, id or name, e.g. a sub-agent whose work is finished."),
+    force: bool = typer.Option(False, "--force", help="Close it even though a hand-off to it is still open."),
+):
+    """Close a terminal and whatever runs in it. Agents: only your own sub-agents, and only once the user agreed."""
+    s = _session(target)
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    name = s.get("nick") or s["id"]
+    if s["id"] == me:
+        typer.echo("error: that is your own terminal", err=True)
+        raise typer.Exit(1)
+    if me and s.get("parent") != me:  # an agent may not close the user's (or another agent's) terminals
+        typer.echo(f"error: {name} is not your sub-agent; ask the user to close it", err=True)
+        raise typer.Exit(1)
+    still = [h["id"] for h in _api(f"/api/handoffs?to={s['id']}&status=open")["handoffs"]]
+    if still and not force:
+        typer.echo(f"error: {name} still has hand-off {', '.join(still)} open (it runs sd done when finished); --force closes it anyway", err=True)
+        raise typer.Exit(1)
+    _api(f"/api/sessions/{s['id']}", "DELETE")
+    typer.echo(f"closed {name}")
+
+
 def _me() -> str:
     me = os.environ.get("SHELLDECK_SESSION_ID")
     if not me:

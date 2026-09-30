@@ -586,10 +586,10 @@ export function agentChip(sid) {
   const pct = ctxPct(a);
   const tip = [
     `${a.label} is running in this terminal${model ? ` (model ${model})` : ""}`,
-    state === "approval" ? "It is asking for your approval." : state === "waiting" ? "It is waiting for you." : state === "working" ? "It is working." : "",
+    state === "approval" ? (isSubAgent(sid) ? "It is asking its parent agent (or you, if the parent is a plain shell)." : "It is asking you a question.") : state === "working" ? "It is working." : "",
     pct === null ? "" : `Context: ${fmtTokens(a.context.used)} of ${fmtTokens(a.context.window)} tokens (${pct}%)${a.context.estimated ? ", window estimated" : ""}`,
   ].filter(Boolean).join("\n");
-  return `<span class="ai-chip ${state || ""}" title="${esc(tip)}">${icon("sparkle")}<b>${state === "approval" || state === "waiting" ? "NEEDS YOU" : "AI"}</b>${esc(a.label)}${model ? `<small>${esc(model)}</small>` : ""}${pct === null ? "" : `<small class="ctx" data-level="${pct >= 85 ? "high" : pct >= 60 ? "mid" : ""}">${pct}%</small>`}</span>`;
+  return `<span class="ai-chip ${state || ""}" title="${esc(tip)}">${icon("sparkle")}<b>${state !== "approval" ? "AI" : isSubAgent(sid) ? "ASKING" : "NEEDS YOU"}</b>${esc(a.label)}${model ? `<small>${esc(model)}</small>` : ""}${pct === null ? "" : `<small class="ctx" data-level="${pct >= 85 ? "high" : pct >= 60 ? "mid" : ""}">${pct}%</small>`}</span>`;
 }
 
 /** Percent of the agent's context window in use, or null when unknown. */
@@ -602,36 +602,51 @@ export function fmtTokens(n) {
   return n >= 1e6 ? `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
 }
 
-// ------------------------------------------------ agent needs you: waiting for input or approval
-const AGENT_QUIET_MS = 4000; // no output this long after working = the agent stopped
+// ------------------------------------------------ agent needs you: an actual question on screen
+const AGENT_QUIET_MS = 2500; // a prompt counts once the screen stops changing
 const AGENT_BUSY_MS = 5000; // output for at least this long counts as working (not a redraw or echo)
-// permission prompts of Claude Code, Codex, Devin and friends
-const APPROVAL_RE = /do you want to (?:proceed|make this edit|create|run)|allow (?:this|once|always)|\(y\/n\)|\[y\/n\]|yes, and don't ask|enter to (?:confirm|approve)|trust this folder/i;
+// Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
+// Keep in sync with agents.QUESTION.
+const QUESTION_RE = /do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust|enter to (?:select|confirm|approve)|plan needs changes|\[y\/n\]|\(y\/n\)/i;
+const PROMPT_LINES = 20; // agents draw their prompts at the bottom; text higher up is conversation
+// a sub-agent's question relayed to its parent (server.py _forward_question): on the parent's screen, not asking you
+const RELAYED_RE = /\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call/g;
 
-/** The visible screen as text (TUIs park the cursor away from their prompts, so read it all). */
+/** The last non-empty lines of the visible screen, wrapped rows joined, relayed questions left out. */
 function screenTail(t) {
   const buf = t.xterm.buffer.active;
   const out = [];
-  for (let y = buf.viewportY; y < buf.viewportY + t.xterm.rows; y++) out.push(buf.getLine(y)?.translateToString(true) || "");
-  return out.join("\n");
+  for (let y = buf.viewportY; y < buf.viewportY + t.xterm.rows; y++) {
+    const line = buf.getLine(y);
+    const text = line?.translateToString(true) || "";
+    if (line?.isWrapped && out.length) out[out.length - 1] += text;
+    else out.push(text);
+  }
+  const lines = out.join("\n").replace(RELAYED_RE, "").split("\n");
+  return lines.filter((l) => l.trim()).slice(-PROMPT_LINES).join("\n");
 }
 
-/** working | waiting | approval | undefined, per agent terminal. Called by the 2s stats poller. */
+/** Spawned by another agent: its questions go to that agent (server side), never to you. */
+export function isSubAgent(sid) {
+  return !!findSession(sid)?.parent;
+}
+
+/** working | approval | undefined, per agent terminal. Called by the 2s stats poller.
+ * Only a question on screen alerts; an agent that simply finished stays quiet. */
 export function updateAgentStates() {
   const now = Date.now();
   for (const [sid, a] of Object.entries(S.agents)) {
     const t = S.terms.get(sid);
     const quiet = !t?.lastOut || now - t.lastOut > AGENT_QUIET_MS;
-    let state;
     const was = S.agentState[sid];
-    if (t && quiet && APPROVAL_RE.test(screenTail(t))) state = "approval";
+    let state;
+    if (t && quiet && QUESTION_RE.test(screenTail(t))) state = "approval";
     else if (a.context?.state === "busy") state = "working"; // Claude Code reports it
-    else if (t && !quiet) state = now - t.busySince > AGENT_BUSY_MS ? "working" : was; // still drawing: not settled yet
-    else if (was) state = "waiting";
+    else if (t && !quiet) state = now - t.busySince > AGENT_BUSY_MS ? "working" : was === "approval" ? undefined : was;
     S.agentState[sid] = state;
-    if ((state === "waiting" || state === "approval") && was === "working") {
+    if (state === "approval" && was !== "approval" && !isSubAgent(sid)) {
       const s = findSession(sid);
-      if (notify(sid, `${a.label} ${state === "approval" ? "needs your approval" : "is waiting for you"}`, s ? `${sessionTitle(s)} · ${s.project.name}` : "", "warn")) views.chime();
+      if (notify(sid, `${a.label} is asking you`, s ? `${s.nick ? `${s.nick} · ` : ""}${sessionTitle(s)} · ${s.project.name}` : "", "warn")) views.chime();
     }
   }
   for (const sid of Object.keys(S.agentState)) if (!S.agents[sid]) delete S.agentState[sid];
@@ -656,7 +671,7 @@ function notifyDone(t, cmd, ms) {
 
 /** Toast (plus a desktop notification when the window is in the background), unless sid is on screen.
  * Returns whether it alerted. */
-export function notify(sid, title, body, kind = "") {
+export function notify(sid, title, body, kind = "", extra = []) {
   const away = document.hidden || !document.hasFocus();
   if (!away && S.view === "terminals" && S.focused === sid) return false;
   const show = () => {
@@ -669,7 +684,7 @@ export function notify(sid, title, body, kind = "") {
     body,
     kind,
     timeout: 10000,
-    actions: [{ label: "Show", onClick: show }, ...(canAsk ? [{ label: "Enable desktop alerts", onClick: () => Notification.requestPermission() }] : [])],
+    actions: [{ label: "Show", onClick: show }, ...extra, ...(canAsk ? [{ label: "Enable desktop alerts", onClick: () => Notification.requestPermission() }] : [])],
   });
   if (away && "Notification" in window && Notification.permission === "granted") {
     const n = new Notification(title, { body, icon: "/static/icon-192.png", tag: sid });
@@ -1321,9 +1336,9 @@ export function renderSidebar() {
         ${p.sessions
           .map(
             (s) => `<div class="sess-row ${S.unread.has(s.id) ? "unread" : ""} ${visible.has(s.id) ? "visible" : ""} ${s.id === S.focused && S.view === "terminals" ? "active" : ""}" data-sid="${s.id}" draggable="true" data-act="open" title="${esc(s.cwd || "")}">
-              <span class="dot ${s.alive ? "alive" : ""}"></span>
+              ${sessionMark(s)}
               <span class="name">${s.nick ? `<b class="nick">${esc(s.nick)}</b>` : ""}${esc(sessionTitle(s))}</span>
-              ${sessionBadge(s)}
+              <span class="badge">${esc(shellLabel(s.shell))}</span>
               <span class="row-actions">
                 <button class="icon-btn sm" data-act="smenu" title="More" aria-label="Terminal actions">${icon("more")}</button>
                 <button class="icon-btn sm danger" data-act="kill" title="Close terminal" aria-label="Close terminal">${icon("x")}</button>
@@ -1338,13 +1353,14 @@ export function renderSidebar() {
   markSeen();
 }
 
-function sessionBadge(s) {
+/** Status mark before a sidebar row: the AI icon while an agent runs in it (amber when it needs you), else the alive dot. */
+function sessionMark(s) {
   const a = S.agents[s.id];
-  if (!a) return `<span class="badge">${esc(shellLabel(s.shell))}</span>`;
+  if (!a) return `<span class="dot ${s.alive ? "alive" : ""}"></span>`;
   const state = S.agentState[s.id];
-  const needs = state === "waiting" || state === "approval";
+  const needs = state === "approval" && !s.parent;
   const tip = `${a.label}${a.model ? ` · ${a.model}` : ""}: ${needs ? "needs you" : state === "working" ? "working" : "running"}${s.parent ? " · sub-agent" : ""}`;
-  return `<span class="badge ai ${needs ? "needs" : state === "working" ? "working" : ""}" title="${esc(tip)}">${icon("sparkle")}${esc(a.label)}</span>`;
+  return `<span class="ai-mark ${needs ? "needs" : ""}" title="${esc(tip)}">${icon("sparkle")}</span>`;
 }
 
 function markSeen() {
@@ -1882,9 +1898,13 @@ function connectAlarms() {
     if (msg.type === "alarm_snapshot") msg.alarms.forEach((t) => views.showAlarm(t, false));
     if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
     if (msg.type === "spawned") openSpawned(msg.session_id);
+    // a sub-agent's question whose parent isn't an agent (a plain shell): then it is yours
+    if (msg.type === "question" && notify(msg.session_id, `${msg.nick} is asking you`, msg.text.slice(0, 200), "warn")) views.chime();
     if (msg.type === "handoff") {
       const h = msg.handoff;
-      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : "error")) views.chime();
+      // done: offer to close the sub-agent's terminal right from the toast
+      const close = h.status === "done" && findSession(h.to_sid)?.parent ? [{ label: `Close ${h.to_nick}`, onClick: () => killSession(h.to_sid) }] : [];
+      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : "error", close)) views.chime();
     }
   };
   ws.onclose = (ev) => {
