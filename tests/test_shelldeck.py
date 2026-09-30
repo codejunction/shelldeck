@@ -67,6 +67,170 @@ def test_stats(client):
     assert s["system"]["mem_total"] > 0 and 0 <= s["system"]["cpu"] <= 100 and s["sessions"] == {}
 
 
+def test_agents(client, tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    from shelldeck import agents, stats
+
+    # a node/python-installed agent is found by its package path, with the --model it was given
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "@anthropic-ai/claude-code", "--model", "opus"])
+    try:
+        time.sleep(0.5)
+        assert agents.running({"me": os.getpid()}) == {"me": ("claude", "opus")}
+        assert stats.collect({"me": os.getpid()})["sessions"]["me"]["agent"] == {"key": "claude", "label": "Claude Code", "model": "opus", "context": None}
+    finally:
+        child.kill()
+    data = client.get("/api/agents").json()
+    assert data["running"] == [] and {"claude", "codex", "devin"} <= {a["key"] for a in data["agents"]}
+    assert isinstance(data["outside"], list) and isinstance(data["devin_sessions"], list)
+
+    # Devin's session store: newest first, hidden ones skipped
+    import sqlite3
+
+    store = tmp_path / "devin" / "cli" / "sessions.db"
+    store.parent.mkdir(parents=True)
+    with sqlite3.connect(store) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT, working_directory TEXT, backend_type TEXT, model TEXT, "
+                     "created_at INT, last_activity_at INT, title TEXT, hidden INT DEFAULT 0)")
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, 'Windsurf', 'swe-1-6', 1, ?, ?, ?)",
+                         [("old-one", "D:/a", 5, "Old", 0), ("new-one", "D:/b", 9, "New", 0), ("gone", "D:/c", 7, "Hidden", 1)])
+    conn.close()
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert [(d["id"], d["cwd"]) for d in agents.devin_sessions()] == [("new-one", "D:/b"), ("old-one", "D:/a")]
+
+    # peers read each other's screen and type into each other
+    sid = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()["id"]
+    server.manager.scrollback.setdefault(sid, Scrollback()).add("\x1b[32mworking on auth\x1b[0m\r\ndone\r\n\r\n")
+    assert client.get(f"/api/sessions/{sid}/screen", params={"lines": 1}).json()["text"] == "done"
+    assert client.get("/api/sessions/nope/screen").status_code == 404
+    assert client.post(f"/api/sessions/{sid}/input", json={"text": "hi"}).json()["error"] == "not_running"
+    assert client.post(f"/api/sessions/{sid}/input", json={}).json()["error"] == "text_required"
+
+
+def test_team(client, tmp_path, monkeypatch):
+    """Terminal nicks, sd spawn (without really starting a shell), hand-off files, done and orphaned hand-offs."""
+    from shelldeck import team
+
+    team._selfcheck()  # tiers, model picks, spawn line, skill install
+    started = []
+
+    async def fake_start(sid, line):
+        started.append(line)
+
+    monkeypatch.setattr(server, "_attach", lambda *a: None)
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+    a = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()
+    b = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()
+    assert a["nick"] and b["nick"] and a["nick"] != b["nick"]
+    assert client.post("/api/spawn", json={"parent": a["id"]}).json()["error"] == "task_required"
+    assert client.post("/api/spawn", json={"parent": a["id"], "task": "x", "agent": "aider"}).json()["error"] == "cannot_spawn:aider"
+    r = client.post("/api/spawn", json={"parent": a["id"], "task": "fix a typo in the readme", "agent": "claude", "model": "large"}).json()
+    kid, h = r["session"], r["handoff"]
+    assert kid["parent"] == a["id"] and r["model"] == "opus" and started == [r["command"]]
+    assert r["command"].startswith(f'claude --model opus "You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.')
+    task_file = tmp_path / ".shelldeck" / "handoffs" / f"{h['id']}.md"
+    assert "fix a typo in the readme" in task_file.read_text(encoding="utf-8")
+    assert (tmp_path / ".shelldeck" / ".gitignore").read_text() == "*\n"
+    # sub-agents can't spawn
+    assert client.post("/api/spawn", json={"parent": kid["id"], "task": "more"}).status_code == 403
+    # a hand-off needs an agent running in the target (typed text would run in a bare shell)
+    assert client.post("/api/handoffs", json={"to": b["id"], "task": "x"}).status_code == 409
+    done = client.post(f"/api/handoffs/{h['id']}/done", json={"result": "fixed it"}).json()
+    assert done["status"] == "done" and "fixed it" in task_file.read_text(encoding="utf-8")
+    assert client.post(f"/api/handoffs/{h['id']}/done", json={}).status_code == 409
+    assert "| done |" in (tmp_path / ".shelldeck" / "handoff.md").read_text(encoding="utf-8")
+    h2 = client.post("/api/spawn", json={"parent": a["id"], "task": "another"}).json()["handoff"]
+    assert [x["id"] for x in server._orphan(h2["to_sid"])] == [h2["id"]]
+    assert db.get_handoff(h2["id"])["status"] == "exited"
+
+    # a sub-agent's question goes to its parent (here a plain shell, so it's broadcast to the user), once
+    import asyncio
+
+    sent = []
+
+    async def fake_broadcast(msg):
+        sent.append(msg)
+        return 0
+
+    monkeypatch.setattr(server, "_broadcast", fake_broadcast)
+    monkeypatch.setattr(server, "QUIET_S", 1e9)  # keep the app's own watcher off these
+    server.ask_buf[kid["id"]] = "\x1b[2J\x1b[5;1HRead 1 file\r\n\x1b[20;1H Do you want to proceed?\r\n \x1b[1m1. Yes\x1b[0m  2. No"
+    server.ask_buf[b["id"]] = "just some output about approvals"
+    assert asyncio.run(server._check_questions(quiet=0)) == [kid["id"]]
+    assert sent[0]["type"] == "question" and sent[0]["nick"] == kid["nick"]
+    assert asyncio.run(server._check_questions(quiet=0)) == []  # nothing new drawn since
+    assert "Do you want to proceed? 1. Yes 2. No" in sent[0]["text"]
+    server.ask_buf[kid["id"]] = "\x1b[20;1H Do you want to proceed?\r\n 1. Yes  2. No"
+    assert asyncio.run(server._check_questions(quiet=0)) == []  # the same prompt redrawn
+    server.ask_buf.clear()
+    assert [x["id"] for x in client.get("/api/handoffs", params={"project_id": a["project_id"]}).json()["handoffs"]] == [h2["id"], h["id"]]
+
+
+def test_file_editor_and_scratch(client, tmp_path):
+    f = tmp_path / "notes.txt"
+    f.write_bytes(b"one\r\ntwo\r\n")
+    r = client.get("/api/fs/file", params={"path": str(f)}).json()
+    assert r["text"] == "one\ntwo\n" and r["crlf"] and not r["readonly"]
+    # saving keeps CRLF, and refuses when the file changed on disk since it was read
+    assert client.put("/api/fs/file", json={"path": str(f), "text": "uno\n", "mtime": r["mtime"], "crlf": True}).status_code == 200
+    assert f.read_bytes() == b"uno\r\n"
+    assert client.put("/api/fs/file", json={"path": str(f), "text": "stale", "mtime": r["mtime"]}).status_code == 409
+    new = client.get("/api/fs/file", params={"path": str(tmp_path / "new.md")}).json()
+    assert new["new"] and new["text"] == ""
+    (tmp_path / "bin.dat").write_bytes(b"\0\1\2")
+    assert client.get("/api/fs/file", params={"path": str(tmp_path / "bin.dat")}).json()["error"] == "binary_file"
+    (tmp_path / "x.svg").write_text("<svg onload=alert(1)>")
+    assert client.get("/api/fs/raw", params={"path": str(tmp_path / "x.svg")}).status_code == 415
+    assert client.post("/api/fs/show", json={"path": str(f)}).json() == {"delivered": 0}
+
+    n = client.post("/api/scratch", json={"body": "# Ideas"}).json()
+    assert client.put(f"/api/scratch/{n['id']}", json={"body": "# Ideas\nmore"}).status_code == 200
+    assert client.get("/api/scratch").json()["notes"][0]["body"] == "# Ideas\nmore"
+    client.delete(f"/api/scratch/{n['id']}")
+    assert client.get("/api/scratch").json()["notes"] == []
+    assert client.put("/api/scratch/nope", json={"body": ""}).status_code == 404
+
+
+def test_agent_context(tmp_path, monkeypatch):
+    """Context window use read from Claude Code's and Codex's own logs (this process plays the agent)."""
+    import json
+    import os
+    from pathlib import Path
+
+    from shelldeck import agents
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    agents._files.clear()
+    pid = os.getpid()
+
+    claude = tmp_path / ".claude"
+    (claude / "sessions").mkdir(parents=True)
+    (claude / "projects" / "D--x").mkdir(parents=True)
+    (claude / "sessions" / f"{pid}.json").write_text(json.dumps({"sessionId": "s1", "status": "idle"}))
+    usage = {"input_tokens": 10, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 49000, "output_tokens": 990}
+    lines = [
+        {"type": "assistant", "message": {"model": "claude-sonnet-4-6", "usage": usage}},
+        {"type": "assistant", "isSidechain": True, "message": {"model": "claude-haiku-4-5", "usage": {"input_tokens": 5}}},
+        {"type": "user", "message": {"content": "hi"}},
+    ]
+    (claude / "projects" / "D--x" / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+    assert agents.context(pid, "claude") == {"used": 51000, "window": 200_000, "estimated": True, "state": "idle", "model": "claude-sonnet-4-6"}
+    assert agents.CLAUDE_1M.search("claude-opus-5-5") and not agents.CLAUDE_1M.search("claude-opus-4-6")
+
+    rollout = tmp_path / ".codex" / "sessions" / "2026" / "09" / "30" / "rollout-x.jsonl"
+    rollout.parent.mkdir(parents=True)
+    events = [
+        {"type": "session_meta", "payload": {"cwd": os.getcwd()}},
+        {"type": "event_msg", "payload": {"type": "task_started", "model_context_window": 258400}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"total_tokens": 64600}}}},
+    ]
+    rollout.write_text("\n".join(json.dumps(x) for x in events))
+    assert agents.context(pid, "codex") == {"used": 64600, "window": 258400}
+    assert agents.context(pid, "aider") is None
+
+
 def test_history_search_and_open(client, tmp_path, monkeypatch):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("x = 1\n")
@@ -279,6 +443,21 @@ def test_auth_setup_login_change_reset(browser, monkeypatch):
     monkeypatch.setattr(server, "_is_local", lambda conn: False)
     assert b.post("/api/auth/setup", json={"password": "x" * 9, "confirm": "x" * 9, "code": "wrong"}).status_code == 403
     assert b.post("/api/auth/setup", json={"password": "x" * 9, "confirm": "x" * 9, "code": code}).status_code == 200
+
+
+def test_password_survives_reinstall(tmp_path, monkeypatch):
+    """Set once: the password file outlives a lost database row, and 0.0.4's database copy is migrated."""
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    db.init_db()
+    auth.set_password("longenough")
+    db.delete_setting(auth._PASSWORD_KEY)  # the row an unclean shutdown lost
+    assert auth.init_auth() is None and auth.check_password("longenough")
+    (tmp_path / "password").unlink()
+    db.set_setting(auth._PASSWORD_KEY, auth._hash_password("fromolder1"))  # only an old version's copy
+    auth.init_auth()
+    assert auth.check_password("fromolder1")
+    auth.reset()
+    assert not auth.has_password() and not (tmp_path / "password").exists()
 
 
 def test_login_rate_limit_and_link(browser, monkeypatch):

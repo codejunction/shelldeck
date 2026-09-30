@@ -453,6 +453,8 @@ def info():
     for k, v in (
         ("Session", s.get("id", sid)),
         ("Name", s.get("name") or ""),
+        ("Nick", s.get("nick") or ""),
+        ("Parent", s.get("parent") or ""),
         ("Project", p.get("name", "")),
         ("Project path", p.get("path", "")),
         ("Working dir", s.get("cwd", "")),
@@ -462,6 +464,205 @@ def info():
     ):
         table.add_row(k, str(v))
     console.print(table)
+
+
+def _session(target: str) -> dict:
+    """A terminal by id, nick, name (case-insensitive) or id prefix."""
+    sessions = _api("/api/sessions")["sessions"]
+    t = target.casefold()
+    hits = ([x for x in sessions if x["id"] == target] or [x for x in sessions if (x.get("nick") or "").casefold() == t]
+            or [x for x in sessions if (x.get("name") or "").casefold() == t] or [x for x in sessions if x["id"].startswith(target)])
+    if len(hits) != 1:
+        typer.echo(f"error: {'no' if not hits else 'more than one'} terminal matches {target!r} (see `sd agents --all`)", err=True)
+        raise typer.Exit(1)
+    return hits[0]
+
+
+@app.command()
+def agents(all_: bool = typer.Option(False, "--all", "-a", help="Every project, not just the one this terminal is in.")):
+    """AI agents running in shelldeck terminals (peers you can `sd peek` and `sd tell`)."""
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    data = _api("/api/agents")
+    running = data["running"]
+    if me and not all_:
+        mine = next((r["project_id"] for r in _api("/api/sessions")["sessions"] if r["id"] == me), None)
+        running = [r for r in running if r["project_id"] == mine]
+    if not running:
+        typer.echo("no AI agents running" + ("" if all_ or not me else " in this project (try --all)"))
+    for r in running:
+        you = "  (you)" if r["session_id"] == me else ""
+        typer.echo(f"{r['nick'] or '-'}  {r['session_id']}  {r['label']}  model={r['model'] or '?'}  project={r['project']}  cwd={r['cwd']}{you}")
+    if all_ and data.get("outside"):
+        typer.echo("\noutside shelldeck:")
+        for a in data["outside"]:
+            typer.echo(f"pid {a['pid']}  {a['label']}  model={a['model'] or '?'}  cwd={a['cwd']}  started by {a['host'] or '?'}")
+    if all_:
+        typer.echo("\ninstalled: " + (", ".join(f"{a['command']} ({len(a['models'])} models)" for a in data["agents"] if a["installed"]) or "none"))
+
+
+@app.command()
+def peek(
+    target: str = typer.Argument(..., help="Terminal nick, id, id prefix or name."),
+    lines: int = typer.Option(40, "--lines", "-n", help="How many of the last lines."),
+):
+    """Print the last lines of another terminal (e.g. to check another agent's progress)."""
+    sys.stdout.reconfigure(errors="replace")  # TUI box drawing on a cp1252 console
+    typer.echo(_api(f"/api/sessions/{_session(target)['id']}/screen?lines={lines}")["text"])
+
+
+@app.command()
+def tell(
+    target: str = typer.Argument(..., help="Terminal nick, id, id prefix or name."),
+    message: str = typer.Argument(..., help="Text to type into it."),
+    raw: bool = typer.Option(False, "--raw", help="Send the text as is: no sender tag, no Enter."),
+):
+    """Type a message into another terminal and press Enter (agent-to-agent messaging)."""
+    s = _session(target)
+    me = os.environ.get("SHELLDECK_NICK") or os.environ.get("SHELLDECK_SESSION_ID")
+    if not raw and me:
+        message = f"[message from {me}; reply with: sd tell {me} \"...\"] {message}"
+    _api(f"/api/sessions/{s['id']}/input", "POST", {"text": message, "enter": not raw})
+    typer.echo(f"sent to {s.get('nick') or s.get('name') or s['id']}")
+
+
+KEYS = {"enter": "\r", "esc": "\x1b", "tab": "\t", "up": "\x1b[A", "down": "\x1b[B", "left": "\x1b[D", "right": "\x1b[C", "space": " "}
+
+
+@app.command()
+def answer(
+    target: str = typer.Argument(..., help="Terminal nick, id or name (e.g. your sub-agent)."),
+    keys: list[str] = typer.Argument(..., help="Keys to press in order: text, or enter, esc, tab, up, down, left, right, space."),
+):
+    """Press keys in another terminal, e.g. to answer a sub-agent's approval menu: sd answer Maya 1."""
+    s = _session(target)
+    for k in keys:
+        _api(f"/api/sessions/{s['id']}/input", "POST", {"text": KEYS.get(k.lower(), k), "enter": False})
+        time.sleep(0.15)  # one key at a time: TUIs read a burst as a paste
+    typer.echo(f"pressed {' '.join(keys)} in {s.get('nick') or s['id']}")
+
+
+@app.command()
+def close(
+    target: str = typer.Argument(..., help="Terminal nick, id or name, e.g. a sub-agent whose work is finished."),
+    force: bool = typer.Option(False, "--force", help="Close it even though a hand-off to it is still open."),
+):
+    """Close a terminal and whatever runs in it. Agents: only your own sub-agents, and only once the user agreed."""
+    s = _session(target)
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    name = s.get("nick") or s["id"]
+    if s["id"] == me:
+        typer.echo("error: that is your own terminal", err=True)
+        raise typer.Exit(1)
+    if me and s.get("parent") != me:  # an agent may not close the user's (or another agent's) terminals
+        typer.echo(f"error: {name} is not your sub-agent; ask the user to close it", err=True)
+        raise typer.Exit(1)
+    still = [h["id"] for h in _api(f"/api/handoffs?to={s['id']}&status=open")["handoffs"]]
+    if still and not force:
+        typer.echo(f"error: {name} still has hand-off {', '.join(still)} open (it runs sd done when finished); --force closes it anyway", err=True)
+        raise typer.Exit(1)
+    _api(f"/api/sessions/{s['id']}", "DELETE")
+    typer.echo(f"closed {name}")
+
+
+def _me() -> str:
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    if not me:
+        typer.echo("error: run this inside a shelldeck terminal", err=True)
+        raise typer.Exit(1)
+    return me
+
+
+@app.command()
+def spawn(
+    task: str = typer.Argument(..., help="The task, self-contained: files, expected result, how to check it."),
+    agent: str = typer.Option("", "--agent", "-a", help="claude, codex, devin, gemini, qwen or opencode (default: the one you run)."),
+    model: str = typer.Option("auto", "--model", "-m", help="small, medium, large, auto (by the task) or a model name."),
+):
+    """Start a sub-agent in a new terminal of this project and hand it a task."""
+    if os.environ.get("SHELLDECK_PARENT"):
+        typer.echo("error: sub-agents cannot spawn agents; ask your parent (sd tell)", err=True)
+        raise typer.Exit(1)
+    r = _api("/api/spawn", "POST", {"parent": _me(), "task": task, "agent": agent, "model": model})
+    started = r["command"].split(' "')[0]  # the agent and model, without the long kickoff prompt
+    typer.echo(f"spawned {r['session']['nick']} ({r['session']['id']}): {started}")
+    typer.echo(f"hand-off {r['handoff']['id']}; they run `sd done` when finished and you get a message. Check on them: sd peek {r['session']['nick']}")
+
+
+@app.command()
+def handoff(
+    target: str = typer.Argument(..., help="Terminal nick, id or name with an agent running."),
+    task: str = typer.Argument(..., help="The task."),
+):
+    """Hand a task to an agent already running in another terminal (tracked in .shelldeck/handoff.md)."""
+    s = _session(target)
+    h = _api("/api/handoffs", "POST", {"from": os.environ.get("SHELLDECK_SESSION_ID", ""), "to": s["id"], "task": task})
+    typer.echo(f"hand-off {h['id']} sent to {h['to_nick']}")
+
+
+@app.command()
+def done(
+    handoff_id: str = typer.Argument(..., help="Hand-off id (see `sd handoffs`)."),
+    summary: str = typer.Argument("", help="What you did, or why you couldn't."),
+    failed: bool = typer.Option(False, "--failed", help="You could not finish it."),
+):
+    """Close a hand-off you were given; the sender is told."""
+    h = _api(f"/api/handoffs/{handoff_id}/done", "POST", {"result": summary, "failed": failed})
+    typer.echo(f"hand-off {h['id']} {h['status']}; {h['from_nick'] or 'the sender'} was told")
+
+
+@app.command()
+def handoffs(all_: bool = typer.Option(False, "--all", "-a", help="Every project, not just this terminal's.")):
+    """Hand-offs between terminals and their status."""
+    me = os.environ.get("SHELLDECK_SESSION_ID")
+    project = "" if all_ or not me else next((r["project_id"] for r in _api("/api/sessions")["sessions"] if r["id"] == me), "")
+    rows = _api(f"/api/handoffs?project_id={project}")["handoffs"]
+    if not rows:
+        typer.echo("no hand-offs")
+    for h in rows:
+        typer.echo(f"{h['id']}  {h['status']:<7} {h['from_nick'] or 'user'} -> {h['to_nick']}  {' '.join(h['task'].split())[:70]}")
+        if h.get("result"):
+            typer.echo(f"         result: {' '.join(h['result'].split())[:100]}")
+
+
+@app.command("install-skill")
+def install_skill(
+    agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents to set up (default: every agent CLI on PATH)."),
+    remove: bool = typer.Option(False, "--remove", help="Remove it again (and stop the server re-adding it on start)."),
+):
+    """Teach agent CLIs the sd team commands (a skill, or a block in their global instructions file)."""
+    from . import team
+
+    unknown = [a for a in agents_ or [] if a not in team.TARGETS]
+    if unknown:
+        typer.echo(f"error: unknown agent {', '.join(unknown)}; one of {', '.join(team.TARGETS)}", err=True)
+        raise typer.Exit(1)
+    for agent, path, status in team.install(agents_ or None, remove):
+        typer.echo(f"{status:<9} {agent:<9} {path}")
+    if not agents_:
+        db.init_db()
+        db.set_setting("agent_skills", "off" if remove else "on")
+
+
+def _show_file(file: Path, mode: str) -> None:
+    path = str(file.expanduser().resolve())
+    ensure_server()
+    if not _api("/api/fs/show", "POST", {"path": path, "mode": mode})["delivered"]:
+        from urllib.parse import quote
+
+        _show(f"/?file={quote(path)}&mode={mode}")
+    typer.echo(f"opened {path} in shelldeck")
+
+
+@app.command()
+def edit(file: Path = typer.Argument(..., dir_okay=False, help="File to edit (created on save if missing).")):
+    """Open a file in shelldeck's built-in editor."""
+    _show_file(file, "edit")
+
+
+@app.command()
+def view(file: Path = typer.Argument(..., exists=True, dir_okay=False, help="File to view.")):
+    """Open a file in shelldeck's viewer (markdown rendered, images shown)."""
+    _show_file(file, "view")
 
 
 @app.command()

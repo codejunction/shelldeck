@@ -53,12 +53,22 @@ def _verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(computed.hex(), hash_hex)
 
 
+# The hash lives in <config>/password (owner-only), not the database: a database write can sit in the
+# WAL of a server that never exits cleanly and be lost, and then every reinstall asked for a new password.
+# Only reset() removes it.
+def _stored() -> str:
+    try:
+        return _file("password").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def has_password() -> bool:
-    return bool(db.get_setting(_PASSWORD_KEY))
+    return bool(_stored())
 
 
 def check_password(password: str) -> bool:
-    stored = db.get_setting(_PASSWORD_KEY)
+    stored = _stored()
     ok = bool(stored) and _verify_password(password, stored)
     if ok:
         _note_strength(password)  # passwords set before this flag existed get it at their next login
@@ -85,7 +95,9 @@ def validate_new(password: str, confirm: str) -> str | None:
 
 
 def set_password(password: str) -> None:
-    db.set_setting(_PASSWORD_KEY, _hash_password(password))
+    hashed = _hash_password(password)
+    _write_private("password", hashed)
+    db.set_setting(_PASSWORD_KEY, hashed)  # read by 0.0.4 and older, should you go back to one
     _note_strength(password)
     _file("setup-code").unlink(missing_ok=True)
 
@@ -134,8 +146,11 @@ def read_cli_token() -> str:
 
 def init_auth() -> str | None:
     """On server start: drop termy's seeded password, rotate the CLI token. Returns the setup code, if any."""
-    stored = db.get_setting(_PASSWORD_KEY)
-    if stored and _verify_password("nopassword", stored):
+    # versions up to 0.0.4 keep it in the database; a hash there that differs was set by one of them since
+    if (legacy := db.get_setting(_PASSWORD_KEY)) and legacy != _stored():
+        _write_private("password", legacy)
+    if (stored := _stored()) and _verify_password("nopassword", stored):
+        _file("password").unlink(missing_ok=True)
         db.delete_setting(_PASSWORD_KEY)
     cli_token()
     return setup_code()
@@ -143,6 +158,7 @@ def init_auth() -> str | None:
 
 def reset() -> str:
     """Emergency, host-only: forget the password and every login. Returns the new setup code."""
+    _file("password").unlink(missing_ok=True)
     db.delete_setting(_PASSWORD_KEY)
     db.delete_setting(_STRONG_KEY)
     db.delete_auth_sessions()

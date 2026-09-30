@@ -80,6 +80,7 @@ const P = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   "folder-plus": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10v6M9 13h6"/>',
+  sparkle: '<path d="M12 3 13.9 8.6 19.5 10.5 13.9 12.4 12 18 10.1 12.4 4.5 10.5 10.1 8.6Z"/><path d="M19 3v4M17 5h4M5 17v3M3.5 18.5h3"/>',
   terminal: '<path d="m4 17 6-6-6-6M12 19h8"/>',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -111,6 +112,7 @@ const P = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   "git-branch": '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/>',
+  note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
 };
 
 export function icon(name) {
@@ -141,8 +143,9 @@ export function dialog({ title = "", body = "", foot = "", wide = false, cls = "
   const prevFocus = document.activeElement;
   const d = {
     el: bg.firstElementChild,
-    close() {
-      if (!bg.isConnected) return;
+    canClose: null, // () => false vetoes closing (e.g. unsaved edits); close(true) skips it
+    close(force = false) {
+      if (!bg.isConnected || (!force && d.canClose && !d.canClose())) return;
       bg.remove();
       dialogs.splice(dialogs.indexOf(d), 1);
       onClose?.();

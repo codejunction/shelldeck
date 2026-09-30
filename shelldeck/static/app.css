@@ -345,6 +345,17 @@ i[data-icon] svg {
 .sess-row:hover .row-actions,
 .row-actions.open {
   display: flex;
+  animation: fade-in 0.12s ease;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.sess-row:hover .badge {
+  display: none;
 }
 
 .sessions {
@@ -2124,6 +2135,593 @@ textarea:focus {
   .sysmon .m-bar,
   .sysmon .meter:nth-child(3) {
     display: none;
+  }
+}
+
+/* ------------------------------------------------------------ AI agents */
+
+.pane.ai .pane-head {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 60%);
+}
+
+.pane.ai .pane-head > i[data-icon="terminal"] {
+  color: var(--accent);
+}
+
+.pane-head .agent {
+  display: inline-flex;
+  flex: none;
+}
+
+.ai-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ai-chip b {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.ai-chip small {
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.ai-chip svg {
+  width: 11px;
+  height: 11px;
+  color: var(--accent);
+  fill: currentColor;
+}
+
+.ai-chip .ctx {
+  padding-left: 5px;
+  border-left: 1px solid var(--border-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-chip .ctx[data-level="mid"] {
+  color: var(--warn);
+}
+
+.ai-chip .ctx[data-level="high"] {
+  color: var(--bad);
+}
+
+.ai-chip.working svg {
+  animation: ai-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ai-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ai-chip.approval {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.ai-chip.approval b,
+.ai-chip.approval svg {
+  color: var(--warn);
+}
+
+.pane.ai:has(.ai-chip.approval) .pane-head {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 16%, transparent), transparent 60%);
+}
+
+/* sidebar: the AI icon takes the status dot's place in an agent's terminal row */
+.ai-mark {
+  display: inline-flex;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 -2px 0 -3px; /* same footprint as the 7px dot, so names stay aligned */
+  color: var(--accent);
+}
+
+.ai-mark i[data-icon],
+.ai-mark svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.ai-mark.needs {
+  color: var(--warn);
+}
+
+.ag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 24px 0 10px;
+}
+
+.ag-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.ag-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-card p {
+  margin: 0;
+}
+
+.ag-card.missing {
+  opacity: 0.6;
+}
+
+.ag-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-title svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+}
+
+.ag-models div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 160px;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.ag-launch {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.mon-table td.ag-clip {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-launch select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ------------------------------------------------ terminal names, agents nav, hand-offs */
+
+.nick {
+  margin-right: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pane-head .title .nick {
+  color: var(--accent);
+}
+
+.sb-count {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-count.needs {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  animation: ai-pulse 1.6s ease-in-out infinite;
+}
+
+.ag-title .btn,
+.ag-skill {
+  margin-left: auto;
+}
+
+.ag-skill {
+  font-size: 11px;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.ho-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ho-status[data-status="done"] {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+}
+
+.ho-status[data-status="failed"],
+.ho-status[data-status="exited"] {
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+  color: var(--bad);
+}
+
+/* ------------------------------------------------------ segmented control */
+
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.seg button {
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.seg button.on {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------ file editor/viewer */
+
+.dialog.editor-dialog {
+  width: min(1100px, 100%);
+  height: min(86vh, 900px);
+  max-height: 86vh;
+}
+
+.editor-dialog .dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.ed-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ed-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--faint);
+  font: 12px "Cascadia Mono", Consolas, monospace;
+}
+
+.ed-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.ed-gutter,
+.ed-text {
+  margin: 0;
+  padding: 10px 0;
+  font: 13px/1.5 "Cascadia Mono", Consolas, monospace;
+  tab-size: 4;
+}
+
+.ed-gutter {
+  flex: none;
+  min-width: 44px;
+  padding-right: 10px;
+  padding-left: 8px;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+
+.ed-text {
+  flex: 1;
+  min-width: 0;
+  padding-left: 12px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: none;
+  color: var(--text);
+  white-space: pre;
+}
+
+.ed-preview,
+.ed-image {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 20px;
+}
+
+.ed-image {
+  display: grid;
+  place-items: center;
+  background: repeating-conic-gradient(var(--hover) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+
+.ed-image img {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.editor-dialog:not([data-view="text"]) .ed-gutter,
+.editor-dialog:not([data-view="text"]) .ed-text,
+.editor-dialog:not([data-view="preview"]) .ed-preview,
+.editor-dialog.editing [data-ed="edit"],
+.editor-dialog:not(.editing) [data-ed="save"] {
+  display: none;
+}
+
+.editor-dialog .dialog-foot {
+  align-items: center;
+}
+
+.ed-info {
+  margin-right: auto;
+  font-size: 12px;
+}
+
+.ed-dirty {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.editor-dialog kbd {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 10px;
+}
+
+/* -------------------------------------------------------------- markdown */
+
+.md {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md h1,
+.md h2,
+.md h3 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.3;
+}
+
+.md h1 {
+  font-size: 1.6em;
+}
+
+.md h2 {
+  font-size: 1.3em;
+}
+
+.md h3 {
+  font-size: 1.1em;
+}
+
+.md code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--hover);
+  font: 0.9em "Cascadia Mono", Consolas, monospace;
+}
+
+.md pre {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: auto;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+}
+
+.md blockquote {
+  margin: 0.8em 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.md table {
+  border-collapse: collapse;
+}
+
+.md th,
+.md td {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+}
+
+.md a {
+  color: var(--accent);
+}
+
+.md img {
+  max-width: 100%;
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.md li.task {
+  list-style: none;
+  margin-left: -1.2em;
+}
+
+/* -------------------------------------------------------------- scratchpad */
+
+.sp-wrap {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+  gap: 12px;
+  height: calc(100vh - 210px);
+  min-height: 320px;
+}
+
+.sp-wrap .card {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  cursor: default;
+}
+
+.sp-wrap .card:hover {
+  border-color: var(--border);
+}
+
+.sp-list {
+  gap: 2px;
+  overflow: auto;
+}
+
+.sp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+
+.sp-item b {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-item span {
+  font-size: 11px;
+}
+
+.sp-item:hover {
+  background: var(--hover);
+}
+
+.sp-item.on {
+  background: var(--accent-soft);
+}
+
+.sp-editor {
+  min-width: 0;
+  gap: 8px;
+}
+
+.sp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-saved {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.sp-text,
+.sp-preview {
+  flex: 1;
+  min-height: 0;
+}
+
+.sp-text {
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: none;
+  color: var(--text);
+  font: 14px/1.6 "Cascadia Mono", Consolas, monospace;
+}
+
+.sp-preview {
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.sp-editor[data-view="write"] .sp-preview,
+.sp-editor[data-view="preview"] .sp-text {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .sp-wrap {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+  }
+
+  .sp-list {
+    max-height: 160px;
+  }
+
+  .sp-editor {
+    min-height: 60vh;
   }
 }
 

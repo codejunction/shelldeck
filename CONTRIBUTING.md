@@ -42,3 +42,13 @@ uv run pytest -q
 1. On a `fix/release-0.0.2` branch, bump `version` in `pyproject.toml` and move the "Unreleased" notes in `CHANGELOG.md` under the new version. Merge it through a PR.
 2. Tag the merged commit on `main` and push the tag: `git switch main && git pull && git tag v0.0.2 && git push origin v0.0.2`.
 3. The Release workflow runs the tests, checks that the tag matches the version, publishes to PyPI and creates the GitHub release.
+
+### Release candidates
+
+To let people try a `feature/<name>` or `fix/<name>` branch before it merges, publish a release candidate from it:
+
+1. GitHub: Actions > Release > Run workflow, pick the branch, and enter a version such as `0.0.5rc1`.
+   Or from a terminal: `gh workflow run release.yml --ref feature/<name> -f version=0.0.5rc1`.
+2. The workflow runs the tests, sets that version in the build only (nothing is committed), and publishes to PyPI. It makes no tag and no GitHub release.
+
+The version must look like `x.y.zrcN` and be newer than the one in `pyproject.toml` (usually the next patch). PyPI never reuses a version, so use `rc2`, `rc3` and so on for later builds. A release candidate counts as a pre-release, so `uv tool install shelldeck` and `pip install shelldeck` keep installing the latest stable release.

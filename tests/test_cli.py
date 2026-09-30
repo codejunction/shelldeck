@@ -143,3 +143,28 @@ def test_share_refuses_a_short_password(monkeypatch):
     monkeypatch.setattr(cli, "_api", lambda path, *a: {"has_password": True, "strong_password": False})
     r = runner.invoke(cli.app, ["share"])
     assert r.exit_code == 1 and "12+ characters" in r.output
+
+
+def test_close_only_own_sub_agents(monkeypatch):
+    sessions = [{"id": "me1", "nick": "Ada", "parent": None}, {"id": "kid1", "nick": "Maya", "parent": "me1"},
+                {"id": "user1", "nick": "Omar", "parent": None}]
+    calls = []
+
+    def api(path, method="GET", payload=None):
+        calls.append((method, path))
+        if path == "/api/sessions":
+            return {"sessions": sessions}
+        if path.startswith("/api/handoffs"):
+            return {"handoffs": [{"id": "h1"}] if "kid1" in path and calls.count(("GET", path)) == 1 else []}
+        return {}
+
+    monkeypatch.setattr(cli, "_api", api)
+    monkeypatch.setenv("SHELLDECK_SESSION_ID", "me1")
+    assert "not your sub-agent" in runner.invoke(cli.app, ["close", "Omar"]).output
+    assert "your own terminal" in runner.invoke(cli.app, ["close", "Ada"]).output
+    r = runner.invoke(cli.app, ["close", "Maya"])  # hand-off h1 still open
+    assert r.exit_code == 1 and "h1" in r.output and ("DELETE", "/api/sessions/kid1") not in calls
+    assert runner.invoke(cli.app, ["close", "Maya"]).output.strip() == "closed Maya"
+    assert ("DELETE", "/api/sessions/kid1") in calls
+    monkeypatch.delenv("SHELLDECK_SESSION_ID")  # the user, outside shelldeck: any terminal
+    assert runner.invoke(cli.app, ["close", "Omar"]).output.strip() == "closed Omar"

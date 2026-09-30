@@ -8,6 +8,8 @@ import time
 
 import psutil
 
+from . import agents
+
 NCPU = psutil.cpu_count() or 1
 SMI = shutil.which("nvidia-smi")
 # the detached server has no console; without this each nvidia-smi call flashes a window
@@ -75,6 +77,8 @@ def tree(pid: int, seen: set[int]) -> dict | None:
     cpu = 0.0
     mem = count = 0
     top: tuple[str, float] | None = None
+    agent: tuple[str, str | None] | None = None
+    agent_pid = 0
     pids = []
     for p in procs:
         try:
@@ -82,6 +86,8 @@ def tree(pid: int, seen: set[int]) -> dict | None:
             c = p.cpu_percent(None) / NCPU
             m = p.memory_info().rss
             name = p.name()
+            if agent is None and p.pid != pid:  # outermost agent; its own children (MCP servers, tools) don't count
+                agent, agent_pid = agents.identify(p), p.pid
         except psutil.Error:
             continue
         seen.add(p.pid)
@@ -91,7 +97,9 @@ def tree(pid: int, seen: set[int]) -> dict | None:
         mem += m
         if p.pid != pid and (top is None or c >= top[1]):
             top = (name, c)
-    return {"cpu": round(cpu, 1), "mem": mem, "procs": count, "top": top[0] if top else None, "pids": pids}
+    return {"cpu": round(cpu, 1), "mem": mem, "procs": count, "top": top[0] if top else None, "pids": pids,
+            "agent": {"key": agent[0], "label": agents.AGENTS[agent[0]][0], "model": agent[1],
+                      "context": agents.context(agent_pid, agent[0])} if agent else None}
 
 
 def listening() -> dict[int, set[int]]:
@@ -116,6 +124,7 @@ def collect(sessions: dict[str, int]) -> dict:
         t["ports"] = sorted({port for pid in t.pop("pids") for port in listen.get(pid, ())})
     for pid in [p for p in _procs if p not in seen]:
         del _procs[pid]
+    agents.forget(seen)
     vm = psutil.virtual_memory()
     return {
         "system": {

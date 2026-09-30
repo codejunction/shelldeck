@@ -1,5 +1,5 @@
 // Resource usage: top-bar meters and the Task manager page. One poller feeds both.
-import { S, findSession, portChips, projectColor, sessionTitle, shellLabel, showSession } from "./app.js";
+import { S, agentChip, ctxPct, findSession, fmtTokens, isSubAgent, portChips, projectColor, renderSidebar, sessionTitle, shellLabel, showSession, updateAgentStates } from "./app.js";
 import { $, api, esc } from "./ui.js";
 
 const POLL_MS = 2000;
@@ -25,6 +25,7 @@ async function poll() {
   if (s.gpu) push("gpu", s.gpu.util);
   renderMeters();
   updatePorts();
+  updateAgents();
   if (pageEl && !pageEl.hidden) renderMonitor(pageEl);
 }
 
@@ -37,6 +38,28 @@ function updatePorts() {
   for (const el of document.querySelectorAll(".pane[data-sid] .pane-head .ports")) {
     el.innerHTML = portChips(el.closest(".pane").dataset.sid);
   }
+}
+
+// AI coding agents (Claude Code, Codex, ...) running in a terminal: header chip, sidebar badge
+function updateAgents() {
+  const next = {};
+  for (const [sid, u] of Object.entries(stats.sessions)) if (u.agent) next[sid] = u.agent;
+  const before = JSON.stringify([S.agents, S.agentState]);
+  S.agents = next;
+  updateAgentStates();
+  if (JSON.stringify([S.agents, S.agentState]) === before) return;
+  // AI agents nav link: how many run, amber when one needs you
+  const count = $(".sb-agents .sb-count");
+  const needs = Object.keys(next).filter((sid) => S.agentState[sid] === "approval" && !isSubAgent(sid)).length;
+  count.hidden = !Object.keys(next).length;
+  count.textContent = needs ? `${needs} need${needs > 1 ? "" : "s"} you` : Object.keys(next).length;
+  count.classList.toggle("needs", !!needs);
+  for (const pane of document.querySelectorAll(".pane[data-sid]")) {
+    pane.classList.toggle("ai", !!next[pane.dataset.sid]);
+    const el = pane.querySelector(".pane-head .agent");
+    if (el) el.innerHTML = agentChip(pane.dataset.sid);
+  }
+  renderSidebar();
 }
 
 function push(k, v) {
@@ -64,7 +87,18 @@ function renderMeters() {
   el.innerHTML =
     meter("CPU", s.cpu, `${Math.round(s.cpu)}%`, `CPU ${s.cpu.toFixed(1)}%`) +
     meter("RAM", memPct, `${(s.mem_used / 2 ** 30).toFixed(1)}/${Math.round(s.mem_total / 2 ** 30)}G`, `Memory ${fmtBytes(s.mem_used)} of ${fmtBytes(s.mem_total)} (${Math.round(memPct)}%)`) +
-    (s.gpu ? meter("GPU", s.gpu.util, `${Math.round(s.gpu.util)}%`, `${s.gpu.name}: ${s.gpu.util}% · VRAM ${fmtBytes(s.gpu.mem_used)} of ${fmtBytes(s.gpu.mem_total)}`) : "");
+    (s.gpu ? meter("GPU", s.gpu.util, `${Math.round(s.gpu.util)}%`, `${s.gpu.name}: ${s.gpu.util}% · VRAM ${fmtBytes(s.gpu.mem_used)} of ${fmtBytes(s.gpu.mem_total)}`) : "") +
+    ctxMeter();
+}
+
+// context window of the agent in the focused terminal (Claude Code, Codex, Devin)
+function ctxMeter() {
+  const a = S.focused && S.agents[S.focused];
+  const pct = ctxPct(a);
+  if (pct === null) return "";
+  const c = a.context;
+  return meter("CTX", pct, `${fmtTokens(c.used)}/${fmtTokens(c.window)}`,
+    `${a.label} context: ${fmtTokens(c.used)} of ${fmtTokens(c.window)} tokens (${pct}%)${c.estimated ? ", window estimated" : ""}`);
 }
 
 function spark(values) {
@@ -127,7 +161,7 @@ export function renderMonitor(el) {
         <td class="num"><span class="cell-bar" data-level="${level(u.cpu)}"><i style="width:${Math.min(100, u.cpu)}%"></i></span>${u.cpu.toFixed(1)}%</td>
         <td class="num">${fmtBytes(u.mem)}</td>
         <td class="num">${u.procs}</td>
-        <td class="mono">${esc((u.top || "").replace(/\.exe$/i, "")) || '<span class="faint" title="No processes besides the shell">—</span>'}</td>
+        <td class="mono">${u.agent ? agentChip(sid) : esc((u.top || "").replace(/\.exe$/i, "")) || '<span class="faint" title="No processes besides the shell">—</span>'}</td>
         <td>${portChips(sid)}</td>
       </tr>`,
         )

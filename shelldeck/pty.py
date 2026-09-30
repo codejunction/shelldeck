@@ -16,6 +16,10 @@ from . import shells
 log = logging.getLogger(__name__)
 
 SCROLLBACK_CHARS = 256 * 1024
+# per-session variables of a Claude Code the server was started from (prefixes; user config like
+# CLAUDE_CODE_USE_BEDROCK is kept)
+PARENT_AGENT_ENV = ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_", "CLAUDE_CODE_BRIDGE_",
+                    "CLAUDE_CODE_MESSAGING_", "CLAUDE_CODE_ENTRYPOINT")
 
 
 class Scrollback:
@@ -251,14 +255,20 @@ class PtyManager:
         rows: int = 24,
         cols: int = 120,
         distro: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> Proc:
         proc = self.get(session_id)
         if proc:
             return proc
         start_dir = cwd if (cwd and Path(cwd).is_dir()) else None
         argv, extra = shells.with_integration(shells.interactive_argv(shell or "", distro, start_dir))
-        env = os.environ.copy() | extra
+        # a server started from inside Claude Code must not pass its session on: a claude run in the
+        # terminal would think it is a subagent (no transcript, so no context meter) and share its socket
+        env = {k: v for k, v in os.environ.items() if not k.startswith(PARENT_AGENT_ENV)} | extra
         env["SHELLDECK_SESSION_ID"] = session_id
+        # xterm.js is a modern terminal; without this TUIs that see ConPTY assume conhost (Devin warns)
+        env["TERM_PROGRAM"] = "shelldeck"
+        env.update(extra_env or {})
         proc = Proc(argv, start_dir, env, rows, cols)
         self.procs[session_id] = proc
         self.scrollback[session_id] = self._restore(session_id, rows)

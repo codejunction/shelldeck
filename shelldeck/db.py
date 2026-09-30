@@ -153,6 +153,32 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_commands_started ON commands(started_at);
 
+            -- scratchpad: one markdown body per note, the title is its first line
+            CREATE TABLE IF NOT EXISTS scratch (
+                id TEXT PRIMARY KEY,
+                body TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            -- agent hand-offs; <project>/.shelldeck/handoff.md is rendered from these
+            CREATE TABLE IF NOT EXISTS handoffs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                from_sid TEXT,
+                from_nick TEXT,
+                to_sid TEXT,
+                to_nick TEXT,
+                agent TEXT,
+                model TEXT,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                result TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_handoffs_project ON handoffs(project_id);
+
             DROP TABLE IF EXISTS note_tags;
             DROP TABLE IF EXISTS tags;
             DROP TABLE IF EXISTS mindmap_jobs;
@@ -163,6 +189,11 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "name" not in cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
+        for col in ("nick", "parent"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
+        for (sid,) in conn.execute("SELECT id FROM sessions WHERE nick IS NULL ORDER BY created_at").fetchall():
+            conn.execute("UPDATE sessions SET nick = ? WHERE id = ?", (_free_nick(conn), sid))
         if "via" not in {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)")}:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN via TEXT")
         conn.execute("DELETE FROM auth_sessions WHERE via LIKE 'share:%'")  # shares end with the server
@@ -226,17 +257,41 @@ def rename_project(project_id: str, name: str) -> dict | None:
     return get_project(project_id)
 
 
+# a person's name per terminal, so people and agents can say "ask Maya" instead of an id
+NICKS = (
+    "Ada", "Alan", "Amara", "Anya", "Arjun", "Asha", "Aiko", "Bea", "Bruno", "Chen", "Chiara", "Dara", "Dev", "Diego",
+    "Elif", "Emil", "Esme", "Ezra", "Farah", "Felix", "Freya", "Gus", "Hana", "Hugo", "Ines", "Ivan", "Iris", "Jana",
+    "Jonas", "Juno", "Kai", "Kamal", "Kenji", "Kira", "Lars", "Leila", "Lena", "Leo", "Lina", "Luca", "Maya", "Mateo",
+    "Mei", "Milo", "Mira", "Nadia", "Nia", "Nico", "Noor", "Omar", "Oona", "Otto", "Priya", "Quinn", "Rafa", "Ravi",
+    "Rosa", "Rumi", "Sana", "Sami", "Sven", "Tara", "Theo", "Tomas", "Uma", "Vera", "Wen", "Yara", "Yusuf", "Zara",
+    "Zoe", "Ari", "Bo", "Cleo", "Dina", "Eli", "Fina", "Gil", "Hiro", "Ida", "Joss", "Kofi", "Lua", "Nell",
+)
+
+
+def _free_nick(conn: sqlite3.Connection) -> str:
+    """A random name no terminal has yet (Maya2 once every name is taken)."""
+    import random
+
+    used = {r[0].casefold() for r in conn.execute("SELECT nick FROM sessions WHERE nick IS NOT NULL")}
+    free = [n for n in NICKS if n.casefold() not in used]
+    if free:
+        return random.choice(free)
+    base = random.choice(NICKS)
+    return next(f"{base}{i}" for i in range(2, 10_000) if f"{base}{i}".casefold() not in used)
+
+
 def add_session(
-    project_id: str, cwd: str | None = None, shell: str | None = None, name: str | None = None
+    project_id: str, cwd: str | None = None, shell: str | None = None, name: str | None = None, parent: str | None = None
 ) -> dict:
     sid = short_id()
     cwd = cwd or "."
     shell = shell or ""
     cols, rows = 120, 24
     with _connect() as conn:
+        nick = _free_nick(conn)
         conn.execute(
-            "INSERT INTO sessions (id, project_id, cwd, shell, cols, rows, created_at, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, project_id, cwd, shell, cols, rows, _now(), name),
+            "INSERT INTO sessions (id, project_id, cwd, shell, cols, rows, created_at, name, nick, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sid, project_id, cwd, shell, cols, rows, _now(), name, nick, parent),
         )
         conn.commit()
     return {
@@ -245,6 +300,8 @@ def add_session(
         "cwd": cwd,
         "shell": shell,
         "name": name,
+        "nick": nick,
+        "parent": parent,
         "cols": cols,
         "rows": rows,
     }
@@ -314,7 +371,7 @@ def list_sessions_with_project() -> list[dict]:
     with _connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT s.id, s.name, s.shell, s.cwd, s.created_at, p.id as project_id, p.name as project_name, p.path as project_path "
+            "SELECT s.id, s.name, s.nick, s.parent, s.shell, s.cwd, s.created_at, p.id as project_id, p.name as project_name, p.path as project_path "
             "FROM sessions s JOIN projects p ON s.project_id = p.id "
             "ORDER BY p.name, s.created_at DESC"
         ).fetchall()
@@ -811,3 +868,69 @@ def get_run(run_id: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM job_runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
+
+
+# ------------------------------------------------------------------ scratchpad
+
+
+def list_scratch() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM scratch ORDER BY updated_at DESC")]
+
+
+def add_scratch(body: str = "") -> dict:
+    row = {"id": short_id(), "body": body, "created_at": _now(), "updated_at": _now()}
+    with _connect() as conn:
+        conn.execute("INSERT INTO scratch (id, body, created_at, updated_at) VALUES (:id, :body, :created_at, :updated_at)", row)
+        conn.commit()
+    return row
+
+
+def update_scratch(note_id: str, body: str) -> bool:
+    with _connect() as conn:
+        n = conn.execute("UPDATE scratch SET body = ?, updated_at = ? WHERE id = ?", (body, _now(), note_id)).rowcount
+        conn.commit()
+    return n > 0
+
+
+def delete_scratch(note_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM scratch WHERE id = ?", (note_id,))
+        conn.commit()
+
+
+# -------------------------------------------------------------------- handoffs
+
+
+def add_handoff(**fields) -> dict:
+    row = {"id": "h" + short_id()[:6], "status": "open", "result": None, "created_at": _now(), "updated_at": _now()} | fields
+    with _connect() as conn:
+        conn.execute(f"INSERT INTO handoffs ({', '.join(row)}) VALUES ({', '.join(':' + k for k in row)})", row)
+        conn.commit()
+    return row
+
+
+def get_handoff(handoff_id: str) -> dict | None:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM handoffs WHERE id = ?", (handoff_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_handoffs(project_id: str | None = None, to_sid: str | None = None, status: str | None = None) -> list[dict]:
+    where, args = [], []
+    for col, val in (("project_id", project_id), ("to_sid", to_sid), ("status", status)):
+        if val:
+            where.append(f"{col} = ?")
+            args.append(val)
+    sql = "SELECT * FROM handoffs" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at DESC"
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(sql, args)]
+
+
+def close_handoff(handoff_id: str, status: str, result: str | None) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE handoffs SET status = ?, result = ?, updated_at = ? WHERE id = ?", (status, result, _now(), handoff_id))
+        conn.commit()

@@ -3,6 +3,7 @@ import * as views from "./views.js";
 import { startMonitor } from "./monitor.js";
 import { searchAllDialog } from "./history.js";
 import { showGitGraph } from "./gitgraph.js";
+import { openFile } from "./editor.js";
 
 // ------------------------------------------------------------------ state
 
@@ -19,6 +20,8 @@ export const S = {
   order: store.get("order", []),
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
+  agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
+  agentState: {}, // sid -> working | waiting | approval (updateAgentStates)
   online: true,
 };
 
@@ -434,10 +437,18 @@ class Term {
         } else {
           this.xterm.write(msg.data);
           this.changed = true;
+          const now = Date.now();
+          if (now - (this.lastOut || 0) > AGENT_QUIET_MS) this.busySince = now; // a new burst of output
+          this.lastOut = now;
           markUnread(this.sid);
         }
       }
       else if (msg.type === "exit") this.exited();
+      else if (msg.type === "snapshot") { // another terminal's agent is reading this screen (sd peek)
+        this.changed = true;
+        this.lastSnapshot = null;
+        this.snapshot();
+      }
       else if (msg.type === "error") this.status(msg.message);
       else if (msg.type === "clipboard") this.send({ type: "input", data: msg.data });
     };
@@ -552,8 +563,10 @@ function pathLinks(term) {
           text: m[0],
           decorations: { underline: true, pointerCursor: true },
           activate: () =>
-            api("/api/open", { method: "POST", body: { session_id: term.sid, path: m[1], line: +(m[2] || m[4] || 0), col: +(m[3] || 0) } })
-              .catch((e) => toastError(e)),
+            S.settings.editor === "shelldeck"
+              ? openFile(m[1], { sid: term.sid, line: +(m[2] || m[4] || 0) })
+              : api("/api/open", { method: "POST", body: { session_id: term.sid, path: m[1], line: +(m[2] || m[4] || 0), col: +(m[3] || 0) } })
+                  .catch((e) => toastError(e)),
         }));
       done(links.length ? links : undefined);
     },
@@ -562,6 +575,81 @@ function pathLinks(term) {
 
 export function portChips(sid) {
   return (S.ports[sid] || []).map((p) => `<button class="port-chip" data-port="${p}" title="Open http://localhost:${p}">${icon("external")}${p}</button>`).join("");
+}
+
+/** "AI · Claude Code · opus" in the pane header while a coding agent runs in the terminal. */
+export function agentChip(sid) {
+  const a = S.agents[sid];
+  if (!a) return "";
+  const model = a.model || a.context?.model;
+  const state = S.agentState[sid];
+  const pct = ctxPct(a);
+  const tip = [
+    `${a.label} is running in this terminal${model ? ` (model ${model})` : ""}`,
+    state === "approval" ? (isSubAgent(sid) ? "It is asking its parent agent (or you, if the parent is a plain shell)." : "It is asking you a question.") : state === "working" ? "It is working." : "",
+    pct === null ? "" : `Context: ${fmtTokens(a.context.used)} of ${fmtTokens(a.context.window)} tokens (${pct}%)${a.context.estimated ? ", window estimated" : ""}`,
+  ].filter(Boolean).join("\n");
+  return `<span class="ai-chip ${state || ""}" title="${esc(tip)}">${icon("sparkle")}<b>${state !== "approval" ? "AI" : isSubAgent(sid) ? "ASKING" : "NEEDS YOU"}</b>${esc(a.label)}${model ? `<small>${esc(model)}</small>` : ""}${pct === null ? "" : `<small class="ctx" data-level="${pct >= 85 ? "high" : pct >= 60 ? "mid" : ""}">${pct}%</small>`}</span>`;
+}
+
+/** Percent of the agent's context window in use, or null when unknown. */
+export function ctxPct(a) {
+  const c = a?.context;
+  return c?.window && c.used != null ? Math.min(100, Math.round((100 * c.used) / c.window)) : null;
+}
+
+export function fmtTokens(n) {
+  return n >= 1e6 ? `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+// ------------------------------------------------ agent needs you: an actual question on screen
+const AGENT_QUIET_MS = 2500; // a prompt counts once the screen stops changing
+const AGENT_BUSY_MS = 5000; // output for at least this long counts as working (not a redraw or echo)
+// Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
+// Keep in sync with agents.QUESTION.
+const QUESTION_RE = /do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust|enter to (?:select|confirm|approve)|plan needs changes|\[y\/n\]|\(y\/n\)/i;
+const PROMPT_LINES = 20; // agents draw their prompts at the bottom; text higher up is conversation
+// a sub-agent's question relayed to its parent (server.py _forward_question): on the parent's screen, not asking you
+const RELAYED_RE = /\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call/g;
+
+/** The last non-empty lines of the visible screen, wrapped rows joined, relayed questions left out. */
+function screenTail(t) {
+  const buf = t.xterm.buffer.active;
+  const out = [];
+  for (let y = buf.viewportY; y < buf.viewportY + t.xterm.rows; y++) {
+    const line = buf.getLine(y);
+    const text = line?.translateToString(true) || "";
+    if (line?.isWrapped && out.length) out[out.length - 1] += text;
+    else out.push(text);
+  }
+  const lines = out.join("\n").replace(RELAYED_RE, "").split("\n");
+  return lines.filter((l) => l.trim()).slice(-PROMPT_LINES).join("\n");
+}
+
+/** Spawned by another agent: its questions go to that agent (server side), never to you. */
+export function isSubAgent(sid) {
+  return !!findSession(sid)?.parent;
+}
+
+/** working | approval | undefined, per agent terminal. Called by the 2s stats poller.
+ * Only a question on screen alerts; an agent that simply finished stays quiet. */
+export function updateAgentStates() {
+  const now = Date.now();
+  for (const [sid, a] of Object.entries(S.agents)) {
+    const t = S.terms.get(sid);
+    const quiet = !t?.lastOut || now - t.lastOut > AGENT_QUIET_MS;
+    const was = S.agentState[sid];
+    let state;
+    if (t && quiet && QUESTION_RE.test(screenTail(t))) state = "approval";
+    else if (a.context?.state === "busy") state = "working"; // Claude Code reports it
+    else if (t && !quiet) state = now - t.busySince > AGENT_BUSY_MS ? "working" : was === "approval" ? undefined : was;
+    S.agentState[sid] = state;
+    if (state === "approval" && was !== "approval" && !isSubAgent(sid)) {
+      const s = findSession(sid);
+      if (notify(sid, `${a.label} is asking you`, s ? `${s.nick ? `${s.nick} · ` : ""}${sessionTitle(s)} · ${s.project.name}` : "", "warn")) views.chime();
+    }
+  }
+  for (const sid of Object.keys(S.agentState)) if (!S.agents[sid]) delete S.agentState[sid];
 }
 
 const CMD_MAX = 32;
@@ -575,30 +663,37 @@ function fmtDur(ms) {
 }
 
 function notifyDone(t, cmd, ms) {
-  const away = document.hidden || !document.hasFocus();
-  if (!away && S.view === "terminals" && S.focused === t.sid) return;
   const s = findSession(t.sid);
   const title = `${t.exit ? "Failed" : "Finished"}: ${shortCmd(cmd) || "command"}`;
   const body = `${s ? `${sessionTitle(s)} · ` : ""}${fmtDur(ms)}${t.exit ? ` · exit ${t.exit}` : ""}`;
+  notify(t.sid, title, body, t.exit ? "error" : "");
+}
+
+/** Toast (plus a desktop notification when the window is in the background), unless sid is on screen.
+ * Returns whether it alerted. */
+export function notify(sid, title, body, kind = "", extra = []) {
+  const away = document.hidden || !document.hasFocus();
+  if (!away && S.view === "terminals" && S.focused === sid) return false;
   const show = () => {
     window.focus();
-    showSession(t.sid);
+    showSession(sid);
   };
   const canAsk = "Notification" in window && Notification.permission === "default";
   toast({
     title,
     body,
-    kind: t.exit ? "error" : "",
+    kind,
     timeout: 10000,
-    actions: [{ label: "Show", onClick: show }, ...(canAsk ? [{ label: "Enable desktop alerts", onClick: () => Notification.requestPermission() }] : [])],
+    actions: [{ label: "Show", onClick: show }, ...extra, ...(canAsk ? [{ label: "Enable desktop alerts", onClick: () => Notification.requestPermission() }] : [])],
   });
   if (away && "Notification" in window && Notification.permission === "granted") {
-    const n = new Notification(title, { body, icon: "/static/icon-192.png", tag: t.sid });
+    const n = new Notification(title, { body, icon: "/static/icon-192.png", tag: sid });
     n.onclick = () => {
       show();
       n.close();
     };
   }
+  return true;
 }
 
 // sessions that printed output while out of view; cleared when shown
@@ -801,11 +896,12 @@ function fitVisible(immediate = false) {
 function buildPane(sid) {
   const s = findSession(sid);
   const pane = document.createElement("div");
-  pane.className = "pane";
+  pane.className = S.agents[sid] ? "pane ai" : "pane";
   pane.dataset.sid = sid;
   pane.innerHTML = `<div class="pane-head" draggable="true" title="Drag to move or split">
       ${icon("terminal")}
-      <span class="title">${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}</small></span>
+      <span class="title">${s?.nick ? `<b class="nick" title="Terminal name: sd peek/tell ${esc(s.nick)}">${esc(s.nick)}</b>` : ""}${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}</small></span>
+      <span class="agent">${agentChip(sid)}</span>
       <span class="ports">${portChips(sid)}</span>
       <button class="icon-btn sm" data-pane="max" title="Maximize (Ctrl+Alt+Enter)" aria-label="Maximize">${icon($("#app").classList.contains("maximized") ? "minimize" : "maximize")}</button>
       <button class="icon-btn sm" data-pane="menu" title="More" aria-label="More">${icon("more")}</button>
@@ -1240,8 +1336,8 @@ export function renderSidebar() {
         ${p.sessions
           .map(
             (s) => `<div class="sess-row ${S.unread.has(s.id) ? "unread" : ""} ${visible.has(s.id) ? "visible" : ""} ${s.id === S.focused && S.view === "terminals" ? "active" : ""}" data-sid="${s.id}" draggable="true" data-act="open" title="${esc(s.cwd || "")}">
-              <span class="dot ${s.alive ? "alive" : ""}"></span>
-              <span class="name">${esc(sessionTitle(s))}</span>
+              ${sessionMark(s)}
+              <span class="name">${s.nick ? `<b class="nick">${esc(s.nick)}</b>` : ""}${esc(sessionTitle(s))}</span>
               <span class="badge">${esc(shellLabel(s.shell))}</span>
               <span class="row-actions">
                 <button class="icon-btn sm" data-act="smenu" title="More" aria-label="Terminal actions">${icon("more")}</button>
@@ -1255,6 +1351,16 @@ export function renderSidebar() {
     )
     .join("");
   markSeen();
+}
+
+/** Status mark before a sidebar row: the AI icon while an agent runs in it (amber when it needs you), else the alive dot. */
+function sessionMark(s) {
+  const a = S.agents[s.id];
+  if (!a) return `<span class="dot ${s.alive ? "alive" : ""}"></span>`;
+  const state = S.agentState[s.id];
+  const needs = state === "approval" && !s.parent;
+  const tip = `${a.label}${a.model ? ` · ${a.model}` : ""}: ${needs ? "needs you" : state === "working" ? "working" : "running"}${s.parent ? " · sub-agent" : ""}`;
+  return `<span class="ai-mark ${needs ? "needs" : ""}" title="${esc(tip)}">${icon("sparkle")}</span>`;
 }
 
 function markSeen() {
@@ -1280,6 +1386,7 @@ function projectMenu(anchor, p) {
   menu(anchor, [
     ...shellItems,
     "sep",
+    { label: S.settings.editor === "vscode" ? "Open in VS Code" : "Open folder", icon: "external", onClick: () => api(`/api/projects/${p.id}/open`, { method: "POST" }).catch(toastError) },
     { label: "Rename project", icon: "pencil", onClick: () => renameProject(p) },
     { label: "Copy path", icon: "clipboard", onClick: () => navigator.clipboard.writeText(p.path) },
     "sep",
@@ -1452,12 +1559,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", agents: "AI agents", scratch: "Scratchpad" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents", "scratch"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   $("#term-actions").hidden = view !== "terminals";
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
@@ -1604,6 +1711,9 @@ function commandPalette() {
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
     ["Devices", "devices", () => switchView("devices")],
+    ["AI agents", "sparkle", () => switchView("agents")],
+    ["Scratchpad", "note", () => switchView("scratch")],
+    ["Open file…", "note", () => openFileDialog()],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
     ["Open scheduler", "clock", () => switchView("scheduler"), "Ctrl+Alt+S"],
@@ -1615,6 +1725,11 @@ function commandPalette() {
   ];
   for (const [label, ic, run, hint] of cmds) items.push({ group: "Commands", label, icon: ic, run, hint });
   palette({ items, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+}
+
+async function openFileDialog() {
+  const path = await promptDialog("Open file", "", { label: "Path (relative to the focused terminal's folder)", ok: "Open" });
+  if (path) openFile(path, { sid: S.focused || "" });
 }
 
 function shortcutsDialog() {
@@ -1781,10 +1896,32 @@ function connectAlarms() {
     const msg = JSON.parse(ev.data);
     if (msg.type === "alarm") views.showAlarm(msg.task, true);
     if (msg.type === "alarm_snapshot") msg.alarms.forEach((t) => views.showAlarm(t, false));
+    if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
+    if (msg.type === "spawned") openSpawned(msg.session_id);
+    // a sub-agent's question whose parent isn't an agent (a plain shell): then it is yours
+    if (msg.type === "question" && notify(msg.session_id, `${msg.nick} is asking you`, msg.text.slice(0, 200), "warn")) views.chime();
+    if (msg.type === "handoff") {
+      const h = msg.handoff;
+      // done: offer to close the sub-agent's terminal right from the toast
+      const close = h.status === "done" && findSession(h.to_sid)?.parent ? [{ label: `Close ${h.to_nick}`, onClick: () => killSession(h.to_sid) }] : [];
+      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : "error", close)) views.chime();
+    }
   };
   ws.onclose = (ev) => {
     if (ev.code !== 1008 && ev.code !== 4423) setTimeout(connectAlarms, 3000);
   };
+}
+
+/** A sub-agent started by `sd spawn`: show it next to the others without taking the keyboard. */
+async function openSpawned(sid) {
+  await refreshProjects();
+  if (!findSession(sid) || leaves().includes(sid)) return;
+  const prev = S.focused;
+  showSession(sid, { split: S.view === "terminals" && S.layout ? autoSplitDir() : null });
+  if (prev && prev !== sid) {
+    setFocus(prev);
+    S.terms.get(prev)?.focus();
+  }
 }
 
 // ----------------------------------------------------------------- phone keys
@@ -1890,13 +2027,19 @@ async function init() {
   startMonitor();
   await finishBoot();
   // `?session=<id>` from `shelldeck open`
-  const want = new URLSearchParams(location.search).get("session");
+  const params = new URLSearchParams(location.search);
+  const want = params.get("session");
   if (want && findSession(want)) {
     history.replaceState(null, "", "/");
     showSession(want, { split: S.layout && !leaves().includes(want) ? autoSplitDir() : null });
   } else {
     renderLayout();
     S.terms.get(S.focused)?.focus();
+  }
+  // `?file=<path>` from `sd edit` / `sd view` when no browser was open
+  if (params.get("file")) {
+    history.replaceState(null, "", "/");
+    openFile(params.get("file"), { mode: params.get("mode") === "view" ? "view" : "edit" });
   }
   views.loadBookmarks();
   connectAlarms();
