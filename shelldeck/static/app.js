@@ -628,7 +628,7 @@ export function updateAgentStates() {
     S.agentState[sid] = state;
     if ((state === "waiting" || state === "approval") && was === "working") {
       const s = findSession(sid);
-      notify(sid, `${a.label} ${state === "approval" ? "needs your approval" : "is waiting for you"}`, s ? `${sessionTitle(s)} · ${s.project.name}` : "", "warn");
+      if (notify(sid, `${a.label} ${state === "approval" ? "needs your approval" : "is waiting for you"}`, s ? `${sessionTitle(s)} · ${s.project.name}` : "", "warn")) views.chime();
     }
   }
   for (const sid of Object.keys(S.agentState)) if (!S.agents[sid]) delete S.agentState[sid];
@@ -651,10 +651,11 @@ function notifyDone(t, cmd, ms) {
   notify(t.sid, title, body, t.exit ? "error" : "");
 }
 
-/** Toast (plus a desktop notification when the window is in the background), unless sid is on screen. */
+/** Toast (plus a desktop notification when the window is in the background), unless sid is on screen.
+ * Returns whether it alerted. */
 function notify(sid, title, body, kind = "") {
   const away = document.hidden || !document.hasFocus();
-  if (!away && S.view === "terminals" && S.focused === sid) return;
+  if (!away && S.view === "terminals" && S.focused === sid) return false;
   const show = () => {
     window.focus();
     showSession(sid);
@@ -674,6 +675,7 @@ function notify(sid, title, body, kind = "") {
       n.close();
     };
   }
+  return true;
 }
 
 // sessions that printed output while out of view; cleared when shown

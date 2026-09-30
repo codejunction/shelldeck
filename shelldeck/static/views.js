@@ -447,9 +447,11 @@ function requestNotify() {
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
-function chime() {
+/** Three rising tones: task alarms and agents that need you. */
+export function chime() {
   try {
     const ctx = new AudioContext();
+    setTimeout(() => ctx.close(), 1200); // browsers cap open audio contexts
     [660, 880, 990].forEach((f, i) => {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
