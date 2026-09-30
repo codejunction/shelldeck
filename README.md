@@ -7,7 +7,7 @@
 **Your terminals, organised by project. In the browser, on your own machine.**
 
 Real shells (PowerShell, cmd, Git Bash, WSL, bash, zsh, fish) grouped by project,<br>
-in split or free-floating panes that survive restarts.
+in split or free-floating panes that survive restarts, with your AI coding agents working side by side.
 
 [![PyPI](https://img.shields.io/github/v/release/codejunction/shelldeck?color=8b5cf6&label=pypi)](https://pypi.org/project/shelldeck/)
 [![Python](https://img.shields.io/pypi/pyversions/shelldeck?color=8b5cf6)](https://pypi.org/project/shelldeck/)
@@ -17,7 +17,7 @@ in split or free-floating panes that survive restarts.
 
 [Install](#install) · [Features](#features) · [CLI](#cli) · [Remote access](#remote-access) · [Security](#security) · [Contributing](https://github.com/codejunction/shelldeck/blob/main/CONTRIBUTING.md)
 
-<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/screenshot.png" alt="shelldeck with four terminals across three projects: a git log graph, code search results, a Python web server with its port detected, and the terminal list" width="100%">
+<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/screenshot.png" alt="shelldeck with four named terminals: a git log, Claude Code with its model and context use, Codex with a detected port, and a Claude Code sub-agent reporting its finished hand-off" width="100%">
 
 </div>
 
@@ -42,7 +42,7 @@ uv tool install shelldeck      # or: pipx install shelldeck, or: pip install she
 uvx shelldeck                  # try it without installing
 ```
 
-To try a release candidate, pin it: `uv tool install --force shelldeck==0.0.5rc1` (or `pip install shelldeck==0.0.5rc1`). Go back to the stable release with `uv tool install --force shelldeck`.
+To try a release candidate, pin it: `uv tool install --force shelldeck==0.0.5rc3` (or `pip install shelldeck==0.0.5rc3`). Go back to the stable release with `uv tool install --force shelldeck`.
 
 Requirements: Windows 10 1809+ (for ConPTY) or Linux, and a modern browser.
 
@@ -85,6 +85,9 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Task board** with due dates and reminder alarms.
 - **Task manager** with live CPU, RAM and GPU (NVIDIA) usage for the machine and for each terminal's process tree.
 - **Scratchpad** for quick markdown notes that belong to no project, with a preview, saved as you type.
+
+### AI agents, working as a team
+
 - **AI agents.** A terminal running Claude Code, Codex, Devin CLI, Gemini CLI, Copilot CLI, Cursor Agent, opencode, Aider, Amp, Qwen Code, Goose, Droid, Crush or Kiro gets an **AI** chip in its header with the tool and model. The AI agents page lists the running agents and every known agent CLI with its models (Codex and opencode read their own model caches), and launches one with a chosen model.
 - **Needs-you alerts.** Only when an agent actually asks something (a permission prompt or a question of Claude Code, Codex or Devin, or a `[y/n]`), its chip turns amber (*NEEDS YOU*), a chime plays and you get a toast, or a desktop notification when shelldeck is in the background. An agent that simply finished stays quiet, and nothing plays for the terminal you are looking at.
 - **Context window.** Claude Code, Codex and Devin show how full their context window is: a percentage on the pane chip and a *CTX* meter in the top bar for the focused terminal. It is read from each agent's own session logs. Claude's window size is estimated from the model.
@@ -96,10 +99,12 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **The parent is the control center.** A sub-agent never alerts you. When one stops on a question or permission prompt, shelldeck types the question into its parent agent's terminal; the parent decides and answers with `sd answer Maya 1` (keys for the menu) or `sd tell`. Only when the parent is a plain shell does the question come to you. Once a sub-agent's work is done, the parent asks you and closes it with `sd close Maya`, or use *Close* on the hand-off toast.
 - **Agents know the commands.** On start, shelldeck installs a `shelldeck` skill for every agent CLI on PATH: a skill for Claude Code, Codex and Devin, and a marked block in the global instructions file of Gemini, opencode, Qwen, Amp, Droid, Copilot, Crush, Goose and Kiro. `sd install-skill --remove` takes it out and stops the reinstall; the AI agents page has an *Install skill* button per agent.
 
+<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/agents.png" alt="AI agents page: four named agents with their tool, model and project, two finished hand-offs with their results, and the available agent CLIs" width="100%">
+
 <table>
   <tr>
     <td width="50%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/git-graph.png" alt="Git graph popup with branches, merges and tags"></td>
-    <td width="50%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/task-manager.png" alt="Task manager with CPU, memory and GPU usage per terminal"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/task-manager.png" alt="Task manager with CPU, memory, GPU, AI agents and ports per terminal"></td>
   </tr>
   <tr>
     <td align="center"><sub>Git graph with one-click checkout</sub></td>
