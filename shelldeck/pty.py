@@ -255,6 +255,7 @@ class PtyManager:
         rows: int = 24,
         cols: int = 120,
         distro: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> Proc:
         proc = self.get(session_id)
         if proc:
@@ -267,6 +268,7 @@ class PtyManager:
         env["SHELLDECK_SESSION_ID"] = session_id
         # xterm.js is a modern terminal; without this TUIs that see ConPTY assume conhost (Devin warns)
         env["TERM_PROGRAM"] = "shelldeck"
+        env.update(extra_env or {})
         proc = Proc(argv, start_dir, env, rows, cols)
         self.procs[session_id] = proc
         self.scrollback[session_id] = self._restore(session_id, rows)

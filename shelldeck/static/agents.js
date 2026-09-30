@@ -3,11 +3,12 @@ import { S, newTerminal, orderedProjects, projectColor, refreshProjects, showSes
 import { api, esc, icon, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
-const TEAM_PROMPT = `You are one of several AI coding agents working in this project, each in its own shelldeck terminal.
-- \`sd agents\` lists the other agents here (terminal id, tool, model, folder).
-- \`sd peek <id> -n 60\` shows the last lines of another agent's terminal, to check its progress.
-- \`sd tell <id> "message"\` types a message into another agent's terminal; it arrives with your id so it can answer.
-Split the work, say what you are taking before you start, avoid editing the same files, and report back with sd tell when you finish.`;
+const TEAM_PROMPT = `You are one of several AI coding agents working in this project, each in its own shelldeck terminal with a person's name ($SHELLDECK_NICK).
+- \`sd agents\` lists the other agents here (name, tool, model, folder).
+- \`sd peek <name> -n 60\` shows another agent's screen, to check its progress.
+- \`sd tell <name> "message"\` types a message into another agent's terminal; it arrives with your name so it can answer.
+- \`sd spawn "task" --model small|medium|large\` starts a sub-agent on a task; \`sd handoff <name> "task"\` gives one to a running agent; \`sd done <id> "summary"\` closes a hand-off you got.
+Split the work, say what you are taking before you start, avoid editing the same files, and finish hand-offs with sd done.`;
 
 let data = null;
 
@@ -18,7 +19,8 @@ export async function renderAgents(el) {
   }
   const kept = keep(el);
   try {
-    data = await api("/api/agents");
+    const [agents, skills, handoffs] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs")]);
+    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs };
   } catch (e) {
     return toastError(e);
   }
@@ -26,7 +28,9 @@ export async function renderAgents(el) {
     ? data.running
         .map((r) => {
           const p = S.projects.find((x) => x.id === r.project_id);
+          const parent = r.parent && S.projects.flatMap((x) => x.sessions).find((x) => x.id === r.parent);
           return `<tr data-sid="${r.session_id}" title="Open terminal">
+            <td><b>${esc(r.nick || "")}</b>${parent ? `<br><span class="faint">sub-agent of ${esc(parent.nick || parent.id)}</span>` : ""}</td>
             <td><span class="ai-chip">${icon("sparkle")}<b>AI</b>${esc(r.label)}</span></td>
             <td class="mono">${esc(r.model || "") || '<span class="faint">default</span>'}</td>
             <td><span class="proj-dot" style="background:${p ? projectColor(p) : "var(--faint)"}"></span>${esc(r.project || "")}</td>
@@ -34,7 +38,7 @@ export async function renderAgents(el) {
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="4" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
+    : `<tr><td colspan="5" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
 
   const projects = orderedProjects();
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
@@ -51,8 +55,13 @@ export async function renderAgents(el) {
             <button class="btn primary sm" data-launch="${a.key}" ${projects.length ? "" : "disabled"}>${icon("play")}Launch</button>
           </div>`
         : `<p class="faint">Not installed (<code>${esc(a.command)}</code> is not on PATH).</p>`;
+      const skill = a.key in data.skills
+        ? data.skills[a.key]
+          ? `<span class="ag-skill on" title="It knows sd agents, peek, tell, spawn, handoff and done">skill installed</span>`
+          : `<button class="btn sm" data-skill="${a.key}" title="Teach it the sd team commands">Install skill</button>`
+        : "";
       return `<div class="card ag-card ${a.installed ? "" : "missing"}" data-key="${a.key}">
-        <div class="ag-title">${icon("sparkle")}<b>${esc(a.label)}</b><code class="faint">${esc(a.command)}</code></div>
+        <div class="ag-title">${icon("sparkle")}<b>${esc(a.label)}</b><code class="faint">${esc(a.command)}</code>${a.installed ? skill : ""}</div>
         ${a.default_model ? `<p class="muted">Configured model: <code>${esc(a.default_model)}</code></p>` : ""}
         ${models}${launch}
       </div>`;
@@ -60,17 +69,38 @@ export async function renderAgents(el) {
     .join("");
 
   el.innerHTML = `<div class="page-head"><div><h1>AI agents</h1>
-      <p>Coding agents running in your terminals are marked AI in their header. Agents in the same project can see and message each other with <code>sd agents</code>, <code>sd peek</code> and <code>sd tell</code>.</p></div>
+      <p>Coding agents running in your terminals are marked AI in their header. Each terminal has a name; agents in a project can see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>.</p></div>
       <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
     <div class="card mon-table"><table>
-      <thead><tr><th>Agent</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
+      <thead><tr><th>Name</th><th>Agent</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
       <tbody>${running}</tbody></table></div>
+    ${handoffSection()}
     <div class="ag-head"><h2>Available agents</h2>
       ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
     <div class="ag-grid">${cards}</div>
     ${outsideSection()}
     ${devinSection()}`;
   restore(el, kept);
+}
+
+/** Tasks handed between terminals (sd spawn / handoff / done), newest first. */
+function handoffSection() {
+  if (!data.handoffs?.length) return "";
+  const rows = data.handoffs
+    .slice(0, 30)
+    .map((h) => {
+      const p = S.projects.find((x) => x.id === h.project_id);
+      return `<tr ${h.to_sid && S.projects.some((x) => x.sessions.some((s) => s.id === h.to_sid)) ? `data-sid="${h.to_sid}" title="Open ${esc(h.to_nick)}'s terminal"` : ""}>
+        <td class="mono">${esc(h.id)}</td>
+        <td><span class="ho-status" data-status="${esc(h.status)}">${esc(h.status)}</span></td>
+        <td>${esc(h.from_nick || "you")} → <b>${esc(h.to_nick || "")}</b><br><span class="faint">${esc(p?.name || "")}${h.model ? ` · ${esc(h.model)}` : ""}</span></td>
+        <td class="ag-clip" title="${esc(h.task)}">${esc(h.task)}</td>
+        <td class="ag-clip" title="${esc(h.result || "")}">${esc(h.result || "") || '<span class="faint">pending</span>'}</td>
+      </tr>`;
+    })
+    .join("");
+  return `<div class="ag-head"><h2>Hand-offs</h2><span class="faint">Also in each project's .shelldeck/handoff.md</span></div>
+    <div class="card mon-table"><table><thead><tr><th>ID</th><th>Status</th><th>From → to</th><th>Task</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /** Agents found elsewhere on this machine: desktop apps, other terminal windows. */
@@ -133,6 +163,16 @@ async function onClick(e, el) {
   if (e.target.closest("[data-copy-prompt]")) {
     await navigator.clipboard.writeText(TEAM_PROMPT).catch(() => {});
     return toast({ title: "Team prompt copied", body: "Paste it into each agent." });
+  }
+  const skill = e.target.closest("[data-skill]")?.dataset.skill;
+  if (skill) {
+    try {
+      const { results } = await api("/api/skills", { method: "POST", body: { agents: [skill] } });
+      toast({ title: "Skill installed", body: results.map((r) => r.path).join("\n") });
+      return renderAgents(el);
+    } catch (err) {
+      return toastError(err);
+    }
   }
   const resume = e.target.closest("[data-resume]")?.dataset.resume;
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));

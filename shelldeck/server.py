@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agents, auth, db, gitgraph, shells, stats
+from . import agents, auth, db, gitgraph, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -61,6 +61,8 @@ alarm_sockets: set[WebSocket] = set()
 clipboard = {"data": ""}
 socket_owner: dict[WebSocket, str | None] = {}  # open socket -> login session hash
 last_cwd: dict[str, str] = {}
+STOPPING = asyncio.Event()  # set at shutdown: dying terminals then don't message their parents
+background: set[asyncio.Task] = set()  # fire-and-forget tasks, referenced so they aren't collected
 # shell integration reports the working directory (see shelldeck/integration)
 CWD_REPORT = re.compile(r"\x1b\]633;P;Cwd=([^\x07\x1b]+)(?:\x07|\x1b\\)")
 
@@ -150,10 +152,18 @@ async def lifespan(app: FastAPI):
     manager.prune({s["id"] for s in db.list_sessions()})
     saver = asyncio.create_task(_save_scrollback())
     reaper = asyncio.create_task(_share_reaper())
+    # every start refreshes the shelldeck skill of each agent CLI on PATH (dev/test homes skip it);
+    # `sd install-skill --remove` turns this off
+    if "SHELLDECK_HOME" not in os.environ and db.get_setting("agent_skills", "on") == "on":
+        try:
+            await asyncio.to_thread(team.install)
+        except OSError:
+            log.warning("installing agent skills failed", exc_info=True)
     log.info("shelldeck %s started", VERSION)
     yield
     saver.cancel()
     reaper.cancel()
+    STOPPING.set()
     stats.stop()
     sched.shutdown()
     for task in list(readers.values()):
@@ -637,7 +647,7 @@ async def write_settings(payload: dict):
             return err("invalid_terminal_theme")
         if key == "font_family" and not FONT_FAMILY.fullmatch(value):
             return err("invalid_font_family")
-        if key == "editor" and value not in ("vscode", "system"):
+        if key == "editor" and value not in ("vscode", "system", "shelldeck"):
             return err("invalid_editor")
     for key, value in payload.items():
         db.set_setting(key, str(value).strip())
@@ -661,7 +671,7 @@ async def list_agents():
     found = await asyncio.to_thread(agents.running, shells)
     by_id = {s["id"]: s for s in db.list_sessions_with_project()}
     running = [
-        {"session_id": sid, "name": s.get("name"), "project_id": s.get("project_id"), "project": s.get("project_name"),
+        {"session_id": sid, "name": s.get("name"), "nick": s.get("nick"), "parent": s.get("parent"), "project_id": s.get("project_id"), "project": s.get("project_name"),
          "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model}
         for sid, (key, model) in found.items() if (s := by_id.get(sid))
     ]
@@ -831,14 +841,16 @@ async def create_session(payload: dict):
     if shell and shell not in shells.kinds():
         return err("invalid_shell")
     cwd = str(payload.get("cwd") or project["path"])
-    name = str(payload.get("name") or "").strip()
-    if not name:
-        kind = shell or get_settings()["default_shell"]
-        same = [x for x in db.list_sessions(project["id"]) if (x["shell"] or get_settings()["default_shell"]) == kind]
-        name = f"{shells.label(kind)} {len(same) + 1}"
+    name = str(payload.get("name") or "").strip() or _default_name(project["id"], shell)
     session = db.add_session(project["id"], cwd=cwd, shell=shell, name=name)
     session["project_path"] = project["path"]
     return session
+
+
+def _default_name(project_id: str, shell: str) -> str:
+    kind = shell or get_settings()["default_shell"]
+    same = [x for x in db.list_sessions(project_id) if (x["shell"] or get_settings()["default_shell"]) == kind]
+    return f"{shells.label(kind)} {len(same) + 1}"
 
 
 @app.patch("/api/sessions/{session_id}")
@@ -912,8 +924,8 @@ async def search_terminals(q: str = ""):
     return {"results": await asyncio.to_thread(_search, q[:200])}
 
 
-def _resolve(session_id: str, raw: str) -> Path | None:
-    """A path from terminal output, relative to the session's current folder; None unless it is a file."""
+def _abs(session_id: str, raw: str) -> Path | None:
+    """A path as typed, relative to the session's current folder."""
     raw = raw.strip().strip("'\"")
     if not raw or len(raw) > 1000:
         return None
@@ -921,10 +933,15 @@ def _resolve(session_id: str, raw: str) -> Path | None:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = Path((db.get_session(session_id) or {}).get("cwd") or ".") / path
-        path = path.resolve()
-        return path if path.is_file() else None
+        return path.resolve()
     except (OSError, ValueError):
         return None
+
+
+def _resolve(session_id: str, raw: str) -> Path | None:
+    """A path from terminal output, relative to the session's current folder; None unless it is a file."""
+    path = _abs(session_id, raw)
+    return path if path and path.is_file() else None
 
 
 @app.post("/api/fs/check")
@@ -959,14 +976,134 @@ async def open_file(payload: dict):
     target = _editor_target(path, _clamp(payload.get("line"), 0, 10_000_000, 0), _clamp(payload.get("col"), 0, 100_000, 0))
     if not target:
         return err("refusing_to_run_executable")
+    return _launch(target) or {"status": "ok", "path": str(path)}
+
+
+def _launch(target: str) -> JSONResponse | None:
+    """Hand a path or vscode:// URL to the OS, never a command line. An error response on failure."""
     try:
         if sys.platform == "win32":
-            os.startfile(target)  # a file path or vscode:// URL, never a command line
+            os.startfile(target)
         else:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", target], start_new_session=True)
     except OSError as e:
         return err(f"open_failed:{e.strerror or e}")
-    return {"status": "ok", "path": str(path)}
+    return None
+
+
+@app.post("/api/projects/{project_id}/open")
+async def open_project(project_id: str):
+    """Open the project folder in VS Code, or the system's file manager."""
+    project = db.get_project(project_id)
+    if not project or not Path(project["path"]).is_dir():
+        return err("project_not_found", 404)
+    path = Path(project["path"])
+    target = "vscode://file/" + quote(path.as_posix().lstrip("/"), safe="/:") if get_settings()["editor"] == "vscode" else str(path)
+    return _launch(target) or {"status": "ok"}
+
+
+# ------------------------------------------------------------ file editor
+
+MAX_EDIT = 2 * 1024 * 1024
+IMAGES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+          ".bmp": "image/bmp", ".ico": "image/x-icon"}  # no SVG: opened directly it would run script on this origin
+BOM = b"\xef\xbb\xbf"
+
+
+def _read_file(path: Path) -> dict:
+    if path.is_dir():
+        return {"error": "is_a_directory"}
+    if not path.exists():
+        return {"path": str(path), "text": "", "mtime": None, "new": True} if path.parent.is_dir() else {"error": "file_not_found"}
+    st = path.stat()
+    if path.suffix.lower() in IMAGES:
+        return {"path": str(path), "image": True, "size": st.st_size, "mtime": str(st.st_mtime_ns)}
+    if st.st_size > MAX_EDIT:
+        return {"error": "file_too_large"}
+    data = path.read_bytes()
+    if b"\0" in data[:8192]:
+        return {"error": "binary_file"}
+    bom = data.startswith(BOM)
+    try:
+        text, readonly = data[len(BOM) if bom else 0:].decode("utf-8"), False
+    except UnicodeDecodeError:  # saving would re-encode it, so it stays read-only
+        text, readonly = data.decode("utf-8", "replace"), True
+    return {"path": str(path), "text": text.replace("\r\n", "\n"), "mtime": str(st.st_mtime_ns), "size": st.st_size,
+            "crlf": b"\r\n" in data, "bom": bom, "readonly": readonly}
+
+
+@app.get("/api/fs/file")
+async def read_file(path: str = "", session_id: str = ""):
+    """A text file for the built-in editor (relative paths start at the terminal's folder)."""
+    target = _abs(session_id, path)
+    if not target:
+        return err("invalid_path")
+    out = await asyncio.to_thread(_read_file, target)
+    return err(out["error"], 404 if out["error"] == "file_not_found" else 400) if "error" in out else out
+
+
+@app.put("/api/fs/file")
+async def write_file(payload: dict):
+    """Save from the built-in editor; refuses (409) when the file changed on disk since it was read, unless force."""
+    target = _abs(str(payload.get("session_id") or ""), str(payload.get("path") or ""))
+    text = payload.get("text")
+    if not target or not isinstance(text, str) or len(text) > MAX_EDIT * 2:
+        return err("invalid_file")
+    if target.is_dir() or not target.parent.is_dir():
+        return err("invalid_path")
+    if target.exists() and not payload.get("force") and str(target.stat().st_mtime_ns) != payload.get("mtime"):
+        return err("changed_on_disk", 409)
+    text = text.replace("\r\n", "\n")
+    data = (text.replace("\n", "\r\n") if payload.get("crlf") else text).encode("utf-8")
+    try:
+        target.write_bytes((BOM if payload.get("bom") else b"") + data)
+    except OSError as e:
+        return err(f"write_failed:{e.strerror or e}")
+    return {"path": str(target), "mtime": str(target.stat().st_mtime_ns)}
+
+
+@app.get("/api/fs/raw")
+async def raw_image(path: str = "", session_id: str = ""):
+    """Image bytes for the viewer. Images only: anything else served here could run as a page on this origin."""
+    target = _resolve(session_id, path)
+    if not target or target.suffix.lower() not in IMAGES:
+        return err("not_an_image", 415)
+    return FileResponse(target, media_type=IMAGES[target.suffix.lower()])
+
+
+@app.post("/api/fs/show")
+async def show_file(payload: dict):
+    """`sd edit` / `sd view`: open a file in the browser that is using shelldeck."""
+    path, mode = str(payload.get("path") or ""), payload.get("mode") if payload.get("mode") in ("edit", "view") else "edit"
+    if not path:
+        return err("path_required")
+    return {"delivered": await _broadcast({"type": "open_file", "path": path, "mode": mode})}
+
+
+# ------------------------------------------------------------- scratchpad
+
+
+@app.get("/api/scratch")
+async def list_scratch():
+    return {"notes": db.list_scratch()}
+
+
+@app.post("/api/scratch")
+async def add_scratch(payload: dict):
+    return db.add_scratch(str(payload.get("body") or "")[:MAX_EDIT])
+
+
+@app.put("/api/scratch/{note_id}")
+async def save_scratch(note_id: str, payload: dict):
+    if not db.update_scratch(note_id, str(payload.get("body") or "")[:MAX_EDIT]):
+        return err("note_not_found", 404)
+    return {"status": "ok"}
+
+
+@app.delete("/api/scratch/{note_id}")
+async def delete_scratch(note_id: str):
+    db.delete_scratch(note_id)
+    return {"status": "ok"}
 
 
 @app.get("/api/sessions/{session_id}/screen")
@@ -1000,12 +1137,170 @@ async def session_input(session_id: str, payload: dict):
     text = str(payload.get("text") or "")[:20000]
     if not text:
         return err("text_required")
-    if not manager.write(session_id, text):
+    if not await _type(session_id, text, payload.get("enter", True)):
         return err("not_running", 409)
-    if payload.get("enter", True):
+    return {"status": "ok"}
+
+
+async def _type(session_id: str, text: str, enter: bool = True) -> bool:
+    if not manager.write(session_id, text):
+        return False
+    if enter:
         await asyncio.sleep(0.3)  # TUIs (Claude Code, Codex) treat text+CR in one burst as a paste, not a submit
         manager.write(session_id, "\r")
-    return {"status": "ok"}
+    return True
+
+
+# ------------------------------------------------------------- agent team
+
+
+async def _agent_in(session_id: str) -> str | None:
+    """The agent running in a terminal, if any."""
+    proc = manager.get(session_id)
+    found = await asyncio.to_thread(agents.running, {session_id: proc.pid}) if proc else {}
+    return found[session_id][0] if session_id in found else None
+
+
+def _handoff_files(handoff: dict) -> None:
+    project = db.get_project(handoff["project_id"])
+    try:
+        if project:
+            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]))
+    except OSError:
+        log.warning("writing hand-off files failed", exc_info=True)
+
+
+async def _tell_sender(handoff: dict, text: str) -> None:
+    """Toast in the browser, and a message typed into the sender's terminal when an agent runs there
+    (in a bare shell the text would run as a command)."""
+    await _broadcast({"type": "handoff", "handoff": handoff, "text": text})
+    if handoff.get("from_sid") and await _agent_in(handoff["from_sid"]):
+        await _type(handoff["from_sid"], team.one_line(text))
+
+
+@app.get("/api/handoffs")
+async def list_handoffs(project_id: str = "", to: str = "", status: str = ""):
+    return {"handoffs": db.list_handoffs(project_id or None, to or None, status or None)}
+
+
+@app.post("/api/handoffs")
+async def create_handoff(payload: dict):
+    """Hand a task to an agent already running in another terminal."""
+    to = db.get_session(str(payload.get("to") or ""))
+    sender = db.get_session(str(payload.get("from") or "")) or {}
+    task = str(payload.get("task") or "").strip()[:20000]
+    if not to:
+        return err("session_not_found", 404)
+    if not task:
+        return err("task_required")
+    key = await _agent_in(to["id"])
+    if not key:
+        return err("no_agent_running", 409)
+    h = db.add_handoff(project_id=to["project_id"], from_sid=sender.get("id"), from_nick=sender.get("nick"),
+                       to_sid=to["id"], to_nick=to["nick"], agent=key, model=None, task=task)
+    await asyncio.to_thread(_handoff_files, h)
+    project = db.get_project(to["project_id"]) or {"path": "."}
+    reply = f'when finished run: sd done {h["id"]} "<summary>"'
+    await _type(to["id"], team.one_line(
+        f"[hand-off {h['id']} from {sender.get('nick') or 'the user'}] {task} "
+        f"(task file: {Path(project['path']) / '.shelldeck' / 'handoffs' / (h['id'] + '.md')}; {reply})"))
+    return h
+
+
+@app.post("/api/handoffs/{handoff_id}/done")
+async def finish_handoff(handoff_id: str, payload: dict):
+    """The receiver closes a hand-off; the sender hears about it."""
+    h = db.get_handoff(handoff_id)
+    if not h:
+        return err("handoff_not_found", 404)
+    if h["status"] != "open":
+        return err("already_closed", 409)
+    status = "failed" if payload.get("failed") else "done"
+    result = str(payload.get("result") or "").strip()[:20000]
+    db.close_handoff(handoff_id, status, result)
+    h = db.get_handoff(handoff_id)
+    await asyncio.to_thread(_handoff_files, h)
+    await _tell_sender(h, f"[shelldeck] {h['to_nick']} {'finished' if status == 'done' else 'gave up on'} hand-off {h['id']}: {result or '(no summary)'}")
+    return h
+
+
+def _orphan(session_id: str) -> list[dict]:
+    """A terminal ended: its open hand-offs can't finish."""
+    gone = db.list_handoffs(to_sid=session_id, status="open")
+    for h in gone:
+        db.close_handoff(h["id"], "exited", "the terminal closed before the task was done")
+        _handoff_files(db.get_handoff(h["id"]) or h)
+    return gone
+
+
+async def _orphaned(session_id: str) -> None:
+    for h in await asyncio.to_thread(_orphan, session_id):
+        if not STOPPING.is_set():
+            await _tell_sender(h, f"[shelldeck] {h['to_nick']}'s terminal closed before hand-off {h['id']} was done")
+
+
+@app.post("/api/spawn")
+async def spawn_agent(payload: dict):
+    """A sub-agent in a new terminal of the parent's project, started on a hand-off. Sub-agents can't spawn."""
+    parent = db.get_session(str(payload.get("parent") or ""))
+    task = str(payload.get("task") or "").strip()[:20000]
+    if not parent:
+        return err("parent_not_found", 404)
+    if parent.get("parent"):
+        return err("subagents_cannot_spawn", 403)
+    if not task:
+        return err("task_required")
+    key = str(payload.get("agent") or "").strip() or await _agent_in(parent["id"]) or "claude"
+    if key not in team.SPAWN:
+        return err(f"cannot_spawn:{key}")
+    model = team.pick_model(key, payload.get("model"), task)
+    if model and not team.SAFE_MODEL.match(model):
+        return err("invalid_model")
+    project = db.get_project(parent["project_id"])
+    if not project or not Path(project["path"]).is_dir():
+        return err("project_not_found", 404)
+    shell = parent.get("shell") or ""
+    # the project root, so the kickoff prompt's relative .shelldeck/ path works
+    session = db.add_session(project["id"], cwd=project["path"], shell=shell, name=agents.AGENTS[key][0], parent=parent["id"])
+    h = db.add_handoff(project_id=project["id"], from_sid=parent["id"], from_nick=parent.get("nick"), to_sid=session["id"],
+                       to_nick=session["nick"], agent=key, model=model, task=task)
+    await asyncio.to_thread(_handoff_files, h)
+    line = team.spawn_line(key, model, team.kickoff(session["nick"], parent.get("nick") or "the user", h["id"]))
+    try:
+        _attach(session, 30, 120)
+    except Exception:  # noqa: BLE001 - spawn failures come from winpty/OS
+        log.exception("spawn failed for session %s", session["id"])
+        return err("spawn_failed", 500)
+    starter = asyncio.create_task(_start_agent(session["id"], line))
+    background.add(starter)
+    starter.add_done_callback(background.discard)
+    await _broadcast({"type": "spawned", "session_id": session["id"], "parent": parent["id"]})
+    return {"session": session, "handoff": h, "agent": key, "model": model, "command": line}
+
+
+async def _start_agent(session_id: str, line: str) -> None:
+    """Type the agent command once the shell shows its first prompt (shell integration marks it; WSL has none)."""
+    for _ in range(100):
+        if "\x1b]133;A" in manager.history(session_id):
+            break
+        await asyncio.sleep(0.1)
+    await _type(session_id, line)
+
+
+@app.get("/api/skills")
+async def skills_status():
+    return {"skills": [{"agent": k, "label": agents.AGENTS[k][0], "installed": team.installed(k)} for k in team.TARGETS]}
+
+
+@app.post("/api/skills")
+async def skills_install(payload: dict):
+    """Install (or remove) the shelldeck skill for these agents (default: every agent CLI on PATH)."""
+    keys = [k for k in payload.get("agents") or [] if k in team.TARGETS] or None
+    remove = bool(payload.get("remove"))
+    done = await asyncio.to_thread(team.install, keys, remove)
+    if not keys:
+        db.set_setting("agent_skills", "off" if remove else "on")
+    return {"results": [{"agent": a, "path": p, "status": st} for a, p, st in done]}
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -1151,6 +1446,12 @@ async def _pump(session_id: str) -> None:
     finally:
         readers.pop(session_id, None)
         manager.terminate(session_id)
+        try:
+            t = asyncio.get_running_loop().create_task(_orphaned(session_id))
+            background.add(t)
+            t.add_done_callback(background.discard)
+        except RuntimeError:  # loop closing
+            pass
 
 
 def _clamp(value, lo: int, hi: int, default: int) -> int:
@@ -1173,6 +1474,7 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             rows=rows,
             cols=cols,
             distro=settings["wsl_distro"] or None,
+            extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent"))) if v},
         )
     if sid not in readers:
         readers[sid] = asyncio.create_task(_pump(sid))
@@ -1264,12 +1566,19 @@ async def terminal_ws(ws: WebSocket, session_id: str):
 
 
 async def _broadcast_alarm(task: dict) -> None:
-    data = json.dumps({"type": "alarm", "task": _serialize_task(task)})
+    await _broadcast({"type": "alarm", "task": _serialize_task(task)})
+
+
+async def _broadcast(message: dict) -> int:
+    """Send to every open browser (the alarm socket); returns how many got it."""
+    data, sent = json.dumps(message), 0
     for ws in list(alarm_sockets):
         try:
             await ws.send_text(data)
+            sent += 1
         except (RuntimeError, WebSocketDisconnect):
             alarm_sockets.discard(ws)
+    return sent
 
 
 async def _send_alarm_snapshot(ws: WebSocket) -> None:
@@ -1564,6 +1873,10 @@ def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, 
     elif ALLOWED_HOSTS is not None:
         ALLOWED_HOSTS.add(host)
     _setup_logging()
+    # terminals inherit these, so `sd` inside them reaches this server and its data folder
+    os.environ["SHELLDECK_PORT"] = str(port)
+    if "SHELLDECK_HOME" in os.environ:
+        os.environ["SHELLDECK_HOME"] = str(db.config_dir().resolve())
     scheme = "https" if certfile else "http"
     (db.config_dir() / "server.json").write_text(json.dumps({"port": port, "scheme": scheme, "host": host}), encoding="utf-8")
     if code := (None if auth.has_password() else auth.setup_code()):

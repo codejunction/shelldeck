@@ -112,6 +112,7 @@ const P = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   "git-branch": '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/>',
+  note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
 };
 
 export function icon(name) {
@@ -142,8 +143,9 @@ export function dialog({ title = "", body = "", foot = "", wide = false, cls = "
   const prevFocus = document.activeElement;
   const d = {
     el: bg.firstElementChild,
-    close() {
-      if (!bg.isConnected) return;
+    canClose: null, // () => false vetoes closing (e.g. unsaved edits); close(true) skips it
+    close(force = false) {
+      if (!bg.isConnected || (!force && d.canClose && !d.canClose())) return;
       bg.remove();
       dialogs.splice(dialogs.indexOf(d), 1);
       onClose?.();

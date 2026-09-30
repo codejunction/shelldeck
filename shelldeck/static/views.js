@@ -3,6 +3,7 @@ import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
 import { renderAgents } from "./agents.js";
+import { renderScratch } from "./scratch.js";
 import { $, $$, api, authError, confirmDialog, dialog, esc, fmtTime, fromLocalInput, hydrateIcons, icon, menu, toLocalInput, toast, toastError, withEyes } from "./ui.js";
 
 let bookmarks = [];
@@ -14,9 +15,9 @@ export function init() {}
 export function show(view, el) {
   current = view;
   clearInterval(pollTimer);
-  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, agents: renderAgents }[view];
+  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, agents: renderAgents, scratch: renderScratch }[view];
   render(el);
-  if (!["bookmarks", "monitor", "history"].includes(view)) { // monitor refreshes from its own 2s poller
+  if (!["bookmarks", "monitor", "history", "scratch"].includes(view)) { // monitor refreshes from its own 2s poller
     pollTimer = setInterval(() => {
       if (current === view && !el.hidden && !document.querySelector(".dialog-bg")) render(el);
       else if (el.hidden) clearInterval(pollTimer);
@@ -616,7 +617,8 @@ export async function settingsDialog() {
       </div>
       <div class="field-row">
         <label class="field"><span>Open file paths with</span><select name="editor">
-          <option value="vscode" ${s.editor !== "system" ? "selected" : ""}>VS Code (at the line)</option>
+          <option value="vscode" ${s.editor === "vscode" ? "selected" : ""}>VS Code (at the line)</option>
+          <option value="shelldeck" ${s.editor === "shelldeck" ? "selected" : ""}>shelldeck's built-in editor</option>
           <option value="system" ${s.editor === "system" ? "selected" : ""}>System default app</option>
         </select></label>
         <span></span>

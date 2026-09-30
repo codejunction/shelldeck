@@ -48,6 +48,12 @@ function updateAgents() {
   S.agents = next;
   updateAgentStates();
   if (JSON.stringify([S.agents, S.agentState]) === before) return;
+  // AI agents nav link: how many run, amber when one needs you
+  const count = $(".sb-agents .sb-count");
+  const needs = Object.keys(next).filter((sid) => ["waiting", "approval"].includes(S.agentState[sid])).length;
+  count.hidden = !Object.keys(next).length;
+  count.textContent = needs ? `${needs} need${needs > 1 ? "" : "s"} you` : Object.keys(next).length;
+  count.classList.toggle("needs", !!needs);
   for (const pane of document.querySelectorAll(".pane[data-sid]")) {
     pane.classList.toggle("ai", !!next[pane.dataset.sid]);
     const el = pane.querySelector(".pane-head .agent");

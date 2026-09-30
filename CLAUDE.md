@@ -40,7 +40,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - T3 Code-like: zinc neutrals, violet accent, Inter/Segoe UI, Cascadia/Nerd Font terminal stack.
   - Monochrome logo: `static/icon.svg`, plus PNGs 32/192/512 and a web manifest.
   - Boot animation; motion throughout, disabled under `prefers-reduced-motion`.
-- **Auth.** A password is mandatory: the first visit creates it (8+ chars). A remote first visit also needs the host's setup code. Logins are per browser (cookie `sd_session`, sha256 in `auth_sessions`) and lock after 30 min idle; only non-GET requests and terminal input count as activity.
+- **Auth.** A password is mandatory: the first visit creates it (8+ chars). A remote first visit also needs the host's setup code. The hash lives in `<config>/password` (owner-only; also mirrored to the `auth_password_hash` setting for 0.0.4 and older, and migrated from it by `init_auth`), because a database write left in the WAL of a server that never exits cleanly got lost and reinstalls asked again. Only `reset()` removes it. Logins are per browser (cookie `sd_session`, sha256 in `auth_sessions`) and lock after 30 min idle; only non-GET requests and terminal input count as activity.
   - **One device at a time** (`server._active`, a session hash in memory): `_claim()` in the guard and both sockets lets a browser act only if it is the active one or no live one is (restarts and idle expiry free it). A login (`_login_response`) replaces this browser's old session, becomes active, and closes other sockets with 4423; idle browsers get `423 in_use` and a "Use here" lock screen (password). `/api/auth/*` stays exempt.
   - `auth_sessions.via` is `local` / `network` / `share:<host>`. Stopping or replacing a share deletes its rows (`_revoke`); `init_db` drops `share:%` rows on start. `/api/devices` lists live logins; `DELETE /api/devices/{hash|others}` revokes. UI: `static/devices.js` (sidebar Devices view).
   - The password changes only in Settings, with current + new + confirm, and the change signs out every other browser. There is no way to remove it.
@@ -58,7 +58,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 ## Settings (`/api/settings`, `SETTINGS_DEFAULTS` in server.py)
 
-`default_shell` (any of `shells.kinds()`), `wsl_distro`, `font_size` (8–32), `theme` (dark|light|system), `layout_mode` (tiled|free), `project_tint` (on|off), `terminal_theme` (`TERMINAL_THEMES` in server.py, mirrored by `PRESETS` in app.js), `font_family` (free text, `FONT_FAMILY` regex), `editor` (vscode|system). Validation lives in `write_settings`; adding a key means updating the defaults, the validation, `views.settingsDialog`, and the README table.
+`default_shell` (any of `shells.kinds()`), `wsl_distro`, `font_size` (8–32), `theme` (dark|light|system), `layout_mode` (tiled|free), `project_tint` (on|off), `terminal_theme` (`TERMINAL_THEMES` in server.py, mirrored by `PRESETS` in app.js), `font_family` (free text, `FONT_FAMILY` regex), `editor` (vscode|shelldeck|system). Validation lives in `write_settings`; adding a key means updating the defaults, the validation, `views.settingsDialog`, and the README table.
 
 ## Layout
 
@@ -85,6 +85,15 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - The page re-renders every 5s, so `keep()`/`restore()` hold the picked models, project and open model lists.
   - `screen` asks open browsers for a fresh xterm snapshot (`{"type":"snapshot"}` to the socket) and waits up to 1s, because raw TUI output is cursor-addressed. With no browser open it falls back to raw output.
   - `input` writes the text, waits 0.3s, then sends CR: TUIs take text plus CR in one burst as a paste.
+- **Terminal nicks.** `sessions.nick` is a person's name from `db.NICKS`, unique across all terminals (`_free_nick`, backfilled in `init_db`); `_session()` in cli.py resolves id, nick, name, then id prefix. PTYs get `SHELLDECK_NICK` and, for sub-agents, `SHELLDECK_PARENT` (`_attach` passes `extra_env`). `run()` exports `SHELLDECK_PORT` (and an absolute `SHELLDECK_HOME` when set), so `sd` in a terminal reaches the server that owns it.
+- `shelldeck/team.py`: agent teams.
+  - `tier()`/`pick_model()`: `--model auto|small|medium|large` maps onto the agent's own `models()` by regex (medium = its default).
+  - `SPAWN` (agent -> model flag, args before the prompt) and `spawn_line()`/`kickoff()`: the kickoff prompt is limited to `SAFE_PROMPT` characters so one double-quoted string works in pwsh, cmd, bash, zsh and fish; the task itself lives in a file.
+  - `write_files()`: `<project>/.shelldeck/handoffs/<id>.md` per hand-off plus the `handoff.md` index, rendered from the `handoffs` table (the DB is the source of truth); `.shelldeck/.gitignore` is `*`.
+  - `install()`: the `SKILL` text as `~/.claude|.codex|.config/devin/skills/shelldeck/SKILL.md`, or a `<!-- SHELLDECK_START -->` block in other agents' global instruction files (`TARGETS`; only claude/codex/devin/gemini/opencode paths are verified). The server runs it on start unless `SHELLDECK_HOME` is set or the `agent_skills` setting is `off` (`sd install-skill --remove`).
+  - Server: `/api/spawn` (refuses a parent that has a parent, i.e. sub-agents can't spawn; new session in the project root; `_start_agent` types the command after the shell's first `OSC 133;A`, up to 10s), `/api/handoffs` (target must run an agent, since typed text in a bare shell would execute), `/api/handoffs/{id}/done`. `_tell_sender` toasts every browser (`_broadcast` over the alarm socket) and types into the sender only when an agent runs there. `_pump`'s exit marks open hand-offs to that terminal `exited` (`_orphan`); `STOPPING` silences the messages at shutdown.
+- **File editor.** `/api/fs/file` GET/PUT (2 MB cap, NUL = binary, non-UTF-8 is read-only, CRLF/BOM round-trip, `mtime` as a `st_mtime_ns` string and 409 `changed_on_disk` unless `force`), `/api/fs/raw` (raster images only: SVG or HTML served on this origin would run script), `/api/fs/show` (broadcasts `open_file` for `sd edit/view`; the CLI falls back to `/?file=` when no browser is listening). Relative paths start at the session's cwd (`_abs`).
+- **Scratchpad.** `scratch` table (`id`, `body`, times; the title is the first line), `/api/scratch` CRUD, `static/scratch.js` (autosave 500ms, flushed when switching notes).
 - `shelldeck/auth.py`: password, setup code, browser sessions (5s cache, idle expiry, throttled `last_seen` writes), CLI token, login rate limit, `reset()`. `scheduler.py` / `runner.py`: APScheduler cron jobs and reminders; jobs run via `subprocess.run` with the default shell.
 - `shelldeck/gitgraph.py`: git log parsing + lane layout for the sidebar git popup (`static/gitgraph.js`), and `checkout` (refs starting with `-` refused). `has_git` flags projects in `/api/projects`.
 - `shelldeck/addons/fast_context.py`: vendored single-file LLM-free code search behind `sd search` (own index in `~/.cache/fastcontext`, `FC_CACHE_DIR` overrides). Import it lazily; keep edits to it minimal.
@@ -98,6 +107,9 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - `app.js`: state, `Term` class, layout tree and free canvas, sidebar, palette, shortcuts, boot.
   - `views.js`: bookmarks, scheduler, tasks, settings, add-project, alarms.
   - `devices.js`: Devices view (signed-in browsers, in use / idle, revoke).
+  - `editor.js`: `openFile(path, {sid, mode, line})` dialog: textarea + line-number gutter, markdown preview, image view, Ctrl+S, dirty guard through `dialog().canClose`. Used by `sd edit/view`, the palette's *Open file…* and clickable paths when the `editor` setting is `shelldeck`.
+  - `md.js`: small markdown renderer (escapes everything first; http(s) links and images only) for the viewer and the scratchpad.
+  - The alarm socket (`/ws/alarms`) also carries `open_file`, `spawned` (app.js opens the sub-agent's pane and gives focus back) and `handoff` (toast + chime).
   - `history.js`: Command history view (`/api/history`, `commands` table, filled by `{"type":"command"}` socket messages from the UI) and the search-all dialog (`/api/search` over `PtyManager.searchable`).
   - Clickable paths: `pathLinks()` in app.js asks `/api/fs/check` which candidates exist (cached 10s, since `cd` changes them), and `/api/open` launches a `vscode://` URL or the default app via `os.startfile`/`xdg-open`, never a shell. It refuses executables.
   - Ports: `stats.listening()` maps pids to LISTEN ports; `S.ports` feeds the pane-header chips.

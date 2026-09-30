@@ -69,7 +69,9 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 
 - **Projects sidebar.** Add folders with the built-in folder browser, then drag to reorder. Each project gets its own color on its sidebar dot, pane border and a subtle background tint.
 - **Git graph.** A branch icon on every git project opens its full commit graph, with branches, merges and tags drawn as colored lanes. Click a branch or tag, or right-click a commit, to check it out.
-- **Clickable paths.** `src/app.py:12:5`, `C:\x\y.ts(3,4)` and Python tracebacks become links that open in VS Code at that line.
+- **Clickable paths.** `src/app.py:12:5`, `C:\x\y.ts(3,4)` and Python tracebacks become links that open in VS Code at that line, or in the built-in editor.
+- **Built-in editor and viewer.** `sd edit FILE` and `sd view FILE` open a file in shelldeck: line numbers, `Ctrl+S` to save (CRLF and BOM kept, and it won't overwrite a file that changed on disk without asking), rendered markdown and images. *Open file…* in the command palette does the same.
+- **Open in editor.** A project's menu opens its folder in VS Code (or the file manager).
 - **Port detection.** Start a dev server and a chip with its port appears on the pane. Click it to open the page.
 
 ### Built for long sessions
@@ -82,12 +84,16 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Scheduler** for cron jobs that run in a project folder, with run history and logs.
 - **Task board** with due dates and reminder alarms.
 - **Task manager** with live CPU, RAM and GPU (NVIDIA) usage for the machine and for each terminal's process tree.
+- **Scratchpad** for quick markdown notes that belong to no project, with a preview, saved as you type.
 - **AI agents.** A terminal running Claude Code, Codex, Devin CLI, Gemini CLI, Copilot CLI, Cursor Agent, opencode, Aider, Amp, Qwen Code, Goose, Droid, Crush or Kiro gets an **AI** chip in its header with the tool and model. The AI agents page lists the running agents and every known agent CLI with its models (Codex and opencode read their own model caches), and launches one with a chosen model.
 - **Needs-you alerts.** When an agent stops working and waits for you, or shows a permission prompt, its chip turns amber (*NEEDS YOU*), a chime plays and you get a toast, or a desktop notification when shelldeck is in the background. Nothing plays for the terminal you are looking at.
 - **Context window.** Claude Code, Codex and Devin show how full their context window is: a percentage on the pane chip and a *CTX* meter in the top bar for the focused terminal. It is read from each agent's own session logs. Claude's window size is estimated from the model.
 - **Tasks to agents.** Open a task and click *Send to agent* to type it into a running agent. The task moves to In progress.
 - **Devin, everywhere.** Devin's model list comes from its own cache, so it matches what `devin --model` accepts. The model of a running Devin comes from `--model`, `DEVIN_MODEL` or the resumed session. The AI agents page also lists agents running outside shelldeck (the Devin desktop app, other terminal windows) and every Devin session from Devin's session store, with a *Resume* button that opens a terminal in the session's folder and runs `devin -r <id>`.
+- **Every terminal has a name.** Each terminal gets a person's name (Maya, Kofi, …) shown in its header and the sidebar, so you and your agents can say `sd peek Maya` instead of an id.
 - **Agents that talk to each other.** From inside a terminal, `sd agents` lists the other agents in the project, `sd peek` reads another terminal's screen and `sd tell` types a message into it, tagged with the sender so it can reply. *Copy team prompt* on the AI agents page gives you text to paste into each agent so it knows how.
+- **Sub-agents and hand-offs.** `sd spawn "task" --model small|medium|large` opens a new terminal in the project with a sub-agent (Claude Code, Codex, Devin, Gemini, Qwen or opencode) already working on the task, picking a cheaper or stronger model by how hard the task is (`auto` guesses). It opens next to yours without taking the keyboard. `sd handoff Maya "task"` gives a task to an agent that is already running. The receiver runs `sd done <id> "summary"`, and the sender gets the summary typed in (when an agent runs there) plus a toast and chime. Every hand-off is written to the project's `.shelldeck/handoff.md` (git-ignored) and listed on the AI agents page. Sub-agents can't spawn more agents, and a terminal that closes mid-task marks its hand-off as exited.
+- **Agents know the commands.** On start, shelldeck installs a `shelldeck` skill for every agent CLI on PATH: a skill for Claude Code, Codex and Devin, and a marked block in the global instructions file of Gemini, opencode, Qwen, Amp, Droid, Copilot, Crush, Goose and Kiro. `sd install-skill --remove` takes it out and stops the reinstall; the AI agents page has an *Install skill* button per agent.
 
 <table>
   <tr>
@@ -102,7 +108,7 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 
 ### Secure by default
 
-- **Password required.** Every browser logs in separately and locks after 30 minutes idle.
+- **Password required.** You create it once; upgrades and reinstalls keep it (only `sd reset-password` removes it). Every browser logs in separately and locks after 30 minutes idle.
 - **One device at a time.** Any number of browsers can stay signed in, but only one uses shelldeck; logging in on another takes over and idles the rest. The **Devices** page lists every signed-in browser (where from, last active, in use or idle) and revokes any of them.
 - **Local only.** shelldeck listens on `127.0.0.1` and refuses requests from other websites.
 - **Remote use** goes over an SSH tunnel or HTTPS. See [Remote access](#remote-access).
@@ -149,7 +155,7 @@ In the sidebar, Ctrl+click or middle-click a terminal to open it in a split. Rig
 | Project colors | tint on, off | on |
 | Terminal colors | default (follows theme), Dracula, One Dark, Nord, Gruvbox Dark, Solarized Dark, Solarized Light, GitHub Light | default |
 | Terminal font | any installed monospace font; empty uses Cascadia / Nerd Font | empty |
-| Open file paths with | VS Code (at the line), system default app | VS Code |
+| Open file paths with | VS Code (at the line), shelldeck's built-in editor, system default app | VS Code |
 | Password | created on first visit, changed here (current + new) | required |
 
 </details>
@@ -164,8 +170,14 @@ sd open [PATH] [--shell wsl]         add PATH as a project and open a terminal i
 sd list                              terminals grouped by project
 sd info                              details of the shelldeck terminal you're in
 sd agents [--all]                    AI agents running in this project's terminals (--all: every project, agents outside shelldeck, installed CLIs)
-sd peek TERMINAL [-n 40]             last lines of another terminal (id, id prefix or name)
+sd peek TERMINAL [-n 40]             last lines of another terminal (its name like Maya, id, id prefix or title)
 sd tell TERMINAL "MESSAGE" [--raw]   type a message into another terminal and press Enter
+sd spawn "TASK" [--agent A] [--model small|medium|large|auto|NAME]   sub-agent in a new terminal, working on TASK
+sd handoff TERMINAL "TASK"           hand a task to an agent already running in another terminal
+sd done ID ["SUMMARY"] [--failed]    close a hand-off you were given; the sender is told
+sd handoffs [--all]                  hand-offs in this project and their status
+sd install-skill [AGENT...] [--remove]   teach agent CLIs the sd team commands (automatic on server start)
+sd edit FILE / sd view FILE          open a file in shelldeck's editor / viewer
 sd search QUERY [--root DIR]         LLM-free code search with ranked, highlighted snippets
 sd render FILE                       pretty-print code or markdown
 sd schedule list|add|run|toggle|delete|logs
@@ -180,7 +192,8 @@ sd reset-password                    emergency: forget the password (host only)
 - **Startup banner.** `sd` prints the version and the Local and Network URLs. When you start it from Win+R, the Start menu or a shortcut, its window stays open until you press Enter.
 - **Port.** The default port is `5455`. Change it with `--port` or `SHELLDECK_PORT`.
 - **Browser.** `--app` opens a chromeless Edge/Chrome window instead of a browser tab.
-- **Inside terminals.** Inside a shelldeck terminal, `SHELLDECK_SESSION_ID` is set.
+- **Inside terminals.** Inside a shelldeck terminal, `SHELLDECK_SESSION_ID`, `SHELLDECK_NICK` (its name) and `SHELLDECK_PORT` are set, and `SHELLDECK_PARENT` in a sub-agent's terminal.
+- **Agent permissions.** Claude Code asks before running `sd done` and friends. To let sub-agents report back on their own, allow `Bash(sd:*)` in your Claude Code permissions.
 - **Code search.** `sd search` builds a persistent index and returns ranked snippets with confidence scores. Useful options: `--ext py,ts`, `--glob "src/*"`, `--top N`, `--format text|json|paths` and `--reindex`.
 
 ## Remote access
