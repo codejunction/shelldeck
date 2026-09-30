@@ -109,6 +109,69 @@ def test_agents(client, tmp_path, monkeypatch):
     assert client.post(f"/api/sessions/{sid}/input", json={}).json()["error"] == "text_required"
 
 
+def test_team(client, tmp_path, monkeypatch):
+    """Terminal nicks, sd spawn (without really starting a shell), hand-off files, done and orphaned hand-offs."""
+    from shelldeck import team
+
+    team._selfcheck()  # tiers, model picks, spawn line, skill install
+    started = []
+
+    async def fake_start(sid, line):
+        started.append(line)
+
+    monkeypatch.setattr(server, "_attach", lambda *a: None)
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+    a = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()
+    b = client.post("/api/sessions", json={"cwd": str(tmp_path)}).json()
+    assert a["nick"] and b["nick"] and a["nick"] != b["nick"]
+    assert client.post("/api/spawn", json={"parent": a["id"]}).json()["error"] == "task_required"
+    assert client.post("/api/spawn", json={"parent": a["id"], "task": "x", "agent": "aider"}).json()["error"] == "cannot_spawn:aider"
+    r = client.post("/api/spawn", json={"parent": a["id"], "task": "fix a typo in the readme", "agent": "claude", "model": "large"}).json()
+    kid, h = r["session"], r["handoff"]
+    assert kid["parent"] == a["id"] and r["model"] == "opus" and started == [r["command"]]
+    assert r["command"].startswith(f'claude --model opus "You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.')
+    task_file = tmp_path / ".shelldeck" / "handoffs" / f"{h['id']}.md"
+    assert "fix a typo in the readme" in task_file.read_text(encoding="utf-8")
+    assert (tmp_path / ".shelldeck" / ".gitignore").read_text() == "*\n"
+    # sub-agents can't spawn
+    assert client.post("/api/spawn", json={"parent": kid["id"], "task": "more"}).status_code == 403
+    # a hand-off needs an agent running in the target (typed text would run in a bare shell)
+    assert client.post("/api/handoffs", json={"to": b["id"], "task": "x"}).status_code == 409
+    done = client.post(f"/api/handoffs/{h['id']}/done", json={"result": "fixed it"}).json()
+    assert done["status"] == "done" and "fixed it" in task_file.read_text(encoding="utf-8")
+    assert client.post(f"/api/handoffs/{h['id']}/done", json={}).status_code == 409
+    assert "| done |" in (tmp_path / ".shelldeck" / "handoff.md").read_text(encoding="utf-8")
+    h2 = client.post("/api/spawn", json={"parent": a["id"], "task": "another"}).json()["handoff"]
+    assert [x["id"] for x in server._orphan(h2["to_sid"])] == [h2["id"]]
+    assert db.get_handoff(h2["id"])["status"] == "exited"
+    assert [x["id"] for x in client.get("/api/handoffs", params={"project_id": a["project_id"]}).json()["handoffs"]] == [h2["id"], h["id"]]
+
+
+def test_file_editor_and_scratch(client, tmp_path):
+    f = tmp_path / "notes.txt"
+    f.write_bytes(b"one\r\ntwo\r\n")
+    r = client.get("/api/fs/file", params={"path": str(f)}).json()
+    assert r["text"] == "one\ntwo\n" and r["crlf"] and not r["readonly"]
+    # saving keeps CRLF, and refuses when the file changed on disk since it was read
+    assert client.put("/api/fs/file", json={"path": str(f), "text": "uno\n", "mtime": r["mtime"], "crlf": True}).status_code == 200
+    assert f.read_bytes() == b"uno\r\n"
+    assert client.put("/api/fs/file", json={"path": str(f), "text": "stale", "mtime": r["mtime"]}).status_code == 409
+    new = client.get("/api/fs/file", params={"path": str(tmp_path / "new.md")}).json()
+    assert new["new"] and new["text"] == ""
+    (tmp_path / "bin.dat").write_bytes(b"\0\1\2")
+    assert client.get("/api/fs/file", params={"path": str(tmp_path / "bin.dat")}).json()["error"] == "binary_file"
+    (tmp_path / "x.svg").write_text("<svg onload=alert(1)>")
+    assert client.get("/api/fs/raw", params={"path": str(tmp_path / "x.svg")}).status_code == 415
+    assert client.post("/api/fs/show", json={"path": str(f)}).json() == {"delivered": 0}
+
+    n = client.post("/api/scratch", json={"body": "# Ideas"}).json()
+    assert client.put(f"/api/scratch/{n['id']}", json={"body": "# Ideas\nmore"}).status_code == 200
+    assert client.get("/api/scratch").json()["notes"][0]["body"] == "# Ideas\nmore"
+    client.delete(f"/api/scratch/{n['id']}")
+    assert client.get("/api/scratch").json()["notes"] == []
+    assert client.put("/api/scratch/nope", json={"body": ""}).status_code == 404
+
+
 def test_agent_context(tmp_path, monkeypatch):
     """Context window use read from Claude Code's and Codex's own logs (this process plays the agent)."""
     import json
@@ -359,6 +422,21 @@ def test_auth_setup_login_change_reset(browser, monkeypatch):
     monkeypatch.setattr(server, "_is_local", lambda conn: False)
     assert b.post("/api/auth/setup", json={"password": "x" * 9, "confirm": "x" * 9, "code": "wrong"}).status_code == 403
     assert b.post("/api/auth/setup", json={"password": "x" * 9, "confirm": "x" * 9, "code": code}).status_code == 200
+
+
+def test_password_survives_reinstall(tmp_path, monkeypatch):
+    """Set once: the password file outlives a lost database row, and 0.0.4's database copy is migrated."""
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    db.init_db()
+    auth.set_password("longenough")
+    db.delete_setting(auth._PASSWORD_KEY)  # the row an unclean shutdown lost
+    assert auth.init_auth() is None and auth.check_password("longenough")
+    (tmp_path / "password").unlink()
+    db.set_setting(auth._PASSWORD_KEY, auth._hash_password("fromolder1"))  # only an old version's copy
+    auth.init_auth()
+    assert auth.check_password("fromolder1")
+    auth.reset()
+    assert not auth.has_password() and not (tmp_path / "password").exists()
 
 
 def test_login_rate_limit_and_link(browser, monkeypatch):
