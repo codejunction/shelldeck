@@ -2,6 +2,28 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.0.5] - 2026-10-01
+
+### Added
+
+- AI agents: a terminal running Claude Code, Codex, Devin CLI, Gemini CLI, Copilot CLI, Cursor Agent, opencode, Aider, Amp, Qwen Code, Goose, Droid, Crush or Kiro gets an **AI** chip with the tool and model. The AI agents page lists running agents and every known agent CLI with its models, and launches one with a chosen model.
+- Needs-you alerts: when an agent asks a question or a permission prompt, its chip turns amber, a chime plays and you get a toast (or a desktop notification in the background). An agent that just finished stays quiet.
+- Context window: a percentage on the agent's chip and a *CTX* meter in the top bar, read from the agent's own session logs (Claude Code, Codex, Devin).
+- Devin: models from Devin's own cache, the running model from `--model`, `DEVIN_MODEL` or the resumed session, agents running outside shelldeck, and Devin's sessions with a *Resume* button.
+- Every terminal has a name (Maya, Kofi, …) in its header and the sidebar.
+- `sd agents`, `sd peek`, `sd tell`: agents in a project see and message each other. *Copy team prompt* on the AI agents page.
+- `sd spawn "task" --model small|medium|large|auto`: a sub-agent in a new terminal, already working on the task. `sd handoff NAME "task"` gives a task to a running agent; `sd done ID "summary"` reports back to the sender. Hand-offs are listed on the AI agents page and in `.shelldeck/handoff.md`.
+- Sub-agent questions go to the parent agent, not to you; the parent answers with `sd answer NAME KEYS` and closes finished sub-agents with `sd close NAME` (or *Close* on the hand-off toast).
+- `sd install-skill`: shelldeck teaches every agent CLI on PATH the `sd` team commands on start (`--remove` undoes it).
+- *Send to agent* on a task types it into a running agent.
+- Built-in editor and viewer: `sd edit FILE`, `sd view FILE`, *Open file…* in the palette, and clickable paths when the `editor` setting is `shelldeck`. Markdown preview, images, `Ctrl+S`, and no silent overwrite of a file changed on disk.
+- Scratchpad: markdown notes that belong to no project, saved as you type.
+- Release candidates can be published to PyPI from a feature branch (manual `release.yml` run).
+
+### Fixed
+
+- Upgrades and reinstalls no longer ask for a new password: it is kept in its own file next to the database.
+
 ## [0.0.4] - 2026-09-29
 
 ### Added
@@ -67,6 +89,7 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
+[0.0.5]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.5
 [0.0.4]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.4
 [0.0.3]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.3
 [0.0.2]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.2
