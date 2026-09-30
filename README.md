@@ -42,6 +42,8 @@ uv tool install shelldeck      # or: pipx install shelldeck, or: pip install she
 uvx shelldeck                  # try it without installing
 ```
 
+To try a release candidate, pin it: `uv tool install --force shelldeck==0.0.5rc1` (or `pip install shelldeck==0.0.5rc1`). Go back to the stable release with `uv tool install --force shelldeck`.
+
 Requirements: Windows 10 1809+ (for ConPTY) or Linux, and a modern browser.
 
 ## Quick start
