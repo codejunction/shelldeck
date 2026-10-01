@@ -4,17 +4,21 @@ import { startMonitor } from "./monitor.js";
 import { searchAllDialog } from "./history.js";
 import { showGitGraph } from "./gitgraph.js";
 import { openFile } from "./editor.js";
+import { canShare, initShare, setShareState, shareDialog } from "./share.js";
 
 // ------------------------------------------------------------------ state
+
+// `/?sid=<id>&embed=1`: the iOS app's WebView shows that one terminal and nothing else
+const EMBED = new URLSearchParams(location.search).get("embed") === "1" ? new URLSearchParams(location.search).get("sid") : null;
 
 export const S = {
   projects: [],
   settings: { default_shell: "pwsh", wsl_distro: "", font_size: "13", theme: "dark" },
   shells: { kinds: [], available: [], wsl_distros: [] },
   terms: new Map(), // sid -> Term
-  layout: store.get("layout", null), // {sid} | {dir, kids, sizes}
-  free: store.get("free", {}), // free mode: sid -> {x, y, w, h, z}
-  focused: store.get("focused", null),
+  layout: EMBED ? { sid: EMBED } : store.get("layout", null), // {sid} | {dir, kids, sizes}
+  free: EMBED ? {} : store.get("free", {}), // free mode: sid -> {x, y, w, h, z}
+  focused: EMBED || store.get("focused", null),
   view: "terminals",
   collapsed: new Set(store.get("collapsed", [])),
   order: store.get("order", []),
@@ -22,12 +26,13 @@ export const S = {
   ports: {}, // sid -> listening TCP ports, from the stats poller
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
   agentState: {}, // sid -> working | waiting | approval (updateAgentStates)
+  serverAgentState: {}, // sid -> working | approval | idle, from the server's agent_state broadcasts
   online: true,
 };
 
 const SHELL_LABEL = { pwsh: "pwsh", powershell: "PowerShell", cmd: "cmd", wsl: "WSL" };
 const mobile = matchMedia("(max-width: 900px)");
-const isFree = () => S.settings.layout_mode === "free" && !mobile.matches;
+const isFree = () => S.settings.layout_mode === "free" && !mobile.matches && !EMBED;
 
 // Project palette slots (db column projects.color). Tuned to read on dark and light.
 const PROJECT_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#22d3ee", "#fb923c"];
@@ -802,6 +807,7 @@ function flatten(n) {
 }
 
 function saveLayout() {
+  if (EMBED) return;
   store.set("layout", S.layout);
   store.set("free", S.free);
   store.set("focused", S.focused);
@@ -1711,6 +1717,7 @@ function commandPalette() {
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
     ["Devices", "devices", () => switchView("devices")],
+    ...(canShare() ? [["Share…", "share", () => shareDialog()]] : []),
     ["AI agents", "sparkle", () => switchView("agents")],
     ["Scratchpad", "note", () => switchView("scratch")],
     ["Open file…", "note", () => openFileDialog()],
@@ -1898,6 +1905,8 @@ function connectAlarms() {
     if (msg.type === "alarm_snapshot") msg.alarms.forEach((t) => views.showAlarm(t, false));
     if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
     if (msg.type === "spawned") openSpawned(msg.session_id);
+    if (msg.type === "share_state") setShareState(msg.state);
+    if (msg.type === "agent_state") S.serverAgentState[msg.session_id] = msg.state;
     // a sub-agent's question whose parent isn't an agent (a plain shell): then it is yours
     if (msg.type === "question" && notify(msg.session_id, `${msg.nick} is asking you`, msg.text.slice(0, 200), "warn")) views.chime();
     if (msg.type === "handoff") {
@@ -1974,6 +1983,7 @@ function wireGlobal() {
     else if (act === "split") splitNew(a.dataset.dir);
     else if (act === "bookmark-picker") views.bookmarkPicker();
     else if (act === "tile") tileAll();
+    else if (act === "share") shareDialog();
   });
   window.addEventListener("resize", () => fitVisible());
   const snapshotAll = () => S.terms.forEach((t) => t.snapshot());
@@ -2007,6 +2017,10 @@ function finishBoot() {
 }
 
 async function init() {
+  if (EMBED) {
+    document.body.classList.add("embed");
+    $("#boot").remove();
+  }
   hydrateIcons();
   wireGlobal();
   wireSidebar();
@@ -2024,7 +2038,7 @@ async function init() {
   }
   applySettings();
   await refreshProjects();
-  startMonitor();
+  if (!EMBED) startMonitor();
   await finishBoot();
   // `?session=<id>` from `shelldeck open`
   const params = new URLSearchParams(location.search);
@@ -2042,7 +2056,9 @@ async function init() {
     openFile(params.get("file"), { mode: params.get("mode") === "view" ? "view" : "edit" });
   }
   views.loadBookmarks();
+  if (EMBED) return setInterval(refreshProjects, 5000);
   connectAlarms();
+  initShare();
   setInterval(refreshProjects, 5000);
 }
 

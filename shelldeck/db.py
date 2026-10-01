@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -137,7 +138,15 @@ def init_db() -> None:
                 created_at REAL NOT NULL,
                 last_seen REAL NOT NULL,
                 client TEXT,
-                via TEXT
+                via TEXT,
+                kind TEXT
+            );
+
+            -- Expo push tokens of logged-in app devices (session_hash = auth_sessions.token_hash)
+            CREATE TABLE IF NOT EXISTS push_tokens (
+                token TEXT PRIMARY KEY,
+                session_hash TEXT NOT NULL,
+                created_at REAL NOT NULL
             );
 
             -- command history (sessions/projects may be deleted later; keep the text)
@@ -194,8 +203,10 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
         for (sid,) in conn.execute("SELECT id FROM sessions WHERE nick IS NULL ORDER BY created_at").fetchall():
             conn.execute("UPDATE sessions SET nick = ? WHERE id = ?", (_free_nick(conn), sid))
-        if "via" not in {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)")}:
-            conn.execute("ALTER TABLE auth_sessions ADD COLUMN via TEXT")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)")}
+        for col in ("via", "kind"):  # kind: browser | remote (the iOS app; never takes over)
+            if col not in cols:
+                conn.execute(f"ALTER TABLE auth_sessions ADD COLUMN {col} TEXT")
         conn.execute("DELETE FROM auth_sessions WHERE via LIKE 'share:%'")  # shares end with the server
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         if "color" not in cols:
@@ -378,11 +389,11 @@ def list_sessions_with_project() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def add_auth_session(token_hash: str, now: float, client: str, via: str = "local") -> None:
+def add_auth_session(token_hash: str, now: float, client: str, via: str = "local", kind: str = "browser") -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO auth_sessions (token_hash, created_at, last_seen, client, via) VALUES (?, ?, ?, ?, ?)",
-            (token_hash, now, now, client[:200], via),
+            "INSERT INTO auth_sessions (token_hash, created_at, last_seen, client, via, kind) VALUES (?, ?, ?, ?, ?, ?)",
+            (token_hash, now, now, client[:200], via, kind),
         )
         conn.commit()
 
@@ -400,6 +411,31 @@ def delete_auth_sessions_via(via: str) -> list[str]:
         conn.execute("DELETE FROM auth_sessions WHERE via = ?", (via,))
         conn.commit()
         return gone
+
+
+def add_push_token(token: str, session_hash: str) -> None:
+    with _connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO push_tokens (token, session_hash, created_at) VALUES (?, ?, ?)", (token, session_hash, time.time()))
+        conn.commit()
+
+
+def delete_push_token(token: str, session_hash: str) -> bool:
+    with _connect() as conn:
+        n = conn.execute("DELETE FROM push_tokens WHERE token = ? AND session_hash = ?", (token, session_hash)).rowcount
+        conn.commit()
+        return n > 0
+
+
+def delete_push_tokens(session_hashes: list[str]) -> None:
+    with _connect() as conn:
+        conn.executemany("DELETE FROM push_tokens WHERE session_hash = ?", [(h,) for h in session_hashes])
+        conn.commit()
+
+
+def list_push_tokens() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM push_tokens")]
 
 
 def get_auth_session(token_hash: str) -> dict | None:

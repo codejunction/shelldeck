@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import hashlib
 import hmac
 import json
@@ -8,7 +9,9 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -17,12 +20,13 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import psutil
+import segno
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agents, auth, db, gitgraph, shells, stats, team
+from . import agents, auth, db, gitgraph, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -68,6 +72,16 @@ QUIET_S = 2.5  # a question counts once the sub-agent's screen stops changing
 BOX = re.compile("[\u2500-\u257f]+")  # rules and frames a TUI draws around its prompts
 REASK_S = 120  # the same question redrawn within this long is not forwarded again
 asked_before: dict[str, tuple[str, float]] = {}  # sub-agent -> (last question forwarded, when)
+# agent "needs you" detection (mirrors updateAgentStates in static/app.js): every terminal's last output,
+# the start and text of its current burst, and each agent terminal's state: working | approval | idle
+out_at: dict[str, float] = {}
+busy_since: dict[str, float] = {}
+burst: dict[str, str] = {}
+agent_state: dict[str, str] = {}
+AGENT_BUSY_S = 5  # output for at least this long counts as working (not a redraw or echo)
+# a sub-agent's question relayed to its parent (_forward_question): on the parent's screen, not asking you
+RELAYED = re.compile(r"\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call")
+EXPO_PUSH = "https://exp.host/--/api/v2/push/send"
 STOPPING = asyncio.Event()  # set at shutdown: dying terminals then don't message their parents
 background: set[asyncio.Task] = set()  # fire-and-forget tasks, referenced so they aren't collected
 # shell integration reports the working directory (see shelldeck/integration)
@@ -78,14 +92,19 @@ def err(code: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
-# `sd share`: the tunnel's public hostname, the sha256 of its one unused link token (None once used),
-# when that link expires, when the CLI last renewed the lease, and one grant per browser that opened
-# a link: sha256(cookie) -> {id, ip, agent, at, state: pending|ok|denied, session}.
+# The share: a cloudflared quick tunnel this server runs (share.py). _share holds the tunnel's public
+# hostname, its one unused link token (None once used; kept so the host UI can show its QR) and when that
+# expires, and one grant per browser that opened a link: sha256(cookie) -> {id, ip, agent, at,
+# state: pending|ok|denied, session}. ponytail: the share runs until stopped, with no one watching;
+# the UI shows a "Sharing" pill so it's never invisible.
 _share: dict = {}
+_share_lock = asyncio.Lock()  # held while cloudflared starts: "starting", and a second start waits
+_share_sent: dict = {"key": None}  # the last share_state broadcast, so the watcher notices expiry
 SHARE_COOKIE = "sd_share"
-SHARE_LEASE = 60  # seconds without a CLI heartbeat before the share closes itself
 LINK_TTL = 600  # a link must be opened within 10 minutes, once
 APPROVAL_TTL = 300  # a pending device the host didn't answer is dropped after 5 minutes
+SELF_URL = {"url": "http://127.0.0.1:5455"}  # where the tunnel points; set by run()
+CLIENT_HEADER = "x-shelldeck-client"  # "ios" asks for a remote login (see _login_response)
 
 
 def _sha(value: str) -> str:
@@ -93,13 +112,12 @@ def _sha(value: str) -> str:
 
 
 def _share_on() -> bool:
-    """A share exists and its `sd share` process is still renewing it."""
-    return bool(_share) and time.time() - _share["seen"] < SHARE_LEASE
+    return bool(_share)
 
 
 def _share_link_ok(token: str) -> bool:
-    key = _share.get("link")
-    return bool(key) and time.time() < _share["link_until"] and hmac.compare_digest(_sha(token), key)
+    key = _share.get("token")
+    return bool(key) and time.time() < _share["link_until"] and hmac.compare_digest(token, key)
 
 
 def _grant(conn) -> dict | None:
@@ -160,7 +178,8 @@ async def lifespan(app: FastAPI):
     manager.prune({s["id"] for s in db.list_sessions()})
     saver = asyncio.create_task(_save_scrollback())
     asker = asyncio.create_task(_watch_questions())
-    reaper = asyncio.create_task(_share_reaper())
+    watcher = asyncio.create_task(_watch_share())
+    agent_watch = asyncio.create_task(_watch_agents())
     # every start refreshes the shelldeck skill of each agent CLI on PATH (dev/test homes skip it);
     # `sd install-skill --remove` turns this off
     if "SHELLDECK_HOME" not in os.environ and db.get_setting("agent_skills", "on") == "on":
@@ -172,8 +191,12 @@ async def lifespan(app: FastAPI):
     yield
     saver.cancel()
     asker.cancel()
-    reaper.cancel()
+    watcher.cancel()
+    agent_watch.cancel()
     STOPPING.set()
+    if _share:
+        await asyncio.to_thread(share.stop)
+        _share.clear()
     stats.stop()
     sched.shutdown()
     for task in list(readers.values()):
@@ -193,13 +216,12 @@ async def _save_scrollback() -> None:
             log.warning("saving scrollback failed", exc_info=True)
 
 
-async def _share_reaper() -> None:
-    """Close a share whose `sd share` stopped renewing it (killed, window closed, crashed)."""
+async def _watch_share() -> None:
+    """Tell host browsers when the link or a pending device expires (every other change says so itself)."""
     while True:
-        await asyncio.sleep(10)
-        if _share and not _share_on():
-            log.info("share lease expired; closing it")
-            await _share_stop()
+        await asyncio.sleep(5)
+        if _share and _share_key(_share_state()) != _share_sent["key"]:
+            await _share_changed()
 
 
 class RevalidatedStaticFiles(StaticFiles):
@@ -241,7 +263,10 @@ _active: dict[str, str | None] = {"h": None}
 
 
 def _claim(h: str) -> bool:
-    """True when browser session `h` may act: it is the active one, or no live session is."""
+    """True when browser session `h` may act: it is the active one, or no live session is.
+    Remote (iOS app) logins always may, and never take the slot."""
+    if auth.remote(h):
+        return True
     if _active["h"] != h and auth.alive(_active["h"]):
         return False
     _active["h"] = h
@@ -325,15 +350,20 @@ def _via(request: Request) -> str:
 
 async def _login_response(request: Request, body: dict, res=None):
     """Start a login session (cookie on `res`, JSON body by default). It becomes the active device:
-    this browser's previous login is replaced and every other device goes idle."""
+    this browser's previous login is replaced and every other device goes idle. A remote login (the
+    iOS app through an approved share grant) takes nothing over: the host browser stays in use."""
     if old := auth.session_hash(request.cookies.get(auth.COOKIE)):
         auth.end_session(old)
-    token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}", _via(request))
+    g = _grant(request) if _via_share(request) else None
+    remote = bool(g and g["state"] == "ok" and request.headers.get(CLIENT_HEADER, "").lower() == "ios")
+    token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}", _via(request),
+                             "remote" if remote else "browser")
     h = auth.session_hash(token)
-    _active["h"] = h
-    if _via_share(request) and (g := _grant(request)):
+    if g:
         g["session"] = h  # revoking this login also voids the grant
-    await _close_session_sockets(lambda owner: owner != h, IN_USE)
+    if not remote:
+        _active["h"] = h
+        await _close_session_sockets(lambda owner: owner != h and not auth.remote(owner), IN_USE)
     res = res or JSONResponse(body)
     res.set_cookie(
         auth.COOKIE, token, httponly=True, samesite="strict", path="/",
@@ -358,7 +388,7 @@ async def auth_status(request: Request):
         "has_password": auth.has_password(),
         "setup_code_required": not auth.has_password() and not _is_local(request),
         "authenticated": bool(who),
-        "in_use_elsewhere": bool(who and who[1] and who[1] != _active["h"] and auth.alive(_active["h"])),
+        "in_use_elsewhere": bool(who and who[1] and not auth.remote(who[1]) and who[1] != _active["h"] and auth.alive(_active["h"])),
         "idle_timeout": auth.LOCK_TIMEOUT_SECONDS,
         "min_length": auth.MIN_PASSWORD,
     }
@@ -411,83 +441,163 @@ async def auth_login_link(request: Request):
     return {"path": f"/api/auth/link/{code}"}
 
 
+def _host(request: Request) -> bool:
+    """The host: its CLI, or a browser on this machine that isn't coming through the tunnel."""
+    return auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)) or (_is_local(request) and not _via_share(request))
+
+
+@functools.lru_cache(maxsize=4)
+def _qr(url: str) -> str:
+    return segno.make(url, error="l").svg_inline(scale=5, border=2, light="#fff")
+
+
+def _share_state() -> dict:
+    """ShareState (see plans/ios-app.md, API contract)."""
+    host, token = _share.get("host"), _share.get("token")
+    link = None
+    if token and time.time() < _share["link_until"]:
+        url = f"https://{host}/share/{token}"
+        link = {"path": f"/share/{token}", "url": url, "expires_at": int(_share["link_until"]), "qr_svg": _qr(url)}
+    return {
+        "sharing": bool(_share), "starting": _share_lock.locked(), "url": f"https://{host}" if host else None,
+        "link": link, "pending": _pending(), "strong_password": auth.strong_password(), "cloudflared": bool(share.command()),
+        "terms_accepted": auth.terms_accepted(share.TERMS_VERSION), "terms": share.TERMS,
+    }
+
+
+def _share_key(state: dict) -> tuple:
+    return state["sharing"], state["starting"], bool(state["link"]), tuple(p["id"] for p in state["pending"])
+
+
+async def _share_changed() -> None:
+    """Every host browser gets the new ShareState."""
+    state = _share_state()
+    _share_sent["key"] = _share_key(state)
+    await _broadcast({"type": "share_state", "state": state}, host_only=True)
+
+
+def _pending() -> list[dict]:
+    """Devices waiting for the host; stale ones are dropped."""
+    grants, now = _share.get("grants", {}), time.time()
+    for k in [k for k, g in grants.items() if g["state"] == "pending" and now - g["at"] > APPROVAL_TTL]:
+        del grants[k]
+    return [{"id": g["id"], "ip": g["ip"], "agent": g["agent"], "at": g["at"]} for g in grants.values() if g["state"] == "pending"]
+
+
 @app.post("/api/share")
-async def share_start(request: Request, payload: dict):
-    """Host CLI only: open the gate for an `sd share` tunnel host; returns its first link."""
-    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
-        return err("host_cli_only", 403)
+async def share_start(request: Request):
+    """Host only: start the tunnel (or return the running share) with a fresh link."""
+    if not _host(request):
+        return err("host_only", 403)
     if not auth.strong_password():
         return err("weak_password", 409)
-    host = str(payload.get("host", "")).lower()
-    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
-        return err("invalid_host")
-    await _share_stop()
-    _share.update(host=host, seen=time.time(), grants={})
-    log.info("sharing via %s", host)
-    return {"path": _new_share_link()}
+    if not auth.terms_accepted(share.TERMS_VERSION):
+        return err("terms_required", 409)
+    if not share.command():
+        return JSONResponse({"error": "no_cloudflared", "hint": share.HINT}, status_code=404)
+    problem = None
+    async with _share_lock:
+        if not _share:
+            await _share_changed()  # starting
+            loop = asyncio.get_running_loop()
+
+            def exited(host: str) -> None:  # cloudflared's reader thread
+                loop.call_soon_threadsafe(_spawn, _tunnel_exited(host))
+
+            try:
+                host = await asyncio.to_thread(share.start, SELF_URL["url"], exited)
+                _share.update(host=host, grants={})
+                _new_share_link()
+                log.info("sharing via %s", host)
+            except TimeoutError:
+                problem = err("tunnel_timeout", 504)
+            except (OSError, RuntimeError):
+                log.warning("cloudflared failed to start", exc_info=True)
+                problem = err("tunnel_failed", 502)
+    await _share_changed()
+    return problem or _share_state()
 
 
-def _new_share_link() -> str:
+def _spawn(coro) -> None:
+    t = asyncio.get_running_loop().create_task(coro)
+    background.add(t)
+    t.add_done_callback(background.discard)
+
+
+async def _tunnel_exited(host: str) -> None:
+    if _share.get("host") == host:
+        log.warning("cloudflared exited; sharing stopped")
+        await _share_stop()
+
+
+def _new_share_link() -> None:
     """One link at a time: a new one voids the unused old one."""
-    token = secrets.token_urlsafe(32)
-    _share.update(link=_sha(token), link_until=time.time() + LINK_TTL)
-    return f"/share/{token}"
+    _share.update(token=secrets.token_urlsafe(32), link_until=time.time() + LINK_TTL)
 
 
 @app.get("/api/share")
-async def share_state(request: Request):
-    """Host CLI heartbeat: renews the lease and lists devices waiting for approval."""
-    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
-        return err("host_cli_only", 403)
-    if not _share:
-        return {"host": None, "strong_password": auth.strong_password()}
-    now = time.time()
-    _share["seen"] = now
-    grants = _share["grants"]
-    for k in [k for k, g in grants.items() if g["state"] == "pending" and now - g["at"] > APPROVAL_TTL]:
-        del grants[k]
-    pending = [{"id": g["id"], "ip": g["ip"], "agent": g["agent"]} for g in grants.values() if g["state"] == "pending"]
-    return {"host": _share["host"], "pending": pending, "strong_password": auth.strong_password()}
+async def share_get(request: Request):
+    """Host only: ShareState."""
+    if not _host(request):
+        return err("host_only", 403)
+    return _share_state()
+
+
+@app.post("/api/share/terms")
+async def share_terms(request: Request, payload: dict):
+    """Host only: accept the share terms (asked once, again when TERMS_VERSION changes)."""
+    if not _host(request):
+        return err("host_only", 403)
+    if payload.get("accept") is not True:
+        return err("accept_required")
+    auth.accept_terms(share.TERMS_VERSION)
+    return _share_state()
 
 
 @app.post("/api/share/link")
 async def share_link(request: Request):
-    """Host CLI only: a fresh link for another device on the running share."""
-    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
-        return err("host_cli_only", 403)
-    if not _share_on():
+    """Host only: a fresh link for another device on the running share."""
+    if not _host(request):
+        return err("host_only", 403)
+    if not _share:
         return err("not_sharing", 404)
-    return {"path": _new_share_link()}
+    _new_share_link()
+    await _share_changed()
+    return _share_state()
 
 
 @app.post("/api/share/decide")
 async def share_decide(request: Request, payload: dict):
-    """Host CLI only: allow or deny a device that opened a link."""
-    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
-        return err("host_cli_only", 403)
+    """Allow or deny a device that opened a link: the host CLI, or any logged-in browser not on the tunnel."""
+    if _via_share(request):
+        return err("host_only", 403)
+    _pending()
     g = next((g for g in _share.get("grants", {}).values() if g["id"] == payload.get("id")), None)
     if not g or g["state"] != "pending":
         return err("not_found", 404)
     g["state"] = "ok" if payload.get("allow") is True else "denied"
     log.info("share device %s from %s %s", g["id"], g["ip"], "allowed" if g["state"] == "ok" else "denied")
+    await _share_changed()
     return {"state": g["state"]}
 
 
 @app.delete("/api/share")
 async def share_stop(request: Request):
-    if not auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
-        return err("host_cli_only", 403)
+    if not _host(request):
+        return err("host_only", 403)
     await _share_stop()
     return {"status": "ok"}
 
 
 async def _share_stop() -> None:
-    """Close the gate and sign out every browser that logged in through the tunnel."""
+    """Stop the tunnel and sign out every browser that logged in through it."""
     if not _share:
         return
     gone = db.delete_auth_sessions_via(f"share:{_share['host']}")
     _share.clear()
+    await asyncio.to_thread(share.stop)
     await _revoke(gone)
+    await _share_changed()
 
 
 _WAIT_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -496,7 +606,7 @@ _WAIT_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" conte
 font:16px/1.5 Inter,"Segoe UI",system-ui,sans-serif;text-align:center;padding:24px;box-sizing:border-box}
 p{max-width:28em;margin:.4em auto}b{color:#a78bfa}.m{color:#a1a1aa;font-size:14px}</style>
 <main><p><b>shelldeck</b></p><p id="s">Waiting for the host to allow this device…</p>
-<p class="m" id="m">Answer the prompt in the <code>sd share</code> window on the host.</p></main>
+<p class="m" id="m">Allow it in shelldeck on the host, or in the <code>sd share</code> window.</p></main>
 <script>
 const say = (s, m) => { document.getElementById("s").textContent = s; document.getElementById("m").textContent = m; };
 async function poll() {
@@ -524,21 +634,22 @@ async def share_status(request: Request):
 
 @app.get("/share/{token}")
 async def share_open(request: Request, token: str):
-    """The QR link: works once, within LINK_TTL. It makes a pending grant that the host must allow in
-    the `sd share` window; after that the usual password login takes over."""
+    """The QR link: works once, within LINK_TTL. It makes a pending grant that the host must allow (in a host
+    browser or the `sd share` window); after that the usual password login takes over."""
     if not _via_share(request):
         return err("link_expired", 403)
     if g := _grant(request):  # this browser already opened a link (e.g. a reload)
         return RedirectResponse("/", status_code=303) if g["state"] == "ok" else _share_page(_WAIT_PAGE)
     if not _share_link_ok(token):
         return _share_page(_WAIT_PAGE.replace("poll();", 'say("This link has expired or was already used.", "Ask the host for a new one.");'), 403)
-    _share["link"] = None  # one use
+    _share["token"] = None  # one use
     cookie = secrets.token_urlsafe(32)
     _share["grants"][_sha(cookie)] = {
         "id": secrets.token_hex(4), "ip": _client(request), "agent": request.headers.get("user-agent", "")[:200],
         "at": time.time(), "state": "pending", "session": None,
     }
     log.info("share link opened from %s; waiting for the host", _client(request))
+    await _share_changed()
     res = _share_page(_WAIT_PAGE)
     res.set_cookie(SHARE_COOKIE, cookie, httponly=True, samesite="lax", secure=True, path="/", max_age=24 * 3600)
     return res
@@ -578,11 +689,12 @@ async def devices(request: Request):
             continue
         ip, _, agent = (r["client"] or "").partition(" ")
         rows.append({
-            "id": h, "ip": ip, "agent": agent, "via": r["via"] or "local",
+            "id": h, "ip": ip, "agent": agent, "via": r["via"] or "local", "kind": r["kind"] or "browser",
             "created_at": r["created_at"], "last_seen": r["last_seen"],
             "active": h == _active["h"], "current": h == request.state.session, "sockets": online.get(h, 0),
         })
-    return {"devices": rows, "share": _share["host"] if _share_on() else None}
+    on = _share_on()
+    return {"devices": rows, "share": _share["host"] if on else None, "pending": _pending() if on and not _via_share(request) else []}
 
 
 @app.delete("/api/devices/{device_id}")
@@ -597,6 +709,7 @@ async def _revoke(hashes: list[str]) -> dict:
     grants = _share.get("grants", {})
     for k in [k for k, g in grants.items() if g["session"] in hashes]:
         del grants[k]  # a revoked share device needs a new link and approval
+    db.delete_push_tokens(hashes)
     for h in hashes:
         auth.end_session(h)
         if _active["h"] == h:
@@ -682,7 +795,7 @@ async def list_agents():
     by_id = {s["id"]: s for s in db.list_sessions_with_project()}
     running = [
         {"session_id": sid, "name": s.get("name"), "nick": s.get("nick"), "parent": s.get("parent"), "project_id": s.get("project_id"), "project": s.get("project_name"),
-         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model}
+         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model, "state": agent_state.get(sid, "idle")}
         for sid, (key, model) in found.items() if (s := by_id.get(sid))
     ]
     return {
@@ -1177,6 +1290,82 @@ async def _check_questions(quiet: float | None = None) -> list[str]:
     return asked
 
 
+def _next_state(sid: str, was: str, now: float) -> str:
+    """working | approval | idle for one agent terminal; see updateAgentStates in static/app.js."""
+    quiet = now - out_at.get(sid, 0) > QUIET_S
+    if quiet:
+        # ponytail: a regex over what the last burst drew (raw output is cursor-addressed), not xterm's screen;
+        # an answered prompt is gone once the agent prints again
+        return "approval" if agents.QUESTION.search(RELAYED.sub("", _plain(burst.get(sid, "")))[-6000:]) else "idle"
+    if now - busy_since.get(sid, now) > AGENT_BUSY_S:
+        return "working"
+    return "idle" if was == "approval" else was
+
+
+async def _watch_agents() -> None:
+    """Every 2s: each agent terminal's state; changes go to every browser, approval also to push."""
+    while True:
+        await asyncio.sleep(2)
+        try:
+            await _check_agents()
+        except Exception:  # noqa: BLE001 - keep watching
+            log.warning("agent state check failed", exc_info=True)
+
+
+async def _check_agents() -> None:
+    found = await asyncio.to_thread(agents.running, _shell_pids())
+    now = time.monotonic()
+    for sid in [s for s in agent_state if s not in found]:
+        del agent_state[sid]
+        await _broadcast({"type": "agent_state", "session_id": sid, "state": "idle"})
+    for sid, (key, _) in found.items():
+        was = agent_state.get(sid, "idle")
+        state = agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
+        if state == was:
+            continue
+        await _broadcast({"type": "agent_state", "session_id": sid, "state": state})
+        s = db.get_session(sid)
+        if state == "approval" and s and not s.get("parent"):  # sub-agents ask their parent, not you
+            project = db.get_project(s["project_id"]) if s.get("project_id") else None
+            msg = {"title": f"{agents.AGENTS[key][0]} needs you", "body": f"{s.get('nick') or sid} · {project['name'] if project else ''}",
+                   "data": {"session_id": sid}}
+            if tokens := [t["token"] for t in db.list_push_tokens() if auth.alive(t["session_hash"])]:
+                threading.Thread(target=_push, args=(tokens, msg), daemon=True).start()
+
+
+def _push(tokens: list[str], msg: dict) -> None:
+    """Expo push service; a thread. Only the nick, agent and project leave this machine, never screen text.
+    ponytail: no retry queue; a failed push is logged and dropped."""
+    body = json.dumps([{"to": t, "sound": "default", **msg} for t in tokens]).encode()
+    req = urllib.request.Request(EXPO_PUSH, data=body, headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+    except OSError:
+        log.warning("push failed", exc_info=True)
+
+
+@app.post("/api/push")
+async def push_register(request: Request, payload: dict):
+    """Register an Expo push token for this login (a logged-in device, not the CLI)."""
+    token = str(payload.get("token", ""))
+    if not request.state.session:
+        return err("login_required", 403)
+    if not re.fullmatch(r"Expo(nent)?PushToken\[[\w-]{1,200}\]", token):
+        return err("invalid_token")
+    db.add_push_token(token, request.state.session)
+    return {"status": "ok"}
+
+
+@app.delete("/api/push")
+async def push_unregister(request: Request, payload: dict):
+    if not request.state.session:
+        return err("login_required", 403)
+    if not db.delete_push_token(str(payload.get("token", "")), request.state.session):
+        return err("not_found", 404)
+    return {"status": "ok"}
+
+
 async def _forward_question(sid: str, excerpt: str) -> None:
     """excerpt: the question and its options, as drawn."""
     kid = db.get_session(sid)
@@ -1500,6 +1689,11 @@ async def _pump(session_id: str) -> None:
                     break
                 data += more
             manager.record(session_id, data)
+            now = time.monotonic()
+            if now - out_at.get(session_id, 0) > QUIET_S:  # a new burst of output
+                busy_since[session_id], burst[session_id] = now, ""
+            burst[session_id] = (burst[session_id] + data)[-16000:]
+            out_at[session_id] = now
             if session_id in ask_buf:
                 ask_buf[session_id] = (ask_buf[session_id] + data)[-16000:]
                 last_out_at[session_id] = time.monotonic()
@@ -1513,6 +1707,8 @@ async def _pump(session_id: str) -> None:
             await _close(ws)
     finally:
         readers.pop(session_id, None)
+        for d in (out_at, busy_since, burst):
+            d.pop(session_id, None)
         manager.terminate(session_id)
         try:
             t = asyncio.get_running_loop().create_task(_orphaned(session_id))
@@ -1639,10 +1835,13 @@ async def _broadcast_alarm(task: dict) -> None:
     await _broadcast({"type": "alarm", "task": _serialize_task(task)})
 
 
-async def _broadcast(message: dict) -> int:
-    """Send to every open browser (the alarm socket); returns how many got it."""
+async def _broadcast(message: dict, host_only: bool = False) -> int:
+    """Send to every open browser (the alarm socket), or with host_only to those on this machine and not
+    on the share tunnel; returns how many got it."""
     data, sent = json.dumps(message), 0
     for ws in list(alarm_sockets):
+        if host_only and (_via_share(ws) or not _is_local(ws)):
+            continue
         try:
             await ws.send_text(data)
             sent += 1
@@ -1948,6 +2147,7 @@ def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, 
     if "SHELLDECK_HOME" in os.environ:
         os.environ["SHELLDECK_HOME"] = str(db.config_dir().resolve())
     scheme = "https" if certfile else "http"
+    SELF_URL["url"] = f"{scheme}://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}"
     (db.config_dir() / "server.json").write_text(json.dumps({"port": port, "scheme": scheme, "host": host}), encoding="utf-8")
     if code := (None if auth.has_password() else auth.setup_code()):
         where = "this machine's address" if host in ("0.0.0.0", "::") else host

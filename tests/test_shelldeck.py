@@ -1,10 +1,12 @@
+import asyncio
+import sys
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from shelldeck import auth, db, server, shells
+from shelldeck import auth, db, server, share, shells
 from shelldeck.pty import PtyManager, Scrollback
 
 ORIGIN = {"origin": "http://testserver"}
@@ -548,11 +550,36 @@ def test_projects_get_distinct_colors(client, tmp_path):
     assert client.put("/api/settings", json={"layout_mode": "grid"}).status_code == 400
 
 
+FAKE_CLOUDFLARED = """import sys, time
+sys.stderr.write("INF |  https://abc-def.trycloudflare.com  |\\n")
+sys.stderr.write("INF Registered tunnel connection connIndex=0\\n")
+sys.stderr.flush()
+time.sleep(0 if "--exit" in sys.argv else 60)
+"""
+
+
+@pytest.fixture
+def tunnel_stub(tmp_path, monkeypatch):
+    """cloudflared stand-in: prints the URL and the ready line, then idles (or exits with --exit)."""
+    stub = tmp_path / "cloudflared.py"
+    stub.write_text(FAKE_CLOUDFLARED)
+    argv = [sys.executable, str(stub)]
+    monkeypatch.setattr(share, "command", lambda: argv)
+    return argv
+
+
 def _share_setup(b, password="long enough pass"):
     b.post("/api/auth/setup", json={"password": password, "confirm": password})
     cli = {"X-Shelldeck-Token": auth.read_cli_token()}
+    auth.accept_terms(share.TERMS_VERSION)
     tunnel = {"host": "abc-def.trycloudflare.com", "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9"}
     return cli, tunnel
+
+
+def _start(b, cli):
+    state = b.post("/api/share", headers=cli).json()
+    assert state["sharing"] and state["url"] == "https://abc-def.trycloudflare.com"
+    return state["link"]["path"]
 
 
 def _open_link(b, path, tunnel):
@@ -565,14 +592,23 @@ def _allow(b, cli, allow=True):
     return b.post("/api/share/decide", json={"id": p["id"], "allow": allow}, headers=cli)
 
 
-def test_share_gate_needs_link_approval_then_password(browser):
+def _phone_login(b, gate, tunnel, ios=False):
+    headers = {**gate, "origin": "https://" + tunnel["host"], **({"X-Shelldeck-Client": "ios"} if ios else {})}
+    r = b.post("/api/auth/login", json={"password": "long enough pass"}, headers=headers)
+    assert r.status_code == 200
+    return {**tunnel, "cookie": f"{gate['cookie']}; {r.headers['set-cookie'].split(';')[0]}"}
+
+
+def test_share_gate_needs_link_approval_then_password(browser, tunnel_stub):
     b = browser
     cli, tunnel = _share_setup(b)
     assert b.get("/", headers=tunnel).status_code == 403  # not shared
-    assert b.post("/api/share", json={"host": tunnel["host"]}).status_code == 403  # browsers can't open it
-    assert b.get("/api/share").status_code == 403
-    assert b.post("/api/share", json={"host": "bad host"}, headers=cli).status_code == 400
-    path = b.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json()["path"]
+    state = b.get("/api/share", headers=cli).json()
+    assert state["sharing"] is False and state["link"] is None and state["cloudflared"] is True
+    path = _start(b, cli)
+    link = b.get("/api/share", headers=cli).json()["link"]
+    assert link["qr_svg"].startswith("<svg") and link["url"].endswith(path) and link["expires_at"] > time.time()
+    assert b.post("/api/share", headers=cli).json()["link"]["path"] == path  # already running: unchanged
 
     # the bare tunnel URL and a wrong token get nothing; the link waits for the host
     assert b.get("/", headers=tunnel).status_code == 403
@@ -582,6 +618,7 @@ def test_share_gate_needs_link_approval_then_password(browser):
     assert b.get("/", headers=gate).status_code == 403  # pending
     assert b.get("/share/status", headers=gate).json() == {"state": "pending"}
     assert b.get(path, headers=tunnel).status_code == 403  # the link worked once
+    assert b.get("/api/share", headers=cli).json()["link"] is None
     assert _allow(b, cli).json() == {"state": "ok"}
     assert b.get("/share/status", headers=gate).json() == {"state": "ok"}
     assert b.get("/", headers=gate).status_code == 200
@@ -589,71 +626,186 @@ def test_share_gate_needs_link_approval_then_password(browser):
     # the password is still required, and tunnel visitors are remote
     assert b.get("/api/projects", headers=gate).json() == {"error": "locked"}
     assert b.post("/api/auth/login-link", headers=gate).status_code == 403
-    r = b.post("/api/auth/login", json={"password": "long enough pass"}, headers={**gate, "origin": "https://" + tunnel["host"]})
-    assert r.status_code == 200
-    login = r.headers["set-cookie"].split(";")[0]
-    authed = {**tunnel, "cookie": f"{gate['cookie']}; {login}"}
+    authed = _phone_login(b, gate, tunnel)
     assert b.get("/api/projects", headers=authed).status_code == 200
-    vias = {d["via"] for d in b.get("/api/devices", headers=authed).json()["devices"]}
-    assert vias == {"local", "share:" + tunnel["host"]}
+    devs = b.get("/api/devices", headers=authed).json()
+    assert {d["via"] for d in devs["devices"]} == {"local", "share:" + tunnel["host"]} and devs["pending"] == []
+    assert {d["kind"] for d in devs["devices"]} == {"browser"}  # no ios header: a browser login
+    # share controls are host-only; deciding is refused on the tunnel too
+    for method, url in (("get", "/api/share"), ("post", "/api/share"), ("post", "/api/share/link"), ("delete", "/api/share")):
+        assert getattr(b, method)(url, headers=authed).json() == {"error": "host_only"}
+    assert b.post("/api/share/decide", json={"id": "x", "allow": True}, headers=authed).json() == {"error": "host_only"}
 
-    # stopping closes the gate and signs out tunnel logins
-    assert b.delete("/api/share", headers=cli).status_code == 200
+    # stopping kills cloudflared, closes the gate and signs out tunnel logins
+    proc = share._proc
+    assert b.delete("/api/share", headers=cli).json() == {"status": "ok"}
+    assert proc.poll() is not None and share._proc is None
     assert b.get("/", headers=authed).status_code == 403
     auth._cache.clear()
-    assert b.get("/api/projects", headers={"cookie": login}).status_code == 401
+    assert b.get("/api/projects", headers={"cookie": authed["cookie"].split("; ")[1]}).status_code == 401
 
 
-def test_share_denied_expired_and_new_link(browser, monkeypatch):
+def test_share_host_browser_decides_and_gets_share_state(browser, tunnel_stub):
     b = browser
     cli, tunnel = _share_setup(b)
-    path = b.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json()["path"]
+    assert b.post("/api/share").json()["sharing"]  # a local logged-in browser is the host too
+    assert b.post("/api/share", headers={"x-forwarded-for": "10.0.0.5"}).json() == {"error": "host_only"}  # proxied/LAN
+    path = b.post("/api/share/link").json()["link"]["path"]
+    with b.websocket_connect("/ws/alarms") as host_ws:
+        assert host_ws.receive_json()["type"] == "alarm_snapshot"
+        _, gate = _open_link(b, path, tunnel)
+        msg = host_ws.receive_json()
+        assert msg["type"] == "share_state" and len(msg["state"]["pending"]) == 1
+        pid = msg["state"]["pending"][0]["id"]
+        assert b.get("/api/devices").json()["pending"][0]["id"] == pid
+        assert b.post("/api/share/decide", json={"id": pid, "allow": True}).json() == {"state": "ok"}
+        assert host_ws.receive_json()["state"]["pending"] == []
+        assert b.post("/api/share/decide", json={"id": pid, "allow": True}).status_code == 404
+
+        # the phone's alarm socket never gets share_state (it carries the link)
+        phone = TestClient(server.app)
+        authed = _phone_login(phone, gate, tunnel, ios=True)
+        with phone.websocket_connect("/ws/alarms", headers=authed) as phone_ws:
+            assert phone_ws.receive_json()["type"] == "alarm_snapshot"
+            b.post("/api/share/link")
+            assert host_ws.receive_json()["state"]["link"]
+            phone_ws.send_text('{"type":"ping"}')
+            assert phone_ws.receive_json() == {"type": "pong"}
+
+
+def test_share_stops_when_cloudflared_exits(browser, tunnel_stub):
+    b = browser
+    cli, _ = _share_setup(b)
+    tunnel_stub.append("--exit")
+    b.post("/api/share", headers=cli)
+    for _ in range(100):
+        if not b.get("/api/share", headers=cli).json()["sharing"]:
+            break
+        time.sleep(0.05)
+    assert b.get("/api/share", headers=cli).json()["sharing"] is False
+
+
+def test_share_errors(browser, monkeypatch):
+    cli, _ = _share_setup(browser, password="short123")
+    assert browser.get("/api/share", headers=cli).json()["strong_password"] is False
+    assert browser.post("/api/share", headers=cli).json() == {"error": "weak_password"}
+    browser.put("/api/auth/password", json={"current": "short123", "password": "long enough pass", "confirm": "long enough pass"})
+    monkeypatch.setattr(share, "command", lambda: None)
+    r = browser.post("/api/share", headers=cli)
+    assert r.status_code == 404 and r.json()["error"] == "no_cloudflared" and "cloudflared" in r.json()["hint"].lower()
+    assert browser.post("/api/share/link", headers=cli).json() == {"error": "not_sharing"}
+
+
+def test_share_needs_terms(browser, tunnel_stub):
+    cli, tunnel = _share_setup(browser)
+    (db.config_dir() / "share-consent").unlink()
+    state = browser.get("/api/share", headers=cli).json()
+    assert state["terms_accepted"] is False and any("own risk" in t for t in state["terms"])
+    assert browser.post("/api/share", headers=cli).json() == {"error": "terms_required"}
+    assert browser.post("/api/share/terms", json={}, headers=cli).json() == {"error": "accept_required"}
+    assert browser.post("/api/share/terms", json={"accept": True}, headers=tunnel).status_code == 403
+    assert browser.post("/api/share/terms", json={"accept": True}, headers=cli).json()["terms_accepted"] is True
+    assert auth.terms_accepted(share.TERMS_VERSION) and not auth.terms_accepted(share.TERMS_VERSION + 1)  # a new version asks again
+    assert browser.post("/api/share", headers=cli).json()["sharing"]
+    browser.delete("/api/share", headers=cli)
+
+
+def test_share_denied_expired_and_new_link(browser, monkeypatch, tunnel_stub):
+    b = browser
+    cli, tunnel = _share_setup(b)
+    path = _start(b, cli)
     _, gate = _open_link(b, path, tunnel)
     assert _allow(b, cli, allow=False).json() == {"state": "denied"}
     assert b.get("/", headers=gate).status_code == 403
     assert b.get("/share/status", headers=gate).json() == {"state": "denied"}
 
     # a new link replaces the old one, and expires unopened
-    old = b.post("/api/share/link", headers=cli).json()["path"]
-    new = b.post("/api/share/link", headers=cli).json()["path"]
+    old = b.post("/api/share/link", headers=cli).json()["link"]["path"]
+    new = b.post("/api/share/link", headers=cli).json()["link"]["path"]
     assert b.get(old, headers=tunnel).status_code == 403
     now = time.time()
     monkeypatch.setattr(server.time, "time", lambda: now + server.LINK_TTL + 1)
-    b.get("/api/share", headers=cli)  # heartbeat keeps the share itself alive
+    assert b.get("/api/share", headers=cli).json()["link"] is None
     assert b.get(new, headers=tunnel).status_code == 403
 
 
-def test_share_lease_expires_without_heartbeat(browser, monkeypatch):
+def test_remote_login_does_not_take_over(browser, tunnel_stub, tmp_path):
     b = browser
     cli, tunnel = _share_setup(b)
-    path = b.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json()["path"]
-    _, gate = _open_link(b, path, tunnel)
-    _allow(b, cli)
-    assert b.get("/", headers=gate).status_code == 200
-    now = time.time()
-    monkeypatch.setattr(server.time, "time", lambda: now + server.SHARE_LEASE + 1)
-    assert b.get("/", headers=gate).status_code == 403  # `sd share` died: the tunnel host is refused
-    assert b.get("/api/devices").json()["share"] is None
-
-
-def test_share_revoked_device_loses_its_grant(browser):
-    b = browser
-    cli, tunnel = _share_setup(b)
-    path = b.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json()["path"]
+    sid = b.post("/api/sessions", json={"cwd": str(tmp_path)}).json()["id"]
+    path = _start(b, cli)
     _, gate = _open_link(b, path, tunnel)
     _allow(b, cli)
     phone = TestClient(server.app)
-    r = phone.post("/api/auth/login", json={"password": "long enough pass"}, headers={**gate, "origin": "https://" + tunnel["host"]})
-    h = auth.session_hash(r.cookies[auth.COOKIE])
-    assert b.post("/api/auth/login", json={"password": "long enough pass"}).status_code == 200  # host takes over
-    assert b.delete(f"/api/devices/{h}").json() == {"revoked": 1}
+    with b.websocket_connect(f"/ws/{sid}") as host_ws:
+        authed = _phone_login(phone, gate, tunnel, ios=True)
+        # the host browser stays in use, its socket stays open, and the phone works alongside
+        assert b.get("/api/projects").status_code == 200 and phone.get("/api/projects", headers=authed).status_code == 200
+        host_ws.send_text('{"type":"ping"}')
+        assert host_ws.receive_json() == {"type": "pong"}
+        assert b.get("/api/auth/status").json()["in_use_elsewhere"] is False
+        assert phone.get("/api/auth/status", headers=authed).json()["in_use_elsewhere"] is False
+    assert {d["kind"] for d in b.get("/api/devices").json()["devices"]} == {"browser", "remote"}
+
+    # a host login afterwards doesn't lock the phone out either
+    assert b.post("/api/auth/login", json={"password": "long enough pass"}).status_code == 200
+    assert phone.get("/api/projects", headers=authed).status_code == 200
+
+    # push tokens: the logged-in phone only; revoking the device drops them
+    assert phone.post("/api/push", json={"token": "nope"}, headers=authed).status_code == 400
+    assert b.post("/api/push", json={"token": "ExponentPushToken[abc]"}, headers=cli).status_code == 403
+    assert phone.post("/api/push", json={"token": "ExponentPushToken[abc]"}, headers=authed).json() == {"status": "ok"}
+    assert [t["token"] for t in db.list_push_tokens()] == ["ExponentPushToken[abc]"]
+    assert phone.request("DELETE", "/api/push", json={"token": "ExponentPushToken[abc]"}, headers=authed).json() == {"status": "ok"}
+    phone.post("/api/push", json={"token": "ExponentPushToken[abc]"}, headers=authed)
+    remote = next(d["id"] for d in b.get("/api/devices").json()["devices"] if d["kind"] == "remote")
+    assert b.delete(f"/api/devices/{remote}").json() == {"revoked": 1}
+    assert db.list_push_tokens() == []
     assert b.get("/", headers=gate).status_code == 403
 
 
-def test_share_needs_a_long_password(browser):
-    cli, tunnel = _share_setup(browser, password="short123")
-    assert browser.get("/api/share", headers=cli).json()["strong_password"] is False
-    assert browser.post("/api/share", json={"host": tunnel["host"]}, headers=cli).json() == {"error": "weak_password"}
+def test_ios_header_without_grant_is_a_browser_login(browser):
+    b = browser
+    b.post("/api/auth/setup", json={"password": "longenough", "confirm": "longenough"})
+    c = TestClient(server.app)
+    assert c.post("/api/auth/login", json={"password": "longenough"}, headers={"X-Shelldeck-Client": "ios"}).status_code == 200
+    assert {d["kind"] for d in c.get("/api/devices").json()["devices"]} == {"browser"}
+    assert b.get("/api/projects").status_code == 423  # it took over like any browser
+    assert c.request("DELETE", "/api/push", json={"token": "ExponentPushToken[x]"}).status_code == 404
+
+
+def test_agent_state_from_output_bursts(monkeypatch):
+    sid, sent, pushed = "s1", [], []
+    monkeypatch.setattr(server.agents, "running", lambda shells: {sid: ("claude", None)})
+    monkeypatch.setattr(server.db, "get_session", lambda s: {"id": s, "nick": "Ada", "project_id": None, "parent": None})
+    monkeypatch.setattr(server.db, "list_push_tokens", lambda: [{"token": "ExponentPushToken[a]", "session_hash": "h"}])
+    monkeypatch.setattr(server.auth, "alive", lambda h: True)
+    monkeypatch.setattr(server, "_push", lambda tokens, msg: pushed.append(msg))
+
+    async def broadcast(msg, host_only=False):
+        sent.append(msg["state"])
+
+    monkeypatch.setattr(server, "_broadcast", broadcast)
+    now = time.monotonic()
+    server.agent_state.clear()
+    server.out_at[sid], server.busy_since[sid] = now - 10, now - 30  # quiet after a long burst that asked
+    server.burst[sid] = "\x1b[2Jworking...\r\n Do you want to proceed?\r\n 1. Yes"
+    asyncio.run(server._check_agents())
+    server.out_at[sid] = server.busy_since[sid] = time.monotonic()  # answered: a new burst, brief so far
+    server.burst[sid] = "esc"
+    asyncio.run(server._check_agents())
+    server.busy_since[sid] = time.monotonic() - 10  # still printing 10s later
+    asyncio.run(server._check_agents())
+    server.out_at[sid] = time.monotonic() - 10  # quiet, nothing asked
+    asyncio.run(server._check_agents())
+    assert sent == ["approval", "idle", "working", "idle"]
+    for _ in range(50):  # the push runs on a thread
+        if pushed:
+            break
+        time.sleep(0.02)
+    assert pushed == [{"title": "Claude Code needs you", "body": "Ada · ", "data": {"session_id": sid}}]
+    for d in (server.out_at, server.busy_since, server.burst, server.agent_state):
+        d.pop(sid, None)
 
 
 def test_security_headers(browser):

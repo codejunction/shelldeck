@@ -1,5 +1,6 @@
 // Devices page: every signed-in browser, which one is in use, and revoke.
-import { api, confirmDialog, esc, icon, toast, toastError } from "./ui.js";
+import { pendingHtml, sharePending } from "./share.js";
+import { api, bus, confirmDialog, esc, icon, toast, toastError } from "./ui.js";
 
 function ago(ts) {
   const s = Math.max(0, Date.now() / 1000 - ts);
@@ -10,7 +11,8 @@ function ago(ts) {
 }
 
 /** "Edge on Windows" from a user agent; good enough to tell your own devices apart. */
-function deviceName(ua) {
+export function deviceName(ua) {
+  if (/CFNetwork|Darwin/.test(ua) && !/Mozilla/.test(ua)) return "iOS app"; // native fetch, before login
   const browser = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox"
     : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Browser";
   const os = /iPhone|iPad/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows"
@@ -31,8 +33,10 @@ export async function renderDevices(el) {
         <button class="btn" data-dev="others">${icon("power")}Sign out other devices</button>
       </div>
       <p class="dev-summary muted"></p>
+      <div class="dev-pending" hidden><h3 class="share-h">Waiting for approval</h3><div class="card share-pending"></div></div>
       <div class="card mon-table dev-table"><table><thead><tr><th>Device</th><th>From</th><th>Signed in</th><th>Last active</th><th></th></tr></thead><tbody></tbody></table></div>`;
     el.addEventListener("click", (e) => onClick(e, el));
+    bus.addEventListener("share", () => !el.hidden && renderPending(el));
   }
   let data;
   try {
@@ -40,6 +44,8 @@ export async function renderDevices(el) {
   } catch (e) {
     return toastError(e);
   }
+  pendingFallback = data.pending || [];
+  renderPending(el);
   const n = data.devices.length;
   el.querySelector(".dev-summary").textContent =
     `${n} signed in · ${data.devices.filter((d) => d.active).length} in use` + (data.share ? ` · sharing via ${data.share}` : "");
@@ -47,7 +53,7 @@ export async function renderDevices(el) {
   el.querySelector("tbody").innerHTML = data.devices
     .map(
       (d) => `<tr>
-        <td><div class="dev-name">${esc(deviceName(d.agent))}${d.current ? ' <span class="exit ok">this device</span>' : ""}</div>
+        <td><div class="dev-name">${d.kind === "remote" ? "iPhone app (remote)" : esc(deviceName(d.agent))}${d.current ? ' <span class="exit ok">this device</span>' : ""}</div>
           <div class="hist-meta">${d.active ? '<span class="dev-dot on"></span>In use' : '<span class="dev-dot"></span>Idle'}${d.sockets ? ` · ${d.sockets} connection${d.sockets > 1 ? "s" : ""}` : ""}</div></td>
         <td>${viaLabel(d.via)}<div class="hist-meta">${esc(d.ip)}</div></td>
         <td class="nowrap faint">${esc(ago(d.created_at))}</td>
@@ -56,6 +62,15 @@ export async function renderDevices(el) {
       </tr>`,
     )
     .join("");
+}
+
+let pendingFallback = []; // /api/devices `pending`, for browsers that get no share state
+
+/** Share devices waiting for the host to allow them; Allow/Deny are handled in share.js. */
+function renderPending(el) {
+  const list = sharePending() ?? pendingFallback;
+  el.querySelector(".dev-pending").hidden = !list.length;
+  el.querySelector(".share-pending").innerHTML = pendingHtml(list);
 }
 
 async function onClick(e, el) {

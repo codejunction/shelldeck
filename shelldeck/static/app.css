@@ -2939,6 +2939,208 @@ textarea:focus {
   background: var(--ok);
 }
 
+/* ------------------------------------------------------------ share */
+
+.share-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.share-pill:hover {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+}
+
+.share-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.share-dialog .dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.share-dialog p {
+  margin: 0;
+}
+
+.share-dialog .small,
+.dev-pending .small {
+  font-size: 12px;
+}
+
+.share-dialog .row.end {
+  justify-content: flex-end;
+}
+
+.share-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  font-size: 13px;
+}
+
+.share-hint code {
+  user-select: all;
+}
+
+.share-terms {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.share-terms ul {
+  margin: 6px 0 10px;
+  padding-left: 18px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.share-terms li + li {
+  margin-top: 4px;
+}
+
+.share-url a {
+  color: var(--muted);
+}
+
+/* dark modules on white in both themes, or phone cameras won't read it */
+.share-qr {
+  align-self: center;
+  width: min(240px, 100%);
+  padding: 12px;
+  border-radius: 10px;
+  background: #fff;
+  line-height: 0;
+}
+
+.share-qr svg {
+  width: 100%;
+  height: auto;
+}
+
+.share-link {
+  display: flex;
+  gap: 8px;
+}
+
+.share-link input {
+  flex: 1;
+  min-width: 0;
+  font: 12px "Cascadia Mono", Consolas, monospace;
+}
+
+.share-note {
+  text-align: center;
+}
+
+.share-note b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.share-h {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dev-pending {
+  margin-bottom: 16px;
+}
+
+.dev-pending .share-h {
+  margin-bottom: 8px;
+}
+
+.share-dev {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.dev-pending .share-dev {
+  padding: 8px 12px;
+}
+
+.share-dev + .share-dev {
+  border-top: 1px solid var(--border);
+}
+
+.share-dev-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  margin-bottom: 6px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* `?embed=1`: the iOS app's WebView, one terminal and nothing else */
+body.embed #app {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.embed #sidebar,
+body.embed #scrim,
+body.embed #topbar,
+body.embed .pane-head {
+  display: none;
+}
+
+body.embed #layout {
+  padding: 0;
+}
+
+body.embed .pane {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
 /* ------------------------------------------------------------ phones */
 
 @media (max-width: 560px) {
@@ -2996,5 +3198,24 @@ textarea:focus {
   .dev-table td:nth-child(5) {
     grid-column: 2;
     grid-row: 1;
+  }
+
+  /* share dialog: full-width buttons */
+  .share-actions .btn {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .share-dev {
+    flex-wrap: wrap;
+  }
+
+  .share-dev-name {
+    flex-basis: 100%;
+  }
+
+  .share-dev .btn {
+    flex: 1;
+    justify-content: center;
   }
 }
