@@ -112,35 +112,63 @@ def test_search_rejects_bad_format(codebase):
     assert r.exit_code == 1
 
 
-def test_share_waits_for_tunnel_then_prints_link_and_cleans_up(monkeypatch, capsys):
-    calls = []
+LINK = {"url": "https://abc-def.trycloudflare.com/share/tok", "path": "/share/tok"}
 
-    class FakeTunnel:
-        stderr = iter([
-            "INF |  https://abc-def.trycloudflare.com  |\n",
-            "INF Registered tunnel connection connIndex=0\n",
-        ])
-        terminate = lambda self: calls.append("terminate")  # noqa: E731
 
-    def api(path, method="GET", payload=None):
+def _share_api(calls, sharing=False, strong=True, terms=True):
+    def api(path, method="GET", payload=None, timeout=10):
         calls.append((method, path))
-        return {"has_password": True, "strong_password": True, "path": "/share/tok"}
+        if path == "/api/auth/status":
+            return {"has_password": True}
+        on = sharing or ("POST", "/api/share") in calls
+        return {"sharing": on, "link": LINK if on else None, "strong_password": strong, "cloudflared": True, "pending": [],
+                "terms_accepted": terms or ("POST", "/api/share/terms") in calls, "terms": ["at your own risk"]}
+    return api
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "cloudflared")
+
+def _interrupt(stopped):
+    raise KeyboardInterrupt
+
+
+def test_share_starts_on_the_server_and_stops_on_ctrl_c(monkeypatch, capsys):
+    calls = []
     monkeypatch.setattr(cli, "ensure_server", lambda: None)
     monkeypatch.setattr(cli, "_health", lambda: "ok")
-    monkeypatch.setattr(cli, "_api", api)
-    monkeypatch.setattr(cli, "_watch_share", lambda: calls.append("watch"))
-    monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kw: calls.append(argv[1:4]) or FakeTunnel())
-    cli.share(new_link=False)
-    assert "https://abc-def.trycloudflare.com/share/tok" in capsys.readouterr().out
-    assert calls[2:] == [["tunnel", "--no-autoupdate", "--url"], ("POST", "/api/share"), "watch", "terminate", ("DELETE", "/api/share")]
+    monkeypatch.setattr(cli, "_api", _share_api(calls))
+    monkeypatch.setattr(cli, "_watch_share", _interrupt)
+    cli.share(action=None, new_link=False)
+    assert LINK["url"] in capsys.readouterr().out
+    assert ("POST", "/api/share") in calls and calls[-1] == ("DELETE", "/api/share")
+
+
+def test_share_asks_for_terms(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "ensure_server", lambda: None)
+    monkeypatch.setattr(cli, "_api", _share_api(calls, terms=False))
+    r = runner.invoke(cli.app, ["share"], input="n\n")
+    assert r.exit_code == 1 and "own risk" in r.output and ("POST", "/api/share") not in calls
+    monkeypatch.setattr(cli, "_watch_share", _interrupt)
+    monkeypatch.setattr(cli, "_health", lambda: "ok")
+    assert runner.invoke(cli.app, ["share"], input="y\n").exit_code == 0
+    assert calls.index(("POST", "/api/share/terms")) < calls.index(("POST", "/api/share"))
+
+
+def test_share_attaches_without_stopping_and_stop_and_new_link(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "ensure_server", lambda: None)
+    monkeypatch.setattr(cli, "_health", lambda: "ok")
+    monkeypatch.setattr(cli, "_api", _share_api(calls, sharing=True))
+    monkeypatch.setattr(cli, "_watch_share", _interrupt)
+    cli.share(action=None, new_link=False)  # started elsewhere (the UI): Ctrl+C leaves it running
+    assert ("POST", "/api/share") not in calls and ("DELETE", "/api/share") not in calls
+    assert runner.invoke(cli.app, ["share", "--new-link"]).exit_code == 0 and calls[-1] == ("POST", "/api/share/link")
+    assert runner.invoke(cli.app, ["share", "stop"]).output.strip() == "sharing stopped" and calls[-1] == ("DELETE", "/api/share")
+    assert runner.invoke(cli.app, ["share", "go"]).exit_code == 2
 
 
 def test_share_refuses_a_short_password(monkeypatch):
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "cloudflared")
     monkeypatch.setattr(cli, "ensure_server", lambda: None)
-    monkeypatch.setattr(cli, "_api", lambda path, *a: {"has_password": True, "strong_password": False})
+    monkeypatch.setattr(cli, "_api", _share_api([], strong=False))
     r = runner.invoke(cli.app, ["share"])
     assert r.exit_code == 1 and "12+ characters" in r.output
 

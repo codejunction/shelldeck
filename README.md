@@ -192,7 +192,7 @@ sd schedule list|add|run|toggle|delete|logs
 sd task list|add|move|delete|alarms
 sd serve [--host H]                  run the server in the foreground
 sd stop                              stop the background server (closes all terminals)
-sd share [--new-link]                share over an HTTPS Cloudflare tunnel: one-use QR link, host approval (needs cloudflared)
+sd share [stop] [--new-link]         share over an HTTPS Cloudflare tunnel: one-use QR link, host approval (needs cloudflared)
 sd login-link                        emergency: one-time login URL (host only)
 sd reset-password                    emergency: forget the password (host only)
 ```
@@ -220,14 +220,16 @@ ssh -N -L 5455:127.0.0.1:5455 you@vm      # on your machine, then open http://12
 ```sh
 sd share              # starts shelldeck if needed, prints a QR code and a link; Ctrl+C stops sharing
 sd share --new-link   # another one-use link for the running share (a second device)
+sd share stop         # end the running share
 ```
 
 - **Encrypted in transit, not end to end.** The other device talks HTTPS to Cloudflare, which relays it through cloudflared's outbound encrypted tunnel to shelldeck on `127.0.0.1`. No ports are opened. Cloudflare ends the TLS connection, so it can see the traffic (terminal input and output, your password as you log in). For sensitive work use the SSH tunnel or Tailscale instead.
-- **Three locks.** The random `trycloudflare.com` address alone is refused. The printed link works **once** and only for **10 minutes**; opening it makes the device wait until you allow it in the `sd share` window (`Allow it? [y/N]`). Then it still needs your password.
+- **Three locks.** The random `trycloudflare.com` address alone is refused. The printed link works **once** and only for **10 minutes**; opening it makes the device wait until you allow it in a shelldeck browser on this machine (toast, Share dialog or Devices) or in the `sd share` window (`Allow it? [y/N]`). Then it still needs your password.
+- **Your consent.** The first share shows the terms of sharing and needs you to accept them: you share at your own risk, keep links and QR codes private, and don't share from corporate or other restricted networks. The acceptance is kept in `share-consent` in the config folder (like the password) and asked again only when the terms change.
 - **Long password.** Sharing needs a password of 12+ characters. An older password that long counts after your next login.
-- **Self-closing.** `sd share` renews the share every few seconds. If it stops without Ctrl+C (window closed, process killed), the server closes the share within a minute and signs those browsers out.
+- **From the browser.** The **Share** button in the top bar does the same as `sd share` (only on this machine): it starts the tunnel, shows the QR code, and makes new links. A **Sharing** pill stays in the top bar while a share runs.
 - **Phones.** On touch screens a key bar adds Esc, Tab, Ctrl (applies to the next letter), arrows and `| ~ / -`; dialogs open as bottom sheets.
-- **Stopping.** Ctrl+C closes the tunnel, voids the link and signs out every browser that logged in through it (they also vanish from **Devices**; a server restart clears them too). Revoking a shared device in **Devices** also voids its approval, so it needs a new link. Each `sd share` gets a new address and link.
+- **Stopping.** The server runs the tunnel, so a share keeps going until you stop it: `sd share stop`, *Stop sharing* in the Share dialog, or Ctrl+C in the `sd share` that started it. Stopping closes the tunnel, voids the link and signs out every browser that logged in through it (they also vanish from **Devices**; a server restart clears them too). Revoking a shared device in **Devices** also voids its approval, so it needs a new link. Each `sd share` gets a new address and link.
 
 **HTTPS on the VM's address,** with a real certificate (Tailscale `tailscale cert`, Let's Encrypt, your reverse proxy) or a self-signed one:
 

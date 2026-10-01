@@ -2,6 +2,22 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.0.6] - 2026-10-01
+
+### Added
+
+- Share from the browser: a **Share** button (and *Share…* in the palette) starts the tunnel, shows the one-use link as a QR code, and makes a new link. A **Sharing** pill in the top bar shows while a share runs.
+- Allow or deny a device that opened the link from any host browser: a toast, the Share dialog, or *Waiting for approval* on the Devices page. The `sd share` window still asks too; whichever answers first wins.
+- `sd share stop` ends the running share.
+- Terms of sharing: before the first share, the Share dialog (a checkbox) and `sd share` (`[y/N]`) show the risks (your own risk, keep links private, Cloudflare sees the traffic, no sharing from corporate or other restricted networks) and need your consent. It is kept in `share-consent` next to the password and asked again when the terms change.
+- The server tracks each agent's state (working, needs you, idle) itself and sends it to every browser.
+- Groundwork for a companion phone app (work in progress): remote logins that don't take over the one-device slot, push tokens (`/api/push`) for needs-you alerts, and a single-terminal embed view (`/?sid=<id>&embed=1`).
+
+### Changed
+
+- The server runs cloudflared itself, so a share keeps running after `sd share` exits or its window closes, until you stop it (`sd share stop`, the Share dialog, or Ctrl+C in the `sd share` that started it). The 60s lease is gone.
+- `sd share` attaches to a share that is already running instead of starting a second one.
+
 ## [0.0.5] - 2026-10-01
 
 ### Added
@@ -89,6 +105,7 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
+[0.0.6]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.6
 [0.0.5]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.5
 [0.0.4]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.4
 [0.0.3]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.3

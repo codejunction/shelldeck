@@ -12,6 +12,7 @@
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import time
@@ -94,6 +95,18 @@ def validate_new(password: str, confirm: str) -> str | None:
     return None
 
 
+def terms_accepted(version: int) -> bool:
+    """The host accepted the share terms of this version (<config>/share-consent, kept like the password)."""
+    try:
+        return json.loads(_file("share-consent").read_text(encoding="utf-8")).get("version") == version
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def accept_terms(version: int) -> None:
+    _write_private("share-consent", json.dumps({"version": version, "accepted_at": int(time.time())}))
+
+
 def set_password(password: str) -> None:
     hashed = _hash_password(password)
     _write_private("password", hashed)
@@ -174,18 +187,28 @@ def _h(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def new_session(client: str, via: str = "local") -> str:
+def new_session(client: str, via: str = "local", kind: str = "browser") -> str:
     token = secrets.token_urlsafe(32)
-    db.add_auth_session(_h(token), time.time(), client, via)
+    db.add_auth_session(_h(token), time.time(), client, via, kind)
     return token
+
+
+def _row(h: str) -> dict | None:
+    hit = _cache.get(h)
+    return hit[1] if hit and time.time() - hit[0] < _CACHE_TTL else db.get_auth_session(h)
+
+
+def remote(h: str | None) -> bool:
+    """A remote (iOS app) login: it never takes the one-device slot."""
+    row = _row(h) if h else None
+    return bool(row) and row.get("kind") == "remote"
 
 
 def alive(h: str | None) -> bool:
     """A session (by hash) that still exists and hasn't idled out."""
     if not h:
         return False
-    hit = _cache.get(h)
-    row = hit[1] if hit and time.time() - hit[0] < _CACHE_TTL else db.get_auth_session(h)
+    row = _row(h)
     return bool(row) and time.time() - row["last_seen"] <= LOCK_TIMEOUT_SECONDS
 
 

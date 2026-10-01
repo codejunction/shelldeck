@@ -1,7 +1,6 @@
 import json
 import os
 import queue
-import re
 import shutil
 import ssl
 import subprocess
@@ -18,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import auth, db
+from . import share as share_mod
 
 app = typer.Typer(
     help="shelldeck: project-first multi-terminal. Run with no arguments to open the app.",
@@ -53,13 +53,13 @@ def _open_url(req, timeout: float):
     return urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
 
-def _api(path: str, method: str = "GET", payload: dict | None = None) -> dict:
+def _api(path: str, method: str = "GET", payload: dict | None = None, timeout: float = 10) -> dict:
     """Call the local server. Exits with a readable message on failure."""
     data = None if payload is None else json.dumps(payload).encode()
     headers = {"Content-Type": "application/json", "X-Shelldeck-Token": auth.read_cli_token()}
     req = urllib.request.Request(_url(path), data=data, method=method, headers=headers)
     try:
-        with _open_url(req, 10) as r:
+        with _open_url(req, timeout) as r:
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -304,43 +304,60 @@ def login_link():
     typer.echo("One use, valid for 5 minutes. Through an SSH tunnel, open it on your machine as-is.")
 
 
-def _show_share(url: str) -> None:
+def _show_share(state: dict) -> None:
     import segno
 
+    url = state["link"]["url"]
     if sys.stdout.isatty():
         segno.make(url, error="l").terminal(compact=(sys.stdout.encoding or "").lower().startswith("utf"))
     typer.echo(f"\n  {url}\n")
-    typer.echo("  Open it on the other device within 10 minutes. It works once; allow the device here, then log in")
-    typer.echo("  with your password. Another device: `sd share --new-link`. Ctrl+C stops sharing and signs them out.")
+    typer.echo("  Open it on the other device within 10 minutes. It works once; allow the device here or in shelldeck,")
+    typer.echo("  then log in with your password. Another device: `sd share --new-link`. Stop: `sd share stop`.")
 
 
-def _watch_share() -> None:
-    """Renew the share's lease (the server closes it ~60s after this stops) and ask here before a
-    device that opened the link gets in."""
+def _watch_share(stopped: threading.Event) -> None:
+    """Ask here before a device that opened the link gets in (a host browser may answer first),
+    and set `stopped` once the share is gone."""
     asks: queue.Queue = queue.Queue()
+    asked: set[str] = set()
+    answered: set[str] = set()  # answered at this prompt
 
     def poll() -> None:
-        asked: set[str] = set()
         while True:
             try:
-                for p in _api("/api/share").get("pending", []):
+                state = _api("/api/share")
+            except typer.Exit:
+                state = None  # server busy or restarting; try again
+            if state is not None:
+                if not state["sharing"]:
+                    stopped.set()
+                    return
+                ids = {p["id"] for p in state["pending"]}
+                for p in state["pending"]:
                     if p["id"] not in asked:
                         asked.add(p["id"])
                         asks.put(p)
-            except typer.Exit:
-                pass  # server busy or restarting; try again
+                for gone in asked - ids - answered:
+                    answered.add(gone)
+                    typer.echo(f"\n  device {gone} was answered in the browser (or expired)")
             time.sleep(3)
 
     def ask() -> None:
         while True:
             p = asks.get()
+            if p["id"] in answered:
+                continue
             typer.echo(f"\n  A device opened the link: {p['ip']}\n  {p['agent'][:100]}")
             allow = input("  Allow it? [y/N] ").strip().lower() in ("y", "yes")
+            if p["id"] in answered:
+                typer.echo("  already answered")
+                continue
+            answered.add(p["id"])
             try:
                 _api("/api/share/decide", "POST", {"id": p["id"], "allow": allow})
                 typer.echo("  allowed; it can log in with your password now" if allow else "  denied")
             except typer.Exit:
-                typer.echo("  that request expired; open a new link")
+                typer.echo("  that request was already answered or expired")
 
     for target in (poll, ask):
         threading.Thread(target=target, daemon=True).start()
@@ -348,53 +365,70 @@ def _watch_share() -> None:
 
 @app.command()
 def share(
+    action: str = typer.Argument(None, help="`stop` ends the running share."),
     new_link: bool = typer.Option(False, "--new-link", help="Print a fresh one-use link for the running share."),
 ):
     """Reach this shelldeck from another device: HTTPS Cloudflare quick tunnel, one-use QR link, host approval, then your password."""
+    if action not in (None, "stop"):
+        typer.echo(f"unknown action {action!r}; try `sd share` or `sd share stop`", err=True)
+        raise typer.Exit(2)
+    ensure_server()
+    state = _api("/api/share")
+    if action == "stop":
+        _api("/api/share", "DELETE")
+        typer.echo("sharing stopped" if state["sharing"] else "not sharing")
+        return
     if new_link:
-        if not (_health() == "ok" and _api("/api/share").get("host")):
+        if not state["sharing"]:
             typer.echo("not sharing; start with `sd share`", err=True)
             raise typer.Exit(1)
-        _show_share(f"https://{_api('/api/share')['host']}" + _api("/api/share/link", "POST", {})["path"])
+        _show_share(_api("/api/share/link", "POST", {}))
         return
-    exe = shutil.which("cloudflared")
-    if not exe:
-        hint = "winget install Cloudflare.cloudflared" if sys.platform == "win32" else "see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-        typer.echo(f"cloudflared is not installed ({hint})", err=True)
-        raise typer.Exit(1)
-    ensure_server()
     if not _api("/api/auth/status").get("has_password"):
         typer.echo("Set a password first: open shelldeck on this machine (`sd`), then run `sd share` again.", err=True)
         raise typer.Exit(1)
-    if not _api("/api/share").get("strong_password"):
+    if not state["strong_password"]:
         typer.echo(
             f"Sharing puts the login page on the internet, so it needs a password of {auth.SHARE_MIN_PASSWORD}+ characters.\n"
             "Change it in Settings (or, if it is already that long, log in once), then run `sd share` again.",
             err=True,
         )
         raise typer.Exit(1)
-    # the tunnel ends at our own loopback server, whose certificate (if any) is self-signed
-    cmd = [exe, "tunnel", "--no-autoupdate", "--url", _url()] + (["--no-tls-verify"] if _scheme() == "https" else [])
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
-    host = shared = None
+    if not state["terms_accepted"]:
+        typer.echo("\nBefore you share:\n")
+        for line in state["terms"]:
+            typer.echo(f"  - {line}")
+        try:
+            ok = input("\nDo you accept these terms and share at your own risk? [y/N] ").strip().lower() in ("y", "yes")
+        except EOFError:
+            ok = False
+        if not ok:
+            typer.echo("not sharing: the terms were not accepted", err=True)
+            raise typer.Exit(1)
+        _api("/api/share/terms", "POST", {"accept": True})
+    if not state["cloudflared"]:
+        typer.echo(f"cloudflared is not installed ({share_mod.HINT})", err=True)
+        raise typer.Exit(1)
+    started = not state["sharing"]
+    if started:
+        typer.echo("  starting the tunnel...")
+        state = _api("/api/share", "POST", {}, timeout=40)
+    if not state["link"]:  # attached to a running share whose link was used or expired
+        state = _api("/api/share/link", "POST", {})
+    _show_share(state)
+    typer.echo("  Ctrl+C " + ("stops sharing and signs them out." if started else "leaves this share running (started elsewhere)."))
+    stopped = threading.Event()
     try:
-        for line in proc.stderr:  # cloudflared logs to stderr: the URL first, then each edge connection
-            if not host and (m := re.search(r"https://([a-z0-9-]+\.trycloudflare\.com)", line)):
-                host = m.group(1)
-            elif host and not shared and "Registered tunnel connection" in line:
-                shared = f"https://{host}" + _api("/api/share", "POST", {"host": host})["path"]
-                _show_share(shared)
-                _watch_share()
+        _watch_share(stopped)
+        while not stopped.wait(1):
+            pass
+        typer.echo("sharing was stopped")
+        return
     except KeyboardInterrupt:
         pass
-    finally:
-        proc.terminate()
-        if shared and _health() == "ok":
-            _api("/api/share", "DELETE")
-    if not shared:
-        typer.echo("cloudflared exited without a tunnel URL; run it by hand to see why.", err=True)
-        raise typer.Exit(1)
-    typer.echo("sharing stopped")
+    if started and _health() == "ok":
+        _api("/api/share", "DELETE")
+        typer.echo("sharing stopped")
 
 
 @app.command()
