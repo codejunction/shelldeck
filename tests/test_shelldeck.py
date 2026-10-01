@@ -692,7 +692,7 @@ def test_share_errors(browser, monkeypatch):
     browser.put("/api/auth/password", json={"current": "short123", "password": "long enough pass", "confirm": "long enough pass"})
     monkeypatch.setattr(share, "command", lambda: None)
     r = browser.post("/api/share", headers=cli)
-    assert r.status_code == 404 and r.json()["error"] == "no_cloudflared" and "cloudflared" in r.json()["hint"].lower()
+    assert r.status_code == 404 and r.json()["error"] == "no_cloudflared" and r.json()["hint"] == share.HINT
     assert browser.post("/api/share/link", headers=cli).json() == {"error": "not_sharing"}
 
 
