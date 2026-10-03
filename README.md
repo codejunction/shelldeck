@@ -176,6 +176,7 @@ sd open [PATH] [--shell wsl]         add PATH as a project and open a terminal i
 sd list                              terminals grouped by project
 sd info                              details of the shelldeck terminal you're in
 sd agents [--all]                    AI agents running in this project's terminals (--all: every project, agents outside shelldeck, installed CLIs)
+sd integration list [--json]         built-in agent integration coverage and lifecycle/resume capabilities
 sd peek TERMINAL [-n 40]             last lines of another terminal (its name like Maya, id, id prefix or title)
 sd tell TERMINAL "MESSAGE" [--raw]   type a message into another terminal and press Enter
 sd spawn "TASK" [--agent A] [--model small|medium|large|auto|NAME]   sub-agent in a new terminal, working on TASK

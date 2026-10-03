@@ -87,6 +87,9 @@ def test_agents(client, tmp_path, monkeypatch):
     data = client.get("/api/agents").json()
     assert data["running"] == [] and {"claude", "codex", "devin"} <= {a["key"] for a in data["agents"]}
     assert isinstance(data["outside"], list) and isinstance(data["devin_sessions"], list)
+    integrations = {item["agent"]: item for item in client.get("/api/integrations").json()["integrations"]}
+    assert integrations["opencode"]["lifecycle"] is True
+    assert integrations["amp"]["session_restore"] is False
 
     # Devin's session store: newest first, hidden ones skipped
     import sqlite3

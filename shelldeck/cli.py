@@ -26,8 +26,10 @@ app = typer.Typer(
 )
 schedule_app = typer.Typer(help="Scheduled jobs.")
 task_app = typer.Typer(help="Personal task board.")
+integration_app = typer.Typer(help="Agent integration capabilities.")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(task_app, name="task")
+app.add_typer(integration_app, name="integration")
 
 HOST = "127.0.0.1"
 CFG = {"port": int(os.environ.get("SHELLDECK_PORT", "5455"))}
@@ -532,6 +534,20 @@ def agents(all_: bool = typer.Option(False, "--all", "-a", help="Every project, 
             typer.echo(f"pid {a['pid']}  {a['label']}  model={a['model'] or '?'}  cwd={a['cwd']}  started by {a['host'] or '?'}")
     if all_:
         typer.echo("\ninstalled: " + (", ".join(f"{a['command']} ({len(a['models'])} models)" for a in data["agents"] if a["installed"]) or "none"))
+
+
+@integration_app.command("list")
+def integration_list(json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")):
+    """List built-in integration coverage and lifecycle/resume capabilities."""
+    rows = _api("/api/integrations")["integrations"]
+    if json_:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    table = Table("Agent", "Method", "Lifecycle", "Resume", "CLI", "Notes")
+    for item in rows:
+        table.add_row(item["agent"], item["kind"], "yes" if item["lifecycle"] else "screen/fallback",
+                      "yes" if item["session_restore"] else "no", "found" if item["available"] else "not found", item["notes"])
+    console.print(table)
 
 
 @app.command()

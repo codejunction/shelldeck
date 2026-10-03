@@ -173,6 +173,15 @@ def test_share_refuses_a_short_password(monkeypatch):
     assert r.exit_code == 1 and "12+ characters" in r.output
 
 
+def test_integration_list_json(monkeypatch):
+    monkeypatch.setattr(cli, "_api", lambda path: {"integrations": [{"agent": "codex", "kind": "hook", "lifecycle": False,
+                                                                        "session_restore": True, "available": True, "notes": ""}]})
+    result = runner.invoke(cli.app, ["integration", "list", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == [{"agent": "codex", "kind": "hook", "lifecycle": False,
+                                         "session_restore": True, "available": True, "notes": ""}]
+
+
 def test_close_only_own_sub_agents(monkeypatch):
     sessions = [{"id": "me1", "nick": "Ada", "parent": None}, {"id": "kid1", "nick": "Maya", "parent": "me1"},
                 {"id": "user1", "nick": "Omar", "parent": None}]

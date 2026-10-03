@@ -26,7 +26,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agents, auth, db, gitgraph, share, shells, stats, team
+from . import agents, auth, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -804,6 +804,13 @@ async def list_agents():
         "outside": await asyncio.to_thread(agents.outside, _tree_pids(shells)),
         "devin_sessions": await asyncio.to_thread(agents.devin_sessions),
     }
+
+
+@app.get("/api/integrations")
+async def list_integrations():
+    """Every supported agent integration and its available capability level."""
+    installed = {item["key"] for item in await asyncio.to_thread(agents.catalog) if item["installed"]}
+    return {"integrations": integrations.catalog(installed)}
 
 
 def _tree_pids(shells: dict[str, int]) -> set[int]:
