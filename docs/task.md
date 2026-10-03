@@ -2,7 +2,13 @@
 
 ## Status
 
-**Planning complete. Implementation not started.**
+**Implementation in progress. Milestone 1, Task 1.1 complete.**
+
+### Progress log
+
+- **2026-10-03 — Task 1.1 complete:** added the isolated lifecycle domain
+  module and authority resolver with focused tests. Existing runtime behavior
+  remains unchanged; Task 1.2 will adopt this contract in the server.
 
 The authoritative design is [AGENT_ENHANCEMENT.md](AGENT_ENHANCEMENT.md). This
 file is the execution checklist for breaking that design into reviewable,
@@ -28,14 +34,14 @@ dependency is explicitly removed through a design review.
 
 ### Task 1.1: Define the lifecycle domain model
 
-- [ ] Add `shelldeck/agent_state.py`.
-- [ ] Define canonical state values: `unknown`, `idle`, `working`, `blocked`,
+- [x] Add `shelldeck/agent_state.py`.
+- [x] Define canonical state values: `unknown`, `idle`, `working`, `blocked`,
   `done`, and `exited`.
-- [ ] Define typed models for an agent status, report, report source, native
+- [x] Define typed models for an agent status, report, report source, native
   session reference, and display metadata.
-- [ ] Define one state-authority resolver with the precedence documented in the
+- [x] Define one state-authority resolver with the precedence documented in the
   design spec.
-- [ ] Move no UI behavior in this task; preserve the current heuristic outputs
+- [x] Move no UI behavior in this task; preserve the current heuristic outputs
   through a compatibility adapter.
 
 **Primary files:** `shelldeck/server.py`, `shelldeck/agents.py`, new
