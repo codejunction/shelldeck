@@ -572,13 +572,13 @@ temporary logging or exposing private terminal content.
 
 ## Release checklist
 
-- [ ] Run the full unit/API suite on Linux and Windows.
+- [x] Run the full unit/API suite on Linux and Windows. (0.0.7rc1 release run: Windows + Ubuntu, py3.12–3.14)
 - [ ] Manually validate Codex, Claude Code, and OpenCode install/uninstall and
   lifecycle behavior.
 - [ ] Validate parent/sub-agent question forwarding and hand-off completion.
 - [ ] Validate restart behavior, remote SSH use, and share-mode auth boundaries.
 - [ ] Verify UI state text/icons with keyboard navigation and a screen reader.
-- [ ] Update `README.md`, `CLAUDE.md`, `CHANGELOG.md`, and the dedicated agent
+- [x] Update `README.md`, `CLAUDE.md`, `CHANGELOG.md`, and the dedicated agent
   integration/automation/detection docs described in the design spec.
 - [x] Document knowledge system, cross-project retrieval, and context CLI.
 - [x] Add release notes that list exact supported integrations and clearly state
