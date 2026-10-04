@@ -1045,6 +1045,30 @@ def agent_start(
     typer.echo(f"started {r['session']['nick']} ({r['session']['id']}): {r['command'].split(' \"')[0]}")
 
 
+@agent_app.command("cmd")
+def agent_cmd(
+    target: str = typer.Argument(..., help="Terminal nick, id or name (or an agent kind with --list)."),
+    command: str = typer.Argument("", help="compact, clear, new, model, status, resume, review, init, memory, rename, export, diff, ..."),
+    arg: str = typer.Argument("", help="For model/rename: one word, e.g. a model name."),
+    list_: bool = typer.Option(False, "--list", "-l", help="List the commands this agent supports."),
+    force: bool = typer.Option(False, "--force", help="Send even while the agent is working or blocked."),
+):
+    """Run an agent's own slash command through one name: `sd agent cmd Maya compact` types /compact into Claude or
+    Codex, /compress into Gemini."""
+    if list_:
+        from . import agent_commands
+
+        agent = target if target in agent_commands.COMMANDS else (_api("/api/agent-status?target=" + _session(target)["id"])["agents"] or [{}])[0].get("agent")
+        for c in agent_commands.catalog(agent or ""):
+            typer.echo(f"{c['action']:<12} {c['command']:<14} {c['description']}" + ("" if c["verified"] else "  (unverified)"))
+        return
+    if not command:
+        typer.echo("usage: sd agent cmd TERMINAL COMMAND [ARG]   (sd agent cmd claude --list)", err=True)
+        raise typer.Exit(1)
+    r = _api(f"/api/sessions/{_session(target)['id']}/agent-command", "POST", {"command": command, "arg": arg, "force": force})
+    typer.echo(f"{r['agent']}: typed {r['typed']}")
+
+
 @agent_app.command("prompt")
 def agent_prompt(
     target: str = typer.Argument(..., help="Terminal nick, id or name running an agent."),

@@ -33,7 +33,9 @@ EVENTS: dict[str, dict[str, str | None]] = {
                "afterMCPExecution": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING, "subagentStop": WORKING,
                "afterAgentResponse": WORKING, "preCompact": WORKING, "stop": DONE, "sessionEnd": None},
     # formats and events as herdr installs them (github.com/herdrdev/herdr, src/integration)
-    "codex": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "Stop": DONE, "Interrupt": IDLE},
+    # codex-rs/hooks/src/events: PermissionRequest runs on the approval path, before the approval UI
+    "codex": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
+              "PermissionRequest": BLOCKED, "PreCompact": WORKING, "Stop": DONE, "Interrupt": IDLE, "SessionEnd": None},
     "qwen": {"SessionStart": SESSION},
     "qodercli": {"SessionStart": SESSION},
     "droid": {"SessionStart": SESSION},
@@ -58,7 +60,7 @@ TTL_MS = {WORKING: 60_000, BLOCKED: 120_000, DONE: 120_000, IDLE: 120_000}
 # agent -> resume argv for its session id (herdr's agent_resume.rs); None: no known resume command
 RESUME = {
     "claude": lambda i: ["claude", "--resume", i], "codex": lambda i: ["codex", "resume", i],
-    "gemini": lambda i: ["gemini", "--resume", i],  # ponytail: Gemini CLI's --resume <session id>; check on a real install
+    "gemini": lambda i: ["gemini", "--resume", i],  # docs/cli/session-management.md: --resume <session uuid>
     "copilot": lambda i: ["copilot", f"--resume={i}"], "devin": lambda i: ["devin", "--resume", i],
     "droid": lambda i: ["droid", "--resume", i], "qwen": lambda i: ["qwen", "--resume", i],
     "qodercli": lambda i: ["qodercli", "--resume", i], "cursor": lambda i: ["cursor-agent", "--resume", i],

@@ -19,10 +19,10 @@ approve, deny or block a tool.
 | Agent | What is installed | Where (env override) | Session/resume |
 | --- | --- | --- | --- |
 | Claude Code | Hook entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `PreCompact`, `Stop`, `StopFailure` (all `async`) | `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR`) | yes: `claude --resume <id>` |
-| Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` (approval) | `~/.gemini/settings.json` (`GEMINI_DIR`) | yes: `gemini --resume <id>` (to confirm on a real install) |
+| Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` (approval) | `~/.gemini/settings.json` (`GEMINI_DIR`) | yes: `gemini --resume <id>` (docs: session management) |
 | Cursor (editor and CLI) | `hooks.json` entries for the watching hooks (`sessionStart`, `beforeSubmitPrompt`, `after*`, `postToolUse*`, `subagentStop`, `preCompact`, `stop`) | `~/.cursor/hooks.json` (`CURSOR_DIR`) | yes: `cursor-agent --resume <id>` |
 | GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | yes: `copilot --resume=<id>` |
-| Codex | `hooks.json` entries for `SessionStart`, `UserPromptSubmit`, `Stop`, `Interrupt`, plus `hooks = true` under `[features]` in `config.toml` (left in place on uninstall) | `~/.codex/` (`CODEX_HOME`) | yes: `codex resume <id>` |
+| Codex | `hooks.json` entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest` (approval), `PreCompact`, `Stop`, `Interrupt` (from codex-rs/hooks), plus `hooks = true` under `[features]` in `config.toml` (left in place on uninstall) | `~/.codex/` (`CODEX_HOME`) | yes: `codex resume <id>` |
 | Qwen Code | `SessionStart` (`matcher: "*"`): session id only | `~/.qwen/settings.json` (`QWEN_HOME`) | yes: `qwen --resume <id>` |
 | Qoder CLI | `SessionStart` (`matcher: "*"`): session id only | `~/.qoder/settings.json` (`QODER_CONFIG_DIR`) | yes: `qodercli --resume <id>` |
 | Factory Droid | `SessionStart`: session id only | `~/.factory/settings.json` | yes: `droid --resume <id>` |
@@ -69,6 +69,30 @@ read that file, so no shell ever sees quotes or `$`.
 
 Claude Code 2.1.289's `--help` confirms `--settings <file-or-json>`, the positional prompt and `--resume`. For the other
 three, the flags come from their docs as used by dotpals and herdr.
+
+## Native slash commands
+
+`sd agent cmd TERMINAL ACTION [ARG]` (and the *Command…* menu on the AI agents page) types the agent's own command:
+
+| Action | Claude Code | Codex | Gemini CLI | Devin CLI (unverified) |
+| --- | --- | --- | --- | --- |
+| compact | `/compact` | `/compact` | `/compress` | `/compact` |
+| clear / new | `/clear` | `/clear` / `/new` | `/clear` | `/clear` |
+| model | `/model` | `/model` | `/model` | `/model` |
+| status | `/status` | `/status` | `/stats` | – |
+| resume | `/resume` | `/resume` | `/resume` | – |
+| review, init, export, hooks, permissions, plan | yes | yes (+ `/diff`, `/rename`) | init, hooks, permissions, plan, `/memory show`, `/rewind` | – |
+| quit | `/exit` | `/quit` | `/quit` | `/exit` |
+
+Sources:
+
+- Claude: the command names in Claude Code 2.1.289's bundle.
+- Codex: `codex-rs/tui/src/slash_command.rs`.
+- Gemini: `docs/reference/commands.md`.
+- Devin's list is a guess until the Devin CLI can be installed and checked.
+
+A command is refused while the agent is blocked (it would answer the question) or working, unless `--force`.
+`sd agent cmd claude --list` shows an agent's commands.
 
 ## Commands
 

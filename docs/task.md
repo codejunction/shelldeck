@@ -117,6 +117,18 @@
   Gemini and Devin have no per-run hook flag, so they keep the installed hooks.
   New `POST /api/agent-start`, `sd agent start`; the page's Launch is now
   server-side; resume adds Claude's `--settings`.
+- **2026-10-04 — Native slash commands (user request):** `agent_commands.py`
+  maps compact/clear/new/model/status/resume/review/init/memory/rename/export/
+  diff/hooks/permissions/plan/rewind/quit to each agent's own command, verified
+  from Claude Code's bundle, Codex's slash_command.rs and Gemini's command docs.
+  `sd agent cmd`, `POST /api/sessions/{id}/agent-command` (refused while
+  blocked/working unless forced) and a *Command…* menu on the AI agents page,
+  checked in a browser. Codex hooks gained PreToolUse/PostToolUse/
+  PermissionRequest/PreCompact (from codex-rs/hooks); Gemini resume confirmed
+  in its docs.
+  - [ ] Devin CLI: install and verify its commands, flags and hooks. The
+    environment blocks devin.ai (needs devin.ai / *.devin.ai allowed in the
+    cloud environment's network settings).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

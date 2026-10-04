@@ -29,6 +29,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import agent_commands
 from . import agent_state as lifecycle
 from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
@@ -92,7 +93,7 @@ _generation = [0]
 report_tokens: dict[str, str] = {}  # terminal -> SHELLDECK_AGENT_REPORT_TOKEN of its current process
 REPORT_HEADER = "X-Shelldeck-Report-Token"
 # server events for `sd events subscribe` / GET /api/events (SSE): a bounded in-memory log; ids only grow
-EVENT_TYPES = ("agent.detected", "agent.state", "agent.exited", "agent.session_updated", "handoff.created", "handoff.completed",
+EVENT_TYPES = ("agent.detected", "agent.state", "agent.command", "agent.exited", "agent.session_updated", "handoff.created", "handoff.completed",
                "integration.changed")
 events_log: "collections.deque[dict]" = collections.deque(maxlen=500)
 _event_seq = [0]
@@ -1586,6 +1587,32 @@ async def agent_status_all(target: str = ""):
     rows = [{"session_id": sid, "agent": agent_kind.get(sid, ("",))[0], "generation": agent_kind.get(sid, ("", 0))[1], **st}
             for sid, st in agent_status.items() if not target or sid == target]
     return {"agents": rows}
+
+
+@app.get("/api/agent-commands/{agent}")
+async def agent_command_list(agent: str):
+    """The agent's own slash commands behind shelldeck's actions (compact, model, resume, ...)."""
+    return {"agent": agent, "commands": agent_commands.catalog(agent)}
+
+
+@app.post("/api/sessions/{session_id}/agent-command")
+async def agent_command(session_id: str, payload: dict):
+    """Type an agent's native command (e.g. Gemini's /compress for `compact`) into its terminal. Refused while the agent
+    is blocked (it would answer the question) or working (most agents ignore or queue commands mid-turn) unless `force`."""
+    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    if not key:
+        return err("no_agent_running", 409)
+    try:
+        text = agent_commands.line(key, str(payload.get("command") or ""), str(payload.get("arg") or ""))
+    except ValueError as e:
+        return err(str(e))
+    state = (agent_status.get(session_id) or {}).get("state")
+    if state in ("blocked", "working") and not payload.get("force"):
+        return err(f"agent_{state}", 409)
+    if not await _type(session_id, text):
+        return err("not_running", 409)
+    _emit("agent.command", {"session_id": session_id, "agent": key, "command": payload.get("command")})
+    return {"agent": key, "typed": text}
 
 
 @app.post("/api/agent-prompt")

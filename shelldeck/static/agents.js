@@ -16,11 +16,15 @@ export async function renderAgents(el) {
   if (!el.dataset.wired) {
     el.dataset.wired = "1";
     el.addEventListener("click", (e) => onClick(e, el));
+    el.addEventListener("change", (e) => onCommand(e, el));
   }
   const kept = keep(el);
   try {
     const [agents, skills, handoffs, ints, stored] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs"), api("/api/integrations"), api("/api/agent-sessions")]);
     data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs, stored: stored.sessions, integrations: ints.integrations.filter((i) => i.installable) };
+    for (const key of new Set(data.running.map((r) => r.agent))) {
+      if (!(key in COMMANDS)) COMMANDS[key] = (await api(`/api/agent-commands/${key}`)).commands;
+    }
   } catch (e) {
     return toastError(e);
   }
@@ -44,10 +48,11 @@ export async function renderAgents(el) {
             <td class="mono">${esc(r.model || "") || '<span class="faint">default</span>'}</td>
             <td><span class="proj-dot" style="background:${p ? projectColor(p) : "var(--faint)"}"></span>${esc(r.project || "")}</td>
             <td>${esc(r.name || "")} <span class="faint mono">${esc(r.session_id)}</span></td>
+            <td>${commandMenu(r)}</td>
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="6" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
+    : `<tr><td colspan="7" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
 
   const projects = orderedProjects();
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
@@ -82,7 +87,7 @@ export async function renderAgents(el) {
       <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
     ${banner}
     <div class="card mon-table"><table>
-      <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
+      <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th><th></th></tr></thead>
       <tbody>${running}</tbody></table></div>
     ${handoffSection()}
     ${resumeSection()}
@@ -169,7 +174,34 @@ function restore(el, k) {
   }
 }
 
+const COMMANDS = {}; // agent -> its native commands (/api/agent-commands)
+
+/** The agent's own slash commands, by shelldeck action name (compact -> /compress in Gemini). */
+function commandMenu(r) {
+  const cmds = (COMMANDS[r.agent] || []).filter((c) => !c.takes_arg);
+  if (!cmds.length) return "";
+  const opts = cmds.map((c) => `<option value="${c.action}">${esc(c.action)} (${esc(c.command)})${c.verified ? "" : " ?"}</option>`).join("");
+  return `<select class="sm" data-agent-cmd="${r.session_id}" aria-label="Run a ${esc(r.label)} command"><option value="">Command…</option>${opts}</select>`;
+}
+
+async function onCommand(e, el) {
+  const sel = e.target.closest("[data-agent-cmd]");
+  if (!sel || !sel.value) return;
+  const command = sel.value;
+  sel.value = "";
+  try {
+    const r = await api(`/api/sessions/${sel.dataset.agentCmd}/agent-command`, { method: "POST", body: { command } });
+    toast({ title: `Sent ${r.typed}`, body: `to ${r.agent}` });
+  } catch (err) {
+    const why = { agent_blocked: "It is waiting on a question: answer that first.", agent_working: "It is busy: wait until it finishes (or use sd agent cmd --force)." };
+    const code = Object.keys(why).find((k) => String(err?.message || err).includes(k));
+    if (code) toast({ title: "Command not sent", body: why[code], kind: "warn" });
+    else toastError(err);
+  }
+}
+
 async function onClick(e, el) {
+  if (e.target.closest("select")) return; // the command menu, not "open terminal"
   const sid = e.target.closest("tr[data-sid]")?.dataset.sid;
   if (sid) return showSession(sid);
   if (e.target.closest("[data-copy-prompt]")) {

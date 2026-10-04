@@ -18,6 +18,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Priority integrations: Claude Code, Codex, Gemini CLI and Devin CLI (exact state + resume) are the supported set and the default install. Devin now reports its state from its hooks, and its session comes from `sessions.db` when a hook has no id. Gemini resumes with `gemini --resume <id>`. The other 15 integrations are marked preview.
 - Attention: project rollups in the sidebar (needs you > working > done), agents sorted by urgency with elapsed time, *Open next*, and done-until-seen. Tabs that open later get the current agent states over the alarm socket.
 - Agents start with their native command-line flags (`team.launch_line`): model, initial prompt, and per-run hooks for Claude Code through `--settings` (no global config change). This covers spawn, *Launch* on the AI agents page (now server-side, `POST /api/agent-start`), `sd agent start` and resume.
+- Native slash commands behind one set of actions (`sd agent cmd`, *Command…* menu): compact, clear, new, model, status, resume, review, init and more, mapped per agent (Claude, Codex and Gemini verified from their sources; Devin unverified). Codex hooks also report tool use and approval requests.
 - `sd agent prompt [--wait]`, `sd agent rename`, and `sd events subscribe` (SSE `/api/events`).
 - `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.

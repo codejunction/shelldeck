@@ -1145,3 +1145,31 @@ def test_agent_start(client, tmp_path, monkeypatch):
     assert (work / ".shelldeck" / "prompts" / name).read_text().startswith('use "quotes"')
     assert client.post("/api/agent-start", json={"agent": "amp", "project_id": pid, "prompt": "x"}).json()["error"] == "no_prompt_flag"
     assert client.post("/api/agent-start", json={"agent": "nope", "project_id": pid}).status_code == 404
+
+
+def test_native_agent_commands(client, monkeypatch):
+    from shelldeck import agent_commands
+    assert agent_commands.line("gemini", "compact") == "/compress"
+    assert agent_commands.line("claude", "compact") == "/compact" and agent_commands.line("codex", "new") == "/new"
+    assert agent_commands.line("codex", "rename", "reviewer") == "/rename reviewer"
+    for agent, action, arg, code in (("amp", "compact", "", "no_native_commands"), ("gemini", "diff", "", "unsupported_command"),
+                                     ("claude", "compact", "x", "no_argument"), ("claude", "model", "a; rm -rf", "invalid_argument")):
+        with pytest.raises(ValueError, match=code):
+            agent_commands.line(agent, action, arg)
+    assert all(not c["verified"] for c in agent_commands.catalog("devin"))
+    assert {c["action"] for c in client.get("/api/agent-commands/claude").json()["commands"]} >= {"compact", "model", "resume"}
+    typed = []
+
+    async def fake_type(sid, text, enter=True):
+        typed.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tc", ("gemini", 1))
+    monkeypatch.setitem(server.agent_status, "tc", {"state": "idle", "source": "integration", "reason": None, "detail": None})
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact"}).json()["typed"] == "/compress"
+    server.agent_status["tc"] = {**server.agent_status["tc"], "state": "working"}
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact"}).json()["error"] == "agent_working"
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact", "force": True}).status_code == 200
+    assert typed == ["/compress", "/compress"]
+    server.agent_status.pop("tc", None)

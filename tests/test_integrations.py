@@ -155,7 +155,9 @@ def test_codex_hooks_and_feature_flag(homes):
     integrations.install("codex")
     toml = (d / "config.toml").read_text()
     assert "hooks = true" in toml and "codex_hooks" not in toml and 'model = "gpt-5"' in toml and "web = true" in toml
-    assert set(json.loads((d / "hooks.json").read_text())["hooks"]) == {"SessionStart", "UserPromptSubmit", "Stop", "Interrupt"}
+    assert set(json.loads((d / "hooks.json").read_text())["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                                                       "PermissionRequest", "PreCompact", "Stop", "Interrupt"}
+    assert hook.state_for("codex", {"hook_event_name": "PermissionRequest"}) == ("blocked", "approval")
     assert integrations.status("codex")["status"] == "installed"
     assert integrations.enable_codex_hooks("") == "[features]\nhooks = true\n"
     assert integrations.enable_codex_hooks("[features]\nhooks = false\n") == "[features]\nhooks = true\n"
