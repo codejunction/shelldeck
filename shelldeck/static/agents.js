@@ -179,74 +179,49 @@ const COMMANDS = {}; // agent -> its native commands (/api/agent-commands)
 /** The agent's own slash commands, by shelldeck action name (compact -> /compress in Gemini). */
 function commandMenu(r) {
   const cmds = (COMMANDS[r.agent] || []).filter((c) => !c.takes_arg);
-  if (!cmds.length) return "";
-  const opts = cmds.map((c) => `<option value="${c.action}">${esc(c.action)} (${esc(c.command)})${c.verified ? "" : " ?"}</option>`).join("");
-  return `<button class="btn sm" data-extract="${r.session_id}" title="Ask it to save what it learned to project memory (one short prompt)">Extract facts</button>
-    <button class="btn sm" data-message="${r.session_id}" title="Send a prompt (refused while it waits on a question)">Message</button>
-    <select class="sm" data-agent-cmd="${r.session_id}" aria-label="Run a ${esc(r.label)} command"><option value="">Command…</option>${opts}</select>`;
+  const opts = cmds.map((c) => `<option value="cmd:${c.action}">${esc(c.action)} (${esc(c.command)})</option>`).join("");
+  return `<select class="sm ag-actions" data-agent-cmd="${r.session_id}" aria-label="Actions for ${esc(r.nick || r.label)}">
+    <option value="">Actions…</option>
+    <option value="extract">Extract facts</option>
+    <option value="message">Message…</option>
+    ${opts ? `<optgroup label="${esc(r.label)} commands">${opts}</optgroup>` : ""}</select>`;
 }
 
+const BUSY = { agent_blocked: "It is waiting on a question: answer that first.", agent_working: "It is busy: try when it finishes (or use sd agent cmd --force)." };
+
+function busyToast(err, title) {
+  const code = Object.keys(BUSY).find((k) => String(err?.message || err).includes(k));
+  if (code) toast({ title, body: BUSY[code], kind: "warn" });
+  else toastError(err);
+}
+
+/** The row's Actions menu: extract facts, message, or one of the agent's own slash commands. */
 async function onCommand(e, el) {
   const sel = e.target.closest("[data-agent-cmd]");
   if (!sel || !sel.value) return;
-  const command = sel.value;
+  const sid = sel.dataset.agentCmd;
+  const choice = sel.value;
   sel.value = "";
   try {
-    const r = await api(`/api/sessions/${sel.dataset.agentCmd}/agent-command`, { method: "POST", body: { command } });
+    if (choice === "extract") {
+      await api(`/api/sessions/${sid}/extract`, { method: "POST" });
+      return toast({ title: "Asked it to save its facts", body: "They appear on the Context page." });
+    }
+    if (choice === "message") {
+      const text = await promptDialog("Message the agent", "", { label: "Prompt", ok: "Send" });
+      if (!text?.trim()) return;
+      await api("/api/agent-prompt", { method: "POST", body: { session_id: sid, text } });
+      return toast({ title: "Sent" });
+    }
+    const r = await api(`/api/sessions/${sid}/agent-command`, { method: "POST", body: { command: choice.slice(4) } });
     toast({ title: `Sent ${r.typed}`, body: `to ${r.agent}` });
   } catch (err) {
-    const why = { agent_blocked: "It is waiting on a question: answer that first.", agent_working: "It is busy: wait until it finishes (or use sd agent cmd --force)." };
-    const code = Object.keys(why).find((k) => String(err?.message || err).includes(k));
-    if (code) toast({ title: "Command not sent", body: why[code], kind: "warn" });
-    else toastError(err);
+    busyToast(err, "Not sent");
   }
 }
 
 async function onClick(e, el) {
   if (e.target.closest("select")) return; // the command menu, not "open terminal"
-  const ex = e.target.closest("[data-extract]")?.dataset.extract;
-  if (ex) {
-    try {
-      await api(`/api/sessions/${ex}/extract`, { method: "POST" });
-      toast({ title: "Asked it to save its facts", body: "They appear on the Context page." });
-    } catch (err) {
-      const busy = ["agent_blocked", "agent_working"].find((k) => String(err?.message || err).includes(k));
-      if (busy) toast({ title: "Not sent", body: busy === "agent_blocked" ? "It is waiting on a question: answer that first." : "It is busy: try when it finishes.", kind: "warn" });
-      else toastError(err);
-    }
-    return;
-  }
-  const msgTo = e.target.closest("[data-message]")?.dataset.message;
-  if (msgTo) {
-    const text = await promptDialog("Message the agent", "", { label: "Prompt", ok: "Send" });
-    if (!text?.trim()) return;
-    try {
-      await api("/api/agent-prompt", { method: "POST", body: { session_id: msgTo, text } });
-      toast({ title: "Sent" });
-    } catch (err) {
-      if (String(err?.message || err).includes("agent_blocked")) toast({ title: "Not sent", body: "It is waiting on a question: answer that first.", kind: "warn" });
-      else toastError(err);
-    }
-    return;
-  }
-  const sid = e.target.closest("tr[data-sid]")?.dataset.sid;
-  if (sid) return showSession(sid);
-  if (e.target.closest("[data-copy-prompt]")) {
-    await navigator.clipboard.writeText(TEAM_PROMPT).catch(() => {});
-    return toast({ title: "Team prompt copied", body: "Paste it into each agent." });
-  }
-  const skill = e.target.closest("[data-skill]")?.dataset.skill;
-  if (skill) {
-    try {
-      const { results } = await api("/api/skills", { method: "POST", body: { agents: [skill] } });
-      toast({ title: "Skill installed", body: results.map((r) => r.path).join("\n") });
-      return renderAgents(el);
-    } catch (err) {
-      return toastError(err);
-    }
-  }
-  const next = e.target.closest("[data-open-next]")?.dataset.openNext;
-  if (next) return showSession(next);
   const again = e.target.closest("[data-resume-agent]")?.dataset.resumeAgent;
   if (again) {
     try {

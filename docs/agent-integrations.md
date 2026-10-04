@@ -101,7 +101,7 @@ three, the flags come from their docs as used by dotpals and herdr.
 
 ## Native slash commands
 
-`sd agent cmd TERMINAL ACTION [ARG]` (and the *Command…* menu on the AI agents page) types the agent's own command:
+`sd agent cmd TERMINAL ACTION [ARG]` (and the *Actions* menu on the AI agents page) types the agent's own command:
 
 | Action | Claude Code | Codex | Gemini CLI | Devin CLI |
 | --- | --- | --- | --- | --- |

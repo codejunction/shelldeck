@@ -639,3 +639,7 @@ exist. Do not make an integration authoritative before its lifecycle events are
 covered by tests. The attention UI can be prototyped earlier, but its final
 behavior must use server-owned semantic status. Knowledge system depends on
 context store and database schema.
+
+## README screenshots refreshed
+- [x] New screenshot.png, agents.png, context.png, task-manager.png, git-graph.png from a seeded demo (four projects, hook-driven states).
+- [x] AI agents page: Extract facts, Message and the native commands merged into one *Actions* menu per row (the old buttons overflowed the table).
