@@ -126,7 +126,7 @@
   checked in a browser. Codex hooks gained PreToolUse/PostToolUse/
   PermissionRequest/PreCompact (from codex-rs/hooks); Gemini resume confirmed
   in its docs.
-  - [ ] Devin CLI: install and verify its commands, flags and hooks. The
+  - [~] Devin CLI: commands, flags and hooks cross-checked from web sources; running the real CLI is still pending. The
     environment blocks devin.ai (needs devin.ai / *.devin.ai allowed in the
     cloud environment's network settings).
 - **2026-10-04 — Task 5.8 (UI) complete:** a *Context* view (sidebar and
@@ -173,6 +173,12 @@
   output, contents and sensitive files are never stored. Fixed a redaction bug
   that could corrupt stored event JSON. Checked live (fake agent, hook events,
   exit -> session file).
+- **2026-10-04 — Devin CLI cross-checked from web sources (user request):**
+  search results quoting the Devin docs and other projects' Devin integrations
+  agree with shelldeck's flags (`-- "prompt"`, `--model`, `-r/--resume`), config
+  path and hook events. Devin rejects unknown hook events, so a test now guards
+  the installed set. Added its shell tool name `exec` for capture, and expanded
+  and verified its slash commands. Running the real CLI is still blocked.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

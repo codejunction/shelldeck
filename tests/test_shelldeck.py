@@ -1156,7 +1156,7 @@ def test_native_agent_commands(client, monkeypatch):
                                      ("claude", "compact", "x", "no_argument"), ("claude", "model", "a; rm -rf", "invalid_argument")):
         with pytest.raises(ValueError, match=code):
             agent_commands.line(agent, action, arg)
-    assert all(not c["verified"] for c in agent_commands.catalog("devin"))
+    assert agent_commands.line("devin", "rewind") == "/revert" and agent_commands.line("devin", "status") == "/context"
     assert {c["action"] for c in client.get("/api/agent-commands/claude").json()["commands"]} >= {"compact", "model", "resume"}
     typed = []
 

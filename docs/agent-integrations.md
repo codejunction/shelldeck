@@ -20,7 +20,7 @@ manual check is still on the release checklist.
 | claude | priority | hook | yes | yes | Claude Code 2.1.289 (bundle + `--help`) |
 | codex | priority | hook | yes | yes | openai/codex source (hooks, slash commands) |
 | gemini | priority | hook | yes | yes | gemini-cli docs (hooks, commands, sessions) |
-| devin | priority | hook | yes | yes | herdr installer only; Devin CLI not checked (devin.ai blocked) |
+| devin | priority | hook | yes | yes | Devin CLI docs via web search + other projects' integrations; CLI not run (devin.ai blocked) |
 | copilot | later | hook | yes | yes | dotpals/herdr formats; config files only |
 | cursor | later | hook | yes | yes | dotpals/herdr formats; config files only |
 | opencode | later | plugin | yes | yes | dotpals/herdr formats; config files only |
@@ -91,6 +91,8 @@ flags (`team.launch_line`):
 | Gemini CLI | `-m` | `-i "prompt"` | none: hooks only from `settings.json` (install) | `gemini --resume <id>` |
 | Devin CLI | `--model` | `-- "prompt"` | none: hooks only from `config.json` (install), plus `sessions.db` | `devin --resume <id>` |
 
+Devin's flags (`-- "prompt"`, `--model`, `-r/--resume`, `-c/--continue`, `-p`) and hook events (`SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest`, `Stop`, `PostCompaction`, `SessionEnd`) were cross-checked the same way. Devin rejects its whole hooks block when it holds an unknown event, so shelldeck installs only events from that list (a test guards it). Its shell tool is `exec`.
+
 A prompt that is longer, or isn't plain words, is written to `.shelldeck/prompts/<id>.md`. The agent is then asked to
 read that file, so no shell ever sees quotes or `$`.
 
@@ -101,14 +103,14 @@ three, the flags come from their docs as used by dotpals and herdr.
 
 `sd agent cmd TERMINAL ACTION [ARG]` (and the *Command…* menu on the AI agents page) types the agent's own command:
 
-| Action | Claude Code | Codex | Gemini CLI | Devin CLI (unverified) |
+| Action | Claude Code | Codex | Gemini CLI | Devin CLI |
 | --- | --- | --- | --- | --- |
 | compact | `/compact` | `/compact` | `/compress` | `/compact` |
 | clear / new | `/clear` | `/clear` / `/new` | `/clear` | `/clear` |
 | model | `/model` | `/model` | `/model` | `/model` |
-| status | `/status` | `/status` | `/stats` | – |
-| resume | `/resume` | `/resume` | `/resume` | – |
-| review, init, export, hooks, permissions, plan | yes | yes (+ `/diff`, `/rename`) | init, hooks, permissions, plan, `/memory show`, `/rewind` | – |
+| status | `/status` | `/status` | `/stats` | `/context` |
+| resume | `/resume` | `/resume` | `/resume` | `/resume` |
+| review, init, export, hooks, permissions, plan | yes | yes (+ `/diff`, `/rename`) | init, hooks, permissions, plan, `/memory show`, `/rewind` | plan, `/revert` (rewind), `/new` |
 | quit | `/exit` | `/quit` | `/quit` | `/exit` |
 
 Sources:
@@ -116,7 +118,7 @@ Sources:
 - Claude: the command names in Claude Code 2.1.289's bundle.
 - Codex: `codex-rs/tui/src/slash_command.rs`.
 - Gemini: `docs/reference/commands.md`.
-- Devin's list is a guess until the Devin CLI can be installed and checked.
+- Devin's list comes from the Devin CLI docs as quoted by web search, plus other projects' Devin integrations (docs.devin.ai and the CLI itself are blocked from this build box).
 
 A command is refused while the agent is blocked (it would answer the question) or working, unless `--force`.
 `sd agent cmd claude --list` shows an agent's commands.

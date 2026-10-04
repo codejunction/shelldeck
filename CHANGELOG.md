@@ -28,6 +28,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - The support matrix (exact state, resume, and what each format was checked against) is in [docs/agent-integrations.md](docs/agent-integrations.md#support-matrix).
 - Deterministic capture: agent tool calls (command + success, edited file) from hooks and people's shell commands become context events. Test runs set the project's Tests line, failures (not look-ups like grep) set Last error, and each agent run writes `.shelldeck/sessions/<id>.md` when it ends.
 - Fixed: a redacted value could corrupt a stored context event (secrets are now redacted per value before serializing).
+- Devin CLI: commands and flags cross-checked from web sources (slash commands `/compact /clear /new /model /context /resume /plan /revert /exit`, shell tool `exec` captured); its hooks are limited to the events Devin accepts.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

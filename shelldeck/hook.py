@@ -39,7 +39,8 @@ EVENTS: dict[str, dict[str, str | None]] = {
     "qwen": {"SessionStart": SESSION},
     "qodercli": {"SessionStart": SESSION},
     "droid": {"SessionStart": SESSION},
-    # Devin's hooks are Claude-shaped; herdr reports only its session from them, shelldeck also its state
+    # Devin's hooks are Claude-shaped (events per its hooks docs). Devin rejects the whole hooks block if it holds an
+    # unknown event (Notification, PreCompact, ...), so only these may be installed; its shell tool is `exec`
     "devin": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
               "PermissionRequest": BLOCKED, "Stop": DONE, "SessionEnd": None},
     "kimi": {"SessionStart": SESSION, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
@@ -98,7 +99,7 @@ def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str |
 # tool-finished events whose payload names the tool and its input (Claude-shaped; Gemini's AfterTool; Copilot's
 # toolName/toolArgs). Only the command or the edited path leaves the agent: never output or file contents.
 AFTER_TOOL = {"PostToolUse": True, "PostToolUseFailure": False, "AfterTool": None, "postToolUse": True, "postToolUseFailure": False}
-SHELL_TOOLS = {"bash", "shell", "exec_command", "local_shell", "run_shell_command", "powershell", "run_terminal_cmd", "execute"}
+SHELL_TOOLS = {"bash", "shell", "exec", "exec_command", "local_shell", "run_shell_command", "powershell", "run_terminal_cmd", "execute"}
 EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
 
 

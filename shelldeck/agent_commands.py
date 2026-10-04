@@ -5,7 +5,8 @@ re-implements what the command does. Sources:
   claude  built-in command names in Claude Code 2.1.289's cli.js
   codex   codex-rs/tui/src/slash_command.rs (openai/codex)
   gemini  docs/reference/commands.md (google-gemini/gemini-cli)
-  devin   ponytail: unverified (docs.devin.ai unreachable from the build box); marked `verified: False`
+  devin   Devin CLI docs as quoted by web search (commands & flags, essential commands) and other projects' Devin
+          integrations; docs.devin.ai itself and the CLI were unreachable from the build box
 """
 
 import re
@@ -42,9 +43,10 @@ COMMANDS: dict[str, dict[str, str]] = {
     "gemini": {"compact": "/compress", "clear": "/clear", "new": "/clear", "model": "/model", "status": "/stats", "resume": "/resume",
                "init": "/init", "memory": "/memory show", "hooks": "/hooks", "permissions": "/permissions", "plan": "/plan",
                "rewind": "/rewind", "quit": "/quit"},
-    "devin": {"compact": "/compact", "clear": "/clear", "model": "/model", "quit": "/exit"},
+    "devin": {"compact": "/compact", "clear": "/clear", "new": "/new", "model": "/model", "status": "/context", "resume": "/resume",
+              "plan": "/plan", "rewind": "/revert", "quit": "/exit"},
 }
-VERIFIED = {"claude": True, "codex": True, "gemini": True, "devin": False}
+VERIFIED = {"claude": True, "codex": True, "gemini": True, "devin": True}
 SAFE_VALUE = re.compile(r"[\w.:/@+-]{1,80}")  # an argument typed after the command: one plain word
 
 

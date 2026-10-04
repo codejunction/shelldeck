@@ -361,3 +361,13 @@ def test_hook_activity_from_finished_tools():
     codex = hook.report("codex", {"hook_event_name": "PostToolUse", "tool_name": "shell", "tool_input": {"command": ["cargo", "test"]}})
     assert codex["activity"]["command"] == "cargo test"
     assert "activity" not in hook.report("claude", {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}})
+
+
+DEVIN_EVENTS = {"PreToolUse", "PostToolUse", "PermissionRequest", "UserPromptSubmit", "Stop", "PostCompaction", "SessionStart", "SessionEnd"}
+
+
+def test_devin_installs_only_events_devin_accepts():
+    # Devin refuses its whole hooks block when one event is unknown (e.g. Claude's Notification or PreCompact)
+    assert set(integrations.INSTALLERS["devin"].events()) <= DEVIN_EVENTS
+    act = hook.report("devin", {"hook_event_name": "PostToolUse", "tool_name": "exec", "tool_input": {"command": "pytest"}})
+    assert act["activity"] == {"command": "pytest", "ok": True}
