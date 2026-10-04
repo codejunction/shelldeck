@@ -200,7 +200,7 @@ sd agent rename TERMINAL NAME        rename an agent's terminal
 sd events subscribe [--types agent,handoff] [--since ID]   JSON lines: agent.*, handoff.*, integration.changed
 sd agent cmd TERMINAL ACTION [ARG]   the agent's own slash command: compact -> /compact (Claude, Codex), /compress (Gemini)
 sd agent explain TERMINAL [--json]   why an agent has its state: deciding source, report ages, screen inputs (no screen text)
-sd agent explain --file SCREEN.txt   check saved screen text against the question rules
+sd agent explain --file SCREEN.txt [--agent A]   check saved screen text against the detection rules (docs/agent-detection.md)
 sd agent resume [TERMINAL]           list stored agent sessions, or start one again (claude --resume, codex resume, opencode --session)
 sd agent report STATE --source S --agent A   report state from an integration inside a terminal
 sd context [PROJECT] [-q QUERY]      task, state, next action, memory, decisions, hand-off, git, events

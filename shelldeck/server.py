@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_commands
+from . import agent_commands, detection
 from . import agent_state as lifecycle
 from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
@@ -1360,7 +1360,8 @@ def _next_state(sid: str, was: str, now: float) -> str:
     if quiet:
         # ponytail: a regex over what the last burst drew (raw output is cursor-addressed), not xterm's screen;
         # an answered prompt is gone once the agent prints again
-        return "approval" if agents.QUESTION.search(RELAYED.sub("", _plain(burst.get(sid, "")))[-6000:]) else "idle"
+        key = agent_kind.get(sid, ("",))[0]
+        return "approval" if detection.match(key, RELAYED.sub("", _plain(burst.get(sid, "")))[-6000:]) else "idle"
     if now - busy_since.get(sid, now) > AGENT_BUSY_S:
         return "working"
     return "idle" if was == "approval" else was
@@ -1676,7 +1677,8 @@ async def agent_explain(session_id: str):
     key, gen = agent_kind.get(session_id, (None, None))
     now = time.monotonic()
     text = _plain(burst.get(session_id, ""))
-    rule = agents.question_rule(RELAYED.sub("", text)[-6000:])
+    hit = detection.match(key or "", RELAYED.sub("", text)[-6000:])
+    manifest = detection.load(key or "")
     stored = await asyncio.to_thread(db.get_agent_session, session_id)
     integ = integrations.status(key) if key in integrations.INSTALLERS else {"status": "unsupported"}
     rows = lifecycle.explain(reports.reports.get(session_id, {}), now)
@@ -1695,7 +1697,9 @@ async def agent_explain(session_id: str):
         "reports": rows,
         "heuristic": {"quiet_s": round(now - out_at[session_id], 1) if session_id in out_at else None,
                       "burst_s": round(now - busy_since[session_id], 1) if session_id in busy_since else None,
-                      "question_rule": rule, "legacy_state": agent_state.get(session_id)},
+                      "question_rule": hit.id if hit else None, "rule_reason": hit.reason if hit else None,
+                      "legacy_state": agent_state.get(session_id)},
+        "manifest": {"source": manifest.source, "version": manifest.version, "rules": len(manifest.rules), "error": manifest.error},
         "integration": {"status": integ["status"], "tier": "priority" if key in integrations.PRIORITY else "later" if key else None},
         "stored_session": {"source": stored["source"], "last_state": stored["last_state"]} if stored else None,
     }

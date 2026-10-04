@@ -1056,7 +1056,7 @@ def test_agent_explain(client, monkeypatch, tmp_path):
     out = client.get(f"/api/agent-explain/{sid}").json()
     assert out["reports"][0]["decides"] and out["reports"][0]["source"] == "heuristic:screen"
     assert "sd integration install claude" in out["why"] and out["integration"]["tier"] == "priority"
-    assert out["heuristic"]["question_rule"] == "do you want to proceed"
+    assert out["heuristic"]["question_rule"] == "permission.proceed" and out["manifest"]["source"] == "bundled"
     assert "secret" not in json.dumps(out)  # never screen text
     r, _, _ = lifecycle.parse_report({"source": "integration:claude", "agent": "claude", "state": "working"}, "claude")
     server.reports.put(sid, r)

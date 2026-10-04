@@ -134,6 +134,11 @@
   badges and Verify/Invalidate, decisions, related projects, recent events and
   cross-project search. Local-only storage is stated on the page. Checked in a
   browser (save, redaction, verify, search).
+- **2026-10-04 — Task 7.1 complete:** bundled `agent_detection/default.toml`
+  (one rule per prompt phrase, with id and reason), local per-agent overrides
+  (replace / disable / add), invalid overrides ignored and reported in
+  `sd agent explain` (rule id, manifest source/version, warning). The server's
+  heuristic uses it; the wheel includes the file; docs/agent-detection.md added.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -508,11 +513,11 @@ one click, including across projects.
 
 ### Task 7.1: Versioned detection manifests
 
-- [ ] Create bundled `shelldeck/agent_detection/` manifests for known agent
+- [x] Create bundled `shelldeck/agent_detection/` manifests for known agent
   screen states.
-- [ ] Add local config overrides under the Shelldeck config directory.
-- [ ] Make invalid local overrides non-fatal and visible in diagnostics.
-- [ ] Migrate existing approval/question regex behavior into a manifest or a
+- [x] Add local config overrides under the Shelldeck config directory.
+- [x] Make invalid local overrides non-fatal and visible in diagnostics.
+- [x] Migrate existing approval/question regex behavior into a manifest or a
   clearly named compatibility rule.
 
 ### Task 7.2: Explain diagnostics

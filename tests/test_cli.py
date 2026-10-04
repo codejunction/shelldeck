@@ -214,6 +214,6 @@ def test_agent_explain_file(tmp_path):
     f = tmp_path / "screen.txt"
     f.write_text("my password is hunter2\nAllow once?  Yes, allow once\n")
     out = CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output
-    assert "blocked" in out and "yes, allow once" in out and "hunter2" not in out
+    assert "blocked (approval)" in out and "permission.allow-once" in out and "hunter2" not in out
     f.write_text("all good\n")
     assert "no question found" in CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output

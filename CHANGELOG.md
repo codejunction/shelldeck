@@ -20,6 +20,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Agents start with their native command-line flags (`team.launch_line`): model, initial prompt, and per-run hooks for Claude Code through `--settings` (no global config change). This covers spawn, *Launch* on the AI agents page (now server-side, `POST /api/agent-start`), `sd agent start` and resume.
 - Native slash commands behind one set of actions (`sd agent cmd`, *Command…* menu): compact, clear, new, model, status, resume, review, init and more, mapped per agent (Claude, Codex and Gemini verified from their sources; Devin unverified). Codex hooks also report tool use and approval requests.
 - `sd agent prompt [--wait]`, `sd agent rename`, and `sd events subscribe` (SSE `/api/events`).
+- Screen detection rules moved into a versioned bundled file (`agent_detection/default.toml`), with per-agent local overrides in `<config>/agent-detection/<agent>.toml`. Invalid overrides are ignored and reported by `sd agent explain`.
 - `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
 - Context page: task and state editor, memory with verify/invalidate, decisions, related projects, and cross-project search.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.

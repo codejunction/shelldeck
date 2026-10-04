@@ -1127,15 +1127,23 @@ def events_subscribe(
 def agent_explain(
     target: str = typer.Argument("", help="Terminal nick, id or name."),
     file: Path = typer.Option(None, "--file", "-f", exists=True, dir_okay=False, help="Check saved screen text against the question rules instead."),
+    agent: str = typer.Option("", "--agent", "-a", help="With --file: whose rules (bundled + your override)."),
     json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ):
     """Why an agent has its state: which source decides, report ages, heuristic inputs. No screen text is shown."""
     if file:
-        from . import agents as agents_mod
+        from . import detection
 
-        rule = agents_mod.question_rule(file.read_text(encoding="utf-8", errors="replace")[-6000:])
-        out = {"question_rule": rule, "state": "blocked (approval)" if rule else "no question found"}
-        typer.echo(json.dumps(out, indent=2) if json_ else f"{out['state']}" + (f": matched {rule!r}" if rule else ""))
+        m = detection.load(agent)
+        hit = detection.match(agent, file.read_text(encoding="utf-8", errors="replace")[-6000:])
+        out = {"question_rule": hit.id if hit else None, "state": f"blocked ({hit.reason})" if hit else "no question found",
+               "manifest": {"source": m.source, "version": m.version, "error": m.error}}
+        if json_:
+            typer.echo(json.dumps(out, indent=2))
+        else:
+            typer.echo(out["state"] + (f": rule {hit.id}" if hit else "") + f"  (rules: {m.source} v{m.version})")
+            if m.error:
+                typer.echo(f"warning: {m.error}", err=True)
         return
     if not target:
         typer.echo("usage: sd agent explain TERMINAL  (or --file screen.txt)", err=True)
@@ -1153,6 +1161,8 @@ def agent_explain(
         typer.echo(f" {mark} {r['source']:<22} {r['state']:<8} age {r['age_s']}s, {'expired' if r['expired'] else f'{r['expires_in_s']}s left'}")
     h = out["heuristic"]
     typer.echo(f"screen: quiet {h['quiet_s']}s, burst {h['burst_s']}s, question rule: {h['question_rule'] or 'none'}")
+    m = out["manifest"]
+    typer.echo(f"rules: {m['source']} v{m['version']} ({m['rules']} rules)" + (f"; WARNING {m['error']}" if m["error"] else ""))
     typer.echo(f"integration: {out['integration']['status'].replace('_', ' ')}" + (f" ({out['integration']['tier']})" if out["integration"]["tier"] else "")
                + f"; stored session: {'yes (' + out['stored_session']['source'] + ')' if out['stored_session'] else 'no'}")
 
