@@ -71,7 +71,7 @@ def kickoff(nick: str, parent_nick: str, handoff_id: str) -> str:
 # ------------------------------------------------------------ handoff files
 
 
-def write_files(project_path: str, handoff: dict, all_handoffs: list[dict]) -> None:
+def write_files(project_path: str, handoff: dict, all_handoffs: list[dict], snapshot: str = "") -> None:
     """<project>/.shelldeck/handoffs/<id>.md for the receiver and handoff.md as the index. Git ignores the folder."""
     root = Path(project_path) / ".shelldeck"
     (root / "handoffs").mkdir(parents=True, exist_ok=True)
@@ -86,7 +86,7 @@ def write_files(project_path: str, handoff: dict, all_handoffs: list[dict]) -> N
         f"## Task\n\n{h['task'].strip()}\n\n"
         f"## When done\n\nRun `sd done {h['id']} \"<summary>\"` (add `--failed` if you could not do it). "
         f"Ask {h['from_nick'] or 'the sender'} with `sd tell {h['from_nick'] or h['from_sid']} \"...\"`.\n\n"
-        f"## Result\n\n{(h.get('result') or '(pending)').strip()}\n",
+        f"## Result\n\n{(h.get('result') or '(pending)').strip()}\n{snapshot}",
         encoding="utf-8",
     )
     rows = "\n".join(

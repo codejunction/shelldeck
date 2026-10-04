@@ -27,6 +27,7 @@ export const S = {
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
   agentState: {}, // sid -> working | waiting | approval (updateAgentStates)
   serverAgentState: {}, // sid -> working | approval | idle, from the server's agent_state broadcasts
+  serverStatus: {}, // sid -> {state, source, reason, detail, meta}: server-owned lifecycle (agent_state.py)
   online: true,
 };
 
@@ -591,6 +592,7 @@ export function agentChip(sid) {
   const pct = ctxPct(a);
   const tip = [
     `${a.label} is running in this terminal${model ? ` (model ${model})` : ""}`,
+    S.serverStatus[sid] ? `Status: ${S.serverStatus[sid].meta?.state_label || S.serverStatus[sid].state} (from ${S.serverStatus[sid].source})` : "",
     state === "approval" ? (isSubAgent(sid) ? "It is asking its parent agent (or you, if the parent is a plain shell)." : "It is asking you a question.") : state === "working" ? "It is working." : "",
     pct === null ? "" : `Context: ${fmtTokens(a.context.used)} of ${fmtTokens(a.context.window)} tokens (${pct}%)${a.context.estimated ? ", window estimated" : ""}`,
   ].filter(Boolean).join("\n");
@@ -613,6 +615,7 @@ const AGENT_BUSY_MS = 5000; // output for at least this long counts as working (
 // Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
 // Keep in sync with agents.QUESTION.
 const QUESTION_RE = /do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust|enter to (?:select|confirm|approve)|plan needs changes|\[y\/n\]|\(y\/n\)/i;
+const AUTHORITATIVE = new Set(["integration", "custom", "native"]); // lifecycle sources that beat screen detection
 const PROMPT_LINES = 20; // agents draw their prompts at the bottom; text higher up is conversation
 // a sub-agent's question relayed to its parent (server.py _forward_question): on the parent's screen, not asking you
 const RELAYED_RE = /\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call/g;
@@ -645,7 +648,10 @@ export function updateAgentStates() {
     const quiet = !t?.lastOut || now - t.lastOut > AGENT_QUIET_MS;
     const was = S.agentState[sid];
     let state;
-    if (t && quiet && QUESTION_RE.test(screenTail(t))) state = "approval";
+    const server = S.serverStatus[sid];
+    // an integration's report outranks what this tab can see; the screen heuristic is the fallback
+    if (server && AUTHORITATIVE.has(server.source)) state = server.state === "blocked" ? "approval" : server.state === "working" ? "working" : undefined;
+    else if (t && quiet && QUESTION_RE.test(screenTail(t))) state = "approval";
     else if (a.context?.state === "busy") state = "working"; // Claude Code reports it
     else if (t && !quiet) state = now - t.busySince > AGENT_BUSY_MS ? "working" : was === "approval" ? undefined : was;
     S.agentState[sid] = state;
@@ -655,6 +661,7 @@ export function updateAgentStates() {
     }
   }
   for (const sid of Object.keys(S.agentState)) if (!S.agents[sid]) delete S.agentState[sid];
+  for (const sid of Object.keys(S.serverStatus)) if (!S.agents[sid]) delete S.serverStatus[sid];
 }
 
 const CMD_MAX = 32;
@@ -1906,7 +1913,10 @@ function connectAlarms() {
     if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
     if (msg.type === "spawned") openSpawned(msg.session_id);
     if (msg.type === "share_state") setShareState(msg.state);
-    if (msg.type === "agent_state") S.serverAgentState[msg.session_id] = msg.state;
+    if (msg.type === "agent_state") {
+      S.serverAgentState[msg.session_id] = msg.state;
+      if (msg.status) S.serverStatus[msg.session_id] = msg.status;
+    }
     // a sub-agent's question whose parent isn't an agent (a plain shell): then it is yours
     if (msg.type === "question" && notify(msg.session_id, `${msg.nick} is asking you`, msg.text.slice(0, 200), "warn")) views.chime();
     if (msg.type === "handoff") {

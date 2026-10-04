@@ -32,13 +32,14 @@ export async function renderAgents(el) {
           return `<tr data-sid="${r.session_id}" title="Open terminal">
             <td><b>${esc(r.nick || "")}</b>${parent ? `<br><span class="faint">sub-agent of ${esc(parent.nick || parent.id)}</span>` : ""}</td>
             <td><span class="ai-chip">${icon("sparkle")}<b>AI</b>${esc(r.label)}</span></td>
+            <td>${statusCell(r.status)}</td>
             <td class="mono">${esc(r.model || "") || '<span class="faint">default</span>'}</td>
             <td><span class="proj-dot" style="background:${p ? projectColor(p) : "var(--faint)"}"></span>${esc(r.project || "")}</td>
             <td>${esc(r.name || "")} <span class="faint mono">${esc(r.session_id)}</span></td>
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="5" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
+    : `<tr><td colspan="6" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
 
   const projects = orderedProjects();
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
@@ -72,7 +73,7 @@ export async function renderAgents(el) {
       <p>Coding agents running in your terminals are marked AI in their header. Each terminal has a name; agents in a project can see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>.</p></div>
       <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
     <div class="card mon-table"><table>
-      <thead><tr><th>Name</th><th>Agent</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
+      <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
       <tbody>${running}</tbody></table></div>
     ${handoffSection()}
     <div class="ag-head"><h2>Available agents</h2>
@@ -202,4 +203,13 @@ async function resumeDevin(d) {
   } catch (e) {
     toastError(e);
   }
+}
+
+/** Lifecycle state as text (never colour alone) plus where it came from: integration, screen/activity, unknown. */
+function statusCell(st) {
+  if (!st) return '<span class="faint">unknown</span>';
+  const label = st.meta?.state_label || st.state;
+  const src = st.source === "heuristic" ? "screen" : st.source;
+  const why = st.reason ? ` · ${st.reason}` : "";
+  return `<b>${esc(label)}</b>${esc(why)}<br><span class="faint">from ${esc(src)}</span>`;
 }

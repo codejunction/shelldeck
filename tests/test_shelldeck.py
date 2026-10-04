@@ -853,3 +853,67 @@ def test_devices_one_active_takeover_and_revoke(browser, tmp_path):
     d.post("/api/auth/login", json={"password": "longenough"})
     d.post("/api/auth/logout")
     assert c.get("/api/projects").status_code == 200
+
+
+def test_agent_reports_are_terminal_bound_and_authoritative(client, monkeypatch):
+    sent = []
+
+    async def broadcast(msg, host_only=False):
+        sent.append(msg)
+
+    monkeypatch.setattr(server, "_broadcast", broadcast)
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    for sid in ("ta", "tb"):
+        monkeypatch.setitem(server.manager.procs, sid, Live())
+        monkeypatch.setitem(server.report_tokens, sid, f"tok-{sid}")
+        monkeypatch.setitem(server.agent_kind, sid, ("opencode", 1))
+    body = {"source": "integration:opencode", "agent": "opencode", "state": "blocked", "blocked_reason": "question"}
+    assert client.post("/api/agent-reports", json=body).status_code == 403  # no token
+    assert client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "nope"}).status_code == 403
+    # terminal A's token can't speak for terminal B
+    assert client.post("/api/agent-reports", json={**body, "session_id": "tb"}, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()["error"] == "session_mismatch"
+    assert client.post("/api/agent-reports", json={**body, "agent": "codex"}, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()["error"] == "agent_mismatch"
+    r = client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()
+    assert r["status"] == {"state": "blocked", "source": "integration", "reason": "question", "detail": None}
+    assert sent[-1]["session_id"] == "ta" and sent[-1]["state"] == "approval"  # legacy value kept for old clients
+    rows = client.get("/api/agent-status", params={"target": "ta"}).json()["agents"]
+    assert rows[0]["state"] == "blocked" and "tb" not in {x["session_id"] for x in rows}
+    # waits: reached at once, timeout, and a replaced agent process never satisfies an old wait
+    assert client.post("/api/agent-wait", json={"session_id": "ta", "until": ["blocked"]}).json()["result"] == "reached"
+    assert client.post("/api/agent-wait", json={"session_id": "ta", "until": ["idle"], "timeout": 0.2}).json()["result"] == "timeout"
+    assert client.post("/api/agent-wait", json={"session_id": "zz", "until": ["idle"]}).status_code == 409
+    for sid in ("ta", "tb"):
+        server.reports.forget(sid)
+        server.agent_status.pop(sid, None)
+
+
+def test_agent_wait_wakes_on_change_and_replacement(monkeypatch):
+    monkeypatch.setitem(server.agent_kind, "tw", ("codex", 7))
+    monkeypatch.setitem(server.agent_status, "tw", {"state": "working", "source": "heuristic", "reason": None, "detail": None})
+
+    async def go():
+        waiter = asyncio.create_task(server.agent_wait({"session_id": "tw", "until": ["idle"], "timeout": 5}))
+        await asyncio.sleep(0.05)
+        await server._publish("tw", {"state": "idle", "source": "heuristic", "reason": None, "detail": None}, None)
+        reached = await waiter
+        waiter = asyncio.create_task(server.agent_wait({"session_id": "tw", "until": ["blocked"], "timeout": 5}))
+        await asyncio.sleep(0.05)
+        server.agent_kind["tw"] = ("codex", 8)  # another agent process took the terminal
+        server._changed()
+        return reached, await waiter
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    reached, replaced = asyncio.run(go())
+    assert reached["result"] == "reached" and replaced["result"] == "replaced"

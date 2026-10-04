@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -26,7 +27,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agents, auth, db, gitgraph, integrations, share, shells, stats, team
+from . import agent_state as lifecycle
+from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -78,6 +80,15 @@ out_at: dict[str, float] = {}
 busy_since: dict[str, float] = {}
 burst: dict[str, str] = {}
 agent_state: dict[str, str] = {}
+# server-owned lifecycle (agent_state.py): reports per terminal, the resolved status sent to clients, the agent
+# kind and a generation that changes when a different agent process takes the terminal (pins waits)
+reports = lifecycle.Registry()
+agent_status: dict[str, dict] = {}
+agent_kind: dict[str, tuple[str, int]] = {}
+_generation = [0]
+report_tokens: dict[str, str] = {}  # terminal -> SHELLDECK_AGENT_REPORT_TOKEN of its current process
+REPORT_HEADER = "X-Shelldeck-Report-Token"
+_state_changed: list[asyncio.Event] = []  # set and replaced on every status change; `sd agent wait` awaits it
 AGENT_BUSY_S = 5  # output for at least this long counts as working (not a redraw or echo)
 # a sub-agent's question relayed to its parent (_forward_question): on the parent's screen, not asking you
 RELAYED = re.compile(r"\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call")
@@ -795,7 +806,9 @@ async def list_agents():
     by_id = {s["id"]: s for s in db.list_sessions_with_project()}
     running = [
         {"session_id": sid, "name": s.get("name"), "nick": s.get("nick"), "parent": s.get("parent"), "project_id": s.get("project_id"), "project": s.get("project_name"),
-         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model, "state": agent_state.get(sid, "idle")}
+         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model, "state": agent_state.get(sid, "idle"),
+         "status": agent_status.get(sid) or lifecycle.to_dict(lifecycle.Status(lifecycle.State.UNKNOWN)),
+         "resumable": bool(db.get_agent_session(sid))}
         for sid, (key, model) in found.items() if (s := by_id.get(sid))
     ]
     return {
@@ -1319,25 +1332,139 @@ async def _watch_agents() -> None:
             log.warning("agent state check failed", exc_info=True)
 
 
+def _legacy(status: dict) -> str:
+    """The pre-lifecycle working | approval | idle value, kept for older UI code and /api/agents."""
+    return {"blocked": "approval", "working": "working"}.get(status["state"], "idle")
+
+
+def _changed() -> None:
+    for ev in _state_changed:
+        ev.set()
+    _state_changed.clear()
+
+
+async def _publish(sid: str, status: dict, key: str | None) -> None:
+    """Broadcast a status change; a transition into blocked also notifies (push for top-level agents)."""
+    was = agent_status.get(sid)
+    if was == status:
+        return
+    agent_status[sid] = status
+    _changed()
+    await _broadcast({"type": "agent_state", "session_id": sid, "state": _legacy(status), "status": status})
+    if status["state"] != "blocked" or (was and was["state"] == "blocked") or not key:
+        return
+    s = db.get_session(sid)
+    if s and not s.get("parent"):  # sub-agents ask their parent, not you
+        project = db.get_project(s["project_id"]) if s.get("project_id") else None
+        msg = {"title": f"{agents.AGENTS[key][0]} needs you", "body": f"{s.get('nick') or sid} · {project['name'] if project else ''}",
+               "data": {"session_id": sid}}
+        if tokens := [t["token"] for t in db.list_push_tokens() if auth.alive(t["session_hash"])]:
+            threading.Thread(target=_push, args=(tokens, msg), daemon=True).start()
+
+
+def _status_of(sid: str, now: float | None = None) -> dict:
+    return lifecycle.to_dict(reports.status(sid, now), reports.metadata(sid, now))
+
+
+def _remember_state(sid: str, state: str) -> None:
+    """last_state of a stored native session; best effort."""
+    try:
+        db.touch_agent_session(sid, state)
+    except sqlite3.Error:
+        log.debug("agent session state not saved", exc_info=True)
+
+
 async def _check_agents() -> None:
     found = await asyncio.to_thread(agents.running, _shell_pids())
     now = time.monotonic()
-    for sid in [s for s in agent_state if s not in found]:
-        del agent_state[sid]
-        await _broadcast({"type": "agent_state", "session_id": sid, "state": "idle"})
+    for sid in [s for s in agent_kind if s not in found]:
+        agent_state.pop(sid, None)
+        agent_kind.pop(sid)
+        reports.forget(sid)
+        _remember_state(sid, "exited")
+        await _publish(sid, {"state": "exited", "source": "process", "reason": None, "detail": None}, None)
+        agent_status.pop(sid, None)
     for sid, (key, _) in found.items():
+        if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
+            _generation[0] += 1
+            agent_kind[sid] = (key, _generation[0])
+            reports.forget(sid)
         was = agent_state.get(sid, "idle")
-        state = agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
-        if state == was:
-            continue
-        await _broadcast({"type": "agent_state", "session_id": sid, "state": state})
-        s = db.get_session(sid)
-        if state == "approval" and s and not s.get("parent"):  # sub-agents ask their parent, not you
-            project = db.get_project(s["project_id"]) if s.get("project_id") else None
-            msg = {"title": f"{agents.AGENTS[key][0]} needs you", "body": f"{s.get('nick') or sid} · {project['name'] if project else ''}",
-                   "data": {"session_id": sid}}
-            if tokens := [t["token"] for t in db.list_push_tokens() if auth.alive(t["session_hash"])]:
-                threading.Thread(target=_push, args=(tokens, msg), daemon=True).start()
+        agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
+        reports.put(sid, lifecycle.heuristic(agent_state[sid], now))
+        status = _status_of(sid, now)
+        if status["state"] != agent_status.get(sid, {}).get("state"):
+            _remember_state(sid, status["state"])
+        await _publish(sid, status, key)
+
+
+@app.post("/api/agent-reports")
+async def agent_report(request: Request, payload: dict):
+    """Lifecycle/metadata/native-session report from an integration running inside a terminal. The terminal
+    comes from its per-process report token, never from a session id in the body."""
+    token = request.headers.get(REPORT_HEADER, "")
+    sid = next((k for k, v in report_tokens.items() if token and hmac.compare_digest(v, token)), None)
+    if not sid or not manager.get(sid):
+        return err("invalid_report_token", 403)
+    if payload.get("session_id") not in (None, sid):
+        return err("session_mismatch", 403)
+    key = agent_kind.get(sid, (None,))[0] or await _agent_in(sid)
+    if not key:
+        return err("no_agent_running", 409)
+    try:
+        report, meta, ref = lifecycle.parse_report(payload, key)
+    except lifecycle.ReportError as e:
+        log.info("agent report rejected: session=%s agent=%s error=%s", sid, key, e)
+        return err(str(e), 422)
+    reports.put(sid, report, meta)
+    if ref:
+        db.save_agent_session(sid, key, report.source, ref.session_id, list(ref.resume_argv), str(report.status.state))
+    status = _status_of(sid)
+    log.info("agent report: session=%s source=%s agent=%s state=%s", sid, report.source, key, status["state"])
+    await _publish(sid, status, key)
+    return {"status": status}
+
+
+@app.get("/api/agent-status")
+async def agent_status_all(target: str = ""):
+    """Server-owned lifecycle status of every agent terminal (or one)."""
+    rows = [{"session_id": sid, "agent": agent_kind.get(sid, ("",))[0], "generation": agent_kind.get(sid, ("", 0))[1], **st}
+            for sid, st in agent_status.items() if not target or sid == target]
+    return {"agents": rows}
+
+
+WAIT_STATES = {"idle", "working", "blocked", "done", "exited"}
+
+
+@app.post("/api/agent-wait")
+async def agent_wait(payload: dict):
+    """Long-poll until a terminal's agent reaches one of `until` (or exits, or is replaced). Event-driven:
+    it wakes on status changes, it doesn't read screens."""
+    sid = str(payload.get("session_id") or "")
+    until = {u for u in (payload.get("until") or []) if u in WAIT_STATES}
+    timeout = min(max(float(payload.get("timeout") or 600), 0.1), 3600)
+    if not until:
+        return err("invalid_until")
+    if sid not in agent_kind:
+        return err("no_agent_running", 409)
+    gen = agent_kind[sid][1]
+    deadline = time.monotonic() + timeout
+    while True:
+        cur = agent_kind.get(sid)
+        if not cur or cur[1] != gen:
+            return {"result": "exited" if not cur else "replaced", "status": agent_status.get(sid)}
+        st = agent_status.get(sid)
+        if st and st["state"] in until:
+            return {"result": "reached", "status": st}
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return {"result": "timeout", "status": st}
+        ev = asyncio.Event()
+        _state_changed.append(ev)
+        try:
+            await asyncio.wait_for(ev.wait(), left)
+        except TimeoutError:
+            pass
 
 
 def _push(tokens: list[str], msg: dict) -> None:
@@ -1426,9 +1553,152 @@ def _handoff_files(handoff: dict) -> None:
     project = db.get_project(handoff["project_id"])
     try:
         if project:
-            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]))
+            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]), _snapshot(project["path"]))
     except OSError:
         log.warning("writing hand-off files failed", exc_info=True)
+
+
+def _snapshot(path: str) -> str:
+    """The project's context snapshot for a hand-off file; empty if the context store fails (never blocks a hand-off)."""
+    try:
+        p = context.project_for(path)
+        return context.snapshot(p) if p else ""
+    except Exception:  # noqa: BLE001 - context is an enhancement, not a dependency
+        log.warning("context snapshot failed", exc_info=True)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Agent context (context.py): tasks, state, memory, decisions, recall
+# ---------------------------------------------------------------------------
+
+
+def _ctx_project(payload: dict) -> dict | None:
+    """The context project named by `project` (shelldeck or context project name), or containing `cwd`."""
+    name = str(payload.get("project") or "").strip()
+    if name:
+        sd = next((p for p in db.list_projects() if p["name"].casefold() == name.casefold() or p["id"] == name), None)
+        return context.project_for(sd["path"]) if sd else context.project_for(name=name)
+    sid = str(payload.get("session_id") or "")
+    s = db.get_session(sid) if sid else None
+    cwd = str(payload.get("cwd") or "") or (s or {}).get("cwd")
+    if not cwd and s and s.get("project_id"):
+        cwd = (db.get_project(s["project_id"]) or {}).get("path")
+    return context.project_for(cwd) if cwd else None
+
+
+async def _ctx(fn, *args, **kwargs):
+    """Run a context call off the event loop; failures become a 4xx/503, never a crash."""
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except LookupError as e:
+        return err(str(e), 404)
+    except ValueError as e:
+        return err(str(e))
+    except sqlite3.Error:
+        log.warning("context store failed", exc_info=True)
+        return err("context_unavailable", 503)
+
+
+def _project_later(project: dict) -> None:
+    """Markdown projection in the background; agent interaction never waits on it."""
+    def run():
+        try:
+            context.project_files(project)
+        except Exception:  # noqa: BLE001
+            log.warning("context projection failed", exc_info=True)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _agent_for(payload: dict) -> str | None:
+    sid = str(payload.get("session_id") or "")
+    return agent_kind.get(sid, (None,))[0] or (str(payload.get("agent"))[:40] if payload.get("agent") else None)
+
+
+@app.get("/api/context")
+async def get_context(cwd: str = "", project: str = "", session_id: str = "", q: str = ""):
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    open_h = next(iter(db.list_handoffs(to_sid=session_id, status="open")), None) if session_id else None
+    return await _ctx(context.project_context, p, q, open_h)
+
+
+@app.get("/api/context/projects")
+async def context_projects():
+    return {"projects": await _ctx(context.list_projects)}
+
+
+@app.get("/api/context/memory")
+async def get_memory(cwd: str = "", project: str = "", session_id: str = ""):
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    return {"project": p["name"], "memory": await _ctx(context.memory, p), "decisions": await _ctx(context.decisions, p)}
+
+
+@app.post("/api/context/memory")
+async def add_memory(payload: dict):
+    """`sd remember` / `sd discover`: a fact for this project's memory (secrets are redacted, duplicates merged)."""
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    k = await _ctx(context.record_memory, p, str(payload.get("text") or ""), kind="discover" if payload.get("kind") == "discover" else "remember",
+                   type_=str(payload.get("type") or ("discovery" if payload.get("kind") == "discover" else "note")),
+                   topic=str(payload.get("topic") or ""), title=str(payload.get("title") or ""), files=[str(f) for f in files[:20]],
+                   agent=_agent_for(payload), session_id=str(payload.get("session_id") or "") or None, scope=str(payload.get("scope") or "PROJECT"))
+    if isinstance(k, dict):
+        _project_later(p)
+    return k
+
+
+@app.post("/api/context/decisions")
+async def add_decision(payload: dict):
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    d = await _ctx(context.record_decision, p, str(payload.get("title") or ""), str(payload.get("decision") or ""),
+                   reason=str(payload.get("reason") or ""), alternatives=str(payload.get("alternatives") or ""),
+                   consequence=str(payload.get("consequence") or ""), agent=_agent_for(payload))
+    if isinstance(d, dict):
+        _project_later(p)
+    return d
+
+
+@app.post("/api/context/state")
+async def update_state(payload: dict):
+    """`sd task update`: the active task and current state (a checkpoint; git state is captured too)."""
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    fields = {k: (str(payload[k]) if payload.get(k) is not None else None) for k in
+              ("task", "objective", "plan", "status", "step", "next_action", "last_error", "tests")}
+    out = await _ctx(context.save_state, p, **fields, agent=_agent_for(payload), session_id=str(payload.get("session_id") or "") or None)
+    if isinstance(out, dict):
+        _project_later(p)
+    return out
+
+
+@app.get("/api/context/recall")
+async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10):
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    p = p if isinstance(p, dict) else None
+    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)))}
+
+
+@app.post("/api/context/knowledge/{knowledge_id}/status")
+async def knowledge_status(knowledge_id: str, payload: dict):
+    return await _ctx(context.set_status, knowledge_id, str(payload.get("status") or "VERIFIED"))
+
+
+@app.post("/api/context/relationships")
+async def add_relationship(payload: dict):
+    p = await _ctx(_ctx_project, payload)
+    target = await _ctx(_ctx_project, {"project": payload.get("target")})
+    if not isinstance(p, dict) or not isinstance(target, dict):
+        return err("project_not_found", 404)
+    return await _ctx(context.relate, p, str(payload.get("relation") or "related-to"), target)
 
 
 async def _tell_sender(handoff: dict, text: str) -> None:
@@ -1714,7 +1984,7 @@ async def _pump(session_id: str) -> None:
             await _close(ws)
     finally:
         readers.pop(session_id, None)
-        for d in (out_at, busy_since, burst):
+        for d in (out_at, busy_since, burst, report_tokens):
             d.pop(session_id, None)
         manager.terminate(session_id)
         try:
@@ -1745,7 +2015,8 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             rows=rows,
             cols=cols,
             distro=settings["wsl_distro"] or None,
-            extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent"))) if v},
+            extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent")),
+                                         ("SHELLDECK_AGENT_REPORT_TOKEN", report_tokens.setdefault(sid, secrets.token_urlsafe(24)))) if v},
         )
     if session.get("parent"):
         ask_buf.setdefault(sid, "")  # watch this sub-agent for questions (_watch_questions)

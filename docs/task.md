@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implementation in progress. Milestone 1, Task 1.1 complete. AGENT_ENHANCEMENT.md expanded with knowledge/context system.**
+**Implementation in progress. Milestone 1 and 2 complete; Milestone 5 core (context store, recall, context CLI) complete; `sd agent status/wait` from Milestone 6 done. Agent-specific installers (3.2–3.4) and restore (4.2) still wait on upstream verification.**
 
 ### Progress log
 
@@ -12,6 +12,26 @@
 - **2026-10-04 — AGENT_ENHANCEMENT.md updated:** Added comprehensive knowledge
   system, cross-project retrieval, CLI commands, database design, and
   context persistence layers (sections 27-63).
+- **2026-10-04 — Tasks 1.2, 2.1, 2.2 complete:** `_check_agents` now feeds the
+  screen/activity heuristic into an `agent_state.Registry` and broadcasts
+  `agent_state` with a structured `status` (legacy `state` kept). Push
+  notifications fire only on a transition into `blocked`. Added
+  `POST /api/agent-reports` (per-terminal `SHELLDECK_AGENT_REPORT_TOKEN`,
+  validated source/agent/state/TTL/metadata/resume argv, stable error codes),
+  `GET /api/agent-status`, and the event-driven `POST /api/agent-wait`, which
+  pins the agent process generation. The browser defers to authoritative
+  (integration/custom/native) server status; the Agents page shows state and
+  source. CLI: `sd agent status|wait|report`.
+- **2026-10-04 — Milestone 5 core complete:** `shelldeck/context.py` keeps
+  `<config>/context.db` (projects, sessions, tasks, state, knowledge,
+  decisions, events, relationships, source_references, FTS5 `search`) and
+  writes STATE/TASK/MEMORY/DECISIONS.md projections in the background.
+  Secrets are redacted and sensitive files are never referenced. Facts are
+  de-duplicated per project and scoped (not merged) across projects. Changed
+  sources mark knowledge STALE. Context packages have a budget. Hand-off files
+  get a context snapshot. CLI: `sd context|resume|recall|memory|remember|
+  discover|decide|decisions|projects|project|relate`, `sd task update`, and
+  `sd knowledge verify`.
 
 The authoritative design is [AGENT_ENHANCEMENT.md](AGENT_ENHANCEMENT.md). This
 file is the execution checklist for breaking that design into reviewable,
@@ -55,15 +75,15 @@ precedence, source replacement, expiry, and fallback selection.
 
 ### Task 1.2: Make lifecycle state server-owned
 
-- [ ] Add an in-memory report registry keyed by terminal session and report
+- [x] Add an in-memory report registry keyed by terminal session and report
   source.
-- [ ] Change the server's agent watcher to resolve the canonical status rather
+- [x] Change the server's agent watcher to resolve the canonical status rather
   than emitting only the current `working` / `approval` / `idle` result.
-- [ ] Map the existing approval heuristic to `blocked` with reason `approval`.
-- [ ] Emit structured `agent_state` alarm events containing state, source, and
+- [x] Map the existing approval heuristic to `blocked` with reason `approval`.
+- [x] Emit structured `agent_state` alarm events containing state, source, and
   optional blocked reason.
-- [ ] Return status/source information from `/api/agents`.
-- [ ] Update `static/app.js` and `static/monitor.js` to consume server state;
+- [x] Return status/source information from `/api/agents`.
+- [x] Update `static/app.js` and `static/monitor.js` to consume server state;
   remove duplicate browser-side lifecycle decisions only after compatibility
   tests pass.
 
@@ -78,15 +98,15 @@ continues to work.
 
 ### Task 2.1: Add terminal-bound agent report ingestion
 
-- [ ] Add `POST /api/agent-reports` with the schema in the design spec.
-- [ ] Generate a unique report token for each live terminal and expose it only
+- [x] Add `POST /api/agent-reports` with the schema in the design spec.
+- [x] Generate a unique report token for each live terminal and expose it only
   through that terminal's process environment.
-- [ ] Validate token/session binding, agent kind, source, state, TTL, metadata
+- [x] Validate token/session binding, agent kind, source, state, TTL, metadata
   size, and resume argv.
-- [ ] Reject reports for closed, unknown, or mismatched terminal sessions.
-- [ ] Ensure normal logs and API responses do not disclose native conversation
+- [x] Reject reports for closed, unknown, or mismatched terminal sessions.
+- [x] Ensure normal logs and API responses do not disclose native conversation
   IDs or terminal-bound tokens.
-- [ ] Add a compact, documented error vocabulary for integration authors.
+- [x] Add a compact, documented error vocabulary for integration authors.
 
 **Primary files:** `shelldeck/server.py`, `shelldeck/pty.py`,
 `shelldeck/agent_state.py`, `tests/test_shelldeck.py`.
@@ -96,12 +116,12 @@ is rejected; and a valid report produces an authoritative state transition.
 
 ### Task 2.2: Separate display metadata from state authority
 
-- [ ] Support bounded title, display-agent/role, state-label, and token metadata
+- [x] Support bounded title, display-agent/role, state-label, and token metadata
   fields on reports.
-- [ ] Apply metadata with source ownership and expiry.
-- [ ] Ensure metadata cannot change lifecycle semantic state, notifications,
+- [x] Apply metadata with source ownership and expiry.
+- [x] Ensure metadata cannot change lifecycle semantic state, notifications,
   hand-off completion, or restore eligibility.
-- [ ] Add API tests for stale metadata removal and source conflict behavior.
+- [x] Add API tests for stale metadata removal and source conflict behavior.
 
 **Done when:** UI labels can change without affecting the semantic lifecycle
 state or automation behavior.
@@ -163,10 +183,10 @@ can provide a resumable native session reference.
 
 ### Task 4.1: Persist supported native sessions
 
-- [ ] Add additive database migration(s) for `agent_sessions` and integration
-  status data.
-- [ ] Persist only validated native-session information and bounded metadata.
-- [ ] Do not persist high-frequency heartbeat reports by default.
+- [x] Add additive database migration(s) for `agent_sessions` (integration
+  status table waits for the integration manager).
+- [x] Persist only validated native-session information and bounded metadata.
+- [x] Do not persist high-frequency heartbeat reports by default.
 - [ ] Add settings for `never`, `ask`, and `auto` native-session restore.
 - [ ] Default new users to `ask`.
 
@@ -194,13 +214,13 @@ supported agent sessions and ordinary terminals.
 
 ### Task 5.1: Database schema and context store
 
-- [ ] Add additive database migrations for `projects`, `sessions`, `tasks`,
+- [x] Add additive database migrations for `projects`, `sessions`, `tasks`,
   `handoffs`, `knowledge`, `decions`, `events`, `relationships`, and
   `source_references` tables (see design spec section 41).
-- [ ] Implement `shelldeck/context_store.py` with SQLite FTS5 for full-text
+- [x] Implement the context store (shipped as `shelldeck/context.py`) with SQLite FTS5 for full-text
   search over knowledge, decisions, and handoff content.
-- [ ] Add project registry with path, repository, and git metadata.
-- [ ] Ensure all writes are idempotent and migration-safe.
+- [x] Add project registry with path, repository, and git metadata.
+- [x] Ensure all writes are idempotent and migration-safe.
 
 **Primary files:** `shelldeck/db.py`, new `shelldeck/context_store.py`,
 migration scripts, tests.
@@ -210,17 +230,17 @@ project registry tracks paths and git state.
 
 ### Task 5.2: Context manager and projection
 
-- [ ] Implement `shelldeck/context_manager.py` with:
+- [x] Implement the context manager functions (in `shelldeck/context.py`) with:
   `load_context()`, `save_state()`, `create_checkpoint()`, `create_handoff()`,
   `resume_session()`, `record_event()`, `record_memory()`, `record_decision()`,
   `search_context()`, `project_context()`, `related_projects()`.
-- [ ] Add `ContextPackage` dataclass aggregating project, task, state, memory,
+- [x] Add `ContextPackage` dataclass aggregating project, task, state, memory,
   decisions, handoff, related projects, relevant knowledge, git state, and
   recent events (section 47).
-- [ ] Implement Markdown projection: generate `STATE.md`, `TASK.md`,
+- [x] Implement Markdown projection: generate `STATE.md`, `TASK.md`,
   `MEMORY.md`, `DECISIONS.md`, `handoff.md` from SQLite on demand (section 43).
-- [ ] Add context budget enforcement with configurable allocation (section 48).
-- [ ] Implement deduplication and conflict detection for cross-project knowledge
+- [x] Add context budget enforcement with configurable allocation (section 48).
+- [x] Implement deduplication and conflict detection for cross-project knowledge
   (sections 49, 51).
 
 **Primary files:** new `shelldeck/context_manager.py`, `shelldeck/context_store.py`,
@@ -232,15 +252,15 @@ are surfaced not merged.
 
 ### Task 5.3: Cross-project retrieval (sd recall)
 
-- [ ] Implement `sd recall "<query>"` with SQLite FTS5 ranking and project
+- [x] Implement `sd recall "<query>"` with SQLite FTS5 ranking and project
   scoping.
-- [ ] Return structured results with project, relevance, source files, and
+- [x] Return structured results with project, relevance, source files, and
   knowledge snippet.
-- [ ] Add knowledge verification lifecycle: `NEW` → `VERIFIED` → `STALE`
+- [x] Add knowledge verification lifecycle: `NEW` → `VERIFIED` → `STALE`
   → `REVIEWED` with `INVALIDATED` option (section 32).
-- [ ] Implement source file hash tracking to auto-mark knowledge `STALE`
+- [x] Implement source file hash tracking to auto-mark knowledge `STALE`
   when source files change (section 31).
-- [ ] Add `sd knowledge verify <id>` CLI command.
+- [x] Add `sd knowledge verify <id>` CLI command.
 
 **Primary files:** `shelldeck/cli.py`, `shelldeck/context_store.py`,
 `shelldeck/context_manager.py`, tests.
@@ -250,13 +270,13 @@ attribution; stale detection works on file changes; verification CLI works.
 
 ### Task 5.4: Context CLI commands
 
-- [ ] Add `sd context [PROJECT]` — show current or named project context.
-- [ ] Add `sd memory [search <query>]` — show/search project memory.
-- [ ] Add `sd projects` and `sd project <name>` — list/show projects.
+- [x] Add `sd context [PROJECT]` — show current or named project context.
+- [x] Add `sd memory [search <query>]` — show/search project memory.
+- [x] Add `sd projects` and `sd project <name>` — list/show projects.
 - [ ] Add `sd handoff` / `sd handoffs` / `sd done <id>` — enhanced with
   full context snapshots (task, state, memory, decisions, git, tests, files,
   events, next action, related projects — section 44).
-- [ ] Add `sd resume` — resume most recent incomplete task.
+- [x] Add `sd resume` — resume most recent incomplete task.
 - [ ] Add `sd switch <agent>` — create handoff and switch active agent.
 - [ ] Add agent-accessible commands: `sd context`, `sd recall`, `sd memory`,
   `sd handoff`, `sd done`, `sd tell <agent>`, plus optional `sd remember`,
@@ -286,12 +306,12 @@ continue work without manual instruction.
 
 ### Task 5.6: Secret protection and git integration
 
-- [ ] Implement secret detection/redaction before indexing command output
+- [x] Implement secret detection/redaction before indexing command output
   or files (section 39): API keys, passwords, tokens, private keys, cookies,
   credentials, `.env` values.
-- [ ] Exclude sensitive files by default (`.env*`, `*.pem`, `*.key`,
+- [x] Exclude sensitive files by default (`.env*`, `*.pem`, `*.key`,
   `credentials.*`, `secrets.*`).
-- [ ] Add optional git metadata to context checkpoints: repository, branch,
+- [x] Add optional git metadata to context checkpoints: repository, branch,
   commit, dirty state, changed files (section 40).
 
 **Primary files:** `shelldeck/context_store.py`, secret scanning module,
@@ -334,8 +354,8 @@ settings.
 
 ### Task 6.1: Event-driven agent commands
 
-- [ ] Add `sd agent status` with stable human and JSON forms.
-- [ ] Add server-owned `sd agent wait` with timeout, closure, and replacement
+- [x] Add `sd agent status` with stable human and JSON forms.
+- [x] Add server-owned `sd agent wait` with timeout, closure, and replacement
   process handling.
 - [ ] Add atomic `sd agent prompt --wait` semantics.
 - [ ] Add agent attach/rename commands for manually started agent processes.
