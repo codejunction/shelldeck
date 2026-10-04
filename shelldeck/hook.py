@@ -1,0 +1,120 @@
+"""Agent hook -> shelldeck lifecycle report. Installed into agents' hook configs by `sd integration install`.
+
+    python -m shelldeck.hook <agent> [event]
+
+The agent runs this with its event as JSON on stdin. Outside a shelldeck terminal (no
+SHELLDECK_AGENT_REPORT_TOKEN) it does nothing. It never blocks or changes the agent: it always exits 0 and
+prints only what the agent expects for "carry on". Stdlib only, so each event costs one interpreter start.
+Event names and payload fields follow each agent's hook docs (the same ones dotpals connects to):
+  claude   https://docs.claude.com/en/docs/claude-code/hooks
+  gemini   https://geminicli.com/docs/hooks/
+  cursor   https://cursor.com/docs/hooks
+  copilot  https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
+(OpenCode reports from its plugin, `integrations.OPENCODE_PLUGIN`, straight to the same endpoint.)
+"""
+
+import json
+import os
+import sys
+import urllib.request
+from pathlib import Path
+
+WORKING, IDLE, DONE, BLOCKED = "working", "idle", "done", "blocked"
+
+# agent -> event -> state; None = ignore. Blocked carries "approval".
+EVENTS: dict[str, dict[str, str | None]] = {
+    "claude": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
+               "PostToolUseFailure": WORKING, "PermissionRequest": BLOCKED, "SubagentStart": WORKING, "PreCompact": WORKING,
+               "Stop": DONE, "StopFailure": IDLE, "SessionEnd": None, "Notification": None},
+    "gemini": {"SessionStart": IDLE, "BeforeAgent": WORKING, "BeforeTool": WORKING, "AfterTool": WORKING, "PreCompress": WORKING,
+               "AfterAgent": DONE, "Notification": BLOCKED, "SessionEnd": None},
+    "cursor": {"sessionStart": IDLE, "beforeSubmitPrompt": WORKING, "afterShellExecution": WORKING, "afterFileEdit": WORKING,
+               "afterMCPExecution": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING, "subagentStop": WORKING,
+               "afterAgentResponse": WORKING, "preCompact": WORKING, "stop": DONE, "sessionEnd": None},
+    "copilot": {"sessionStart": IDLE, "userPromptSubmitted": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING,
+                "notification": None, "errorOccurred": IDLE, "agentStop": DONE, "sessionEnd": None},
+}
+# what each agent wants on stdout so it carries on as if there were no hook
+REPLY = {"cursor": lambda event: '{"continue":true}' if event == "beforeSubmitPrompt" else "{}", "gemini": lambda event: "{}"}
+TTL_MS = {WORKING: 60_000, BLOCKED: 120_000, DONE: 120_000, IDLE: 120_000}
+
+
+def state_for(agent: str, event: dict) -> tuple[str | None, str | None]:
+    """(state, blocked_reason) for one hook event, or (None, None) to ignore it."""
+    name = event.get("hook_event_name") or ""
+    state = EVENTS.get(agent, {}).get(name)
+    if agent == "claude" and name == "Notification":
+        kind = event.get("notification_type") or ""
+        msg = str(event.get("message") or "").lower()
+        if kind == "permission_prompt" or "permission" in msg:
+            return BLOCKED, "approval"
+        if kind == "idle_prompt" or "waiting for your input" in msg:
+            return IDLE, None
+    if agent == "copilot" and name == "notification" and event.get("notification_type") == "permission_prompt":
+        return BLOCKED, "approval"
+    if agent == "copilot" and name == "errorOccurred" and event.get("recoverable"):
+        return None, None
+    return state, ("approval" if state == BLOCKED else None)
+
+
+def report(agent: str, event: dict) -> dict | None:
+    """The report body for an event, with the native session for agents whose resume command is known."""
+    state, reason = state_for(agent, event)
+    if not state:
+        return None
+    body = {"source": f"integration:{agent}", "agent": agent, "state": state, "blocked_reason": reason, "ttl_ms": TTL_MS[state]}
+    sid = event.get("session_id")
+    if agent == "claude" and isinstance(sid, str) and sid:
+        body["agent_session_id"], body["resume_argv"] = sid, ["claude", "--resume", sid]
+    return body
+
+
+def _url(path: str) -> str:
+    home = Path(os.environ.get("SHELLDECK_HOME") or Path.home() / ".config" / "shelldeck")
+    port = os.environ.get("SHELLDECK_PORT", "5455")
+    scheme = "http"
+    try:
+        info = json.loads((home / "server.json").read_text(encoding="utf-8"))
+        scheme = info["scheme"] if str(info.get("port")) == port else "http"
+    except (OSError, ValueError, KeyError):
+        pass
+    return f"{scheme}://127.0.0.1:{port}{path}"
+
+
+def send(body: dict, token: str) -> None:
+    import ssl
+
+    url = _url("/api/agent-reports")
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Shelldeck-Report-Token": token})
+    ctx = ssl._create_unverified_context() if url.startswith("https:") else None  # our own local server
+    with urllib.request.urlopen(req, timeout=1.5, context=ctx) as r:
+        r.read()
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    agent = argv[0] if argv else ""
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    try:
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            event = {}
+    except ValueError:
+        event = {}
+    if len(argv) > 1:  # Copilot's payloads don't name their event; the installed command does
+        event.setdefault("hook_event_name", argv[1])
+    token = os.environ.get("SHELLDECK_AGENT_REPORT_TOKEN")
+    if token and agent in EVENTS:
+        try:
+            if body := report(agent, event):
+                send(body, token)
+        except Exception:  # noqa: BLE001 - never break the agent
+            pass
+    if agent in REPLY:
+        sys.stdout.write(REPLY[agent](event.get("hook_event_name") or ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

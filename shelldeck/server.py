@@ -310,7 +310,10 @@ async def _guarded(request: Request, call_next):
         return err("forbidden_origin", 403)
     path = request.url.path
     request.state.session = None
-    if path.startswith("/api/") and not path.startswith(AUTH_EXEMPT):
+    # an integration inside a terminal (hook script, OpenCode plugin) holds only its terminal's report token;
+    # agent_report() checks it. Host-local only: never through a share tunnel or the network.
+    report_only = path == "/api/agent-reports" and request.method == "POST" and REPORT_HEADER in request.headers and _is_local(request)
+    if path.startswith("/api/") and not path.startswith(AUTH_EXEMPT) and not report_only:
         who = _who(request)
         if not who:
             return _denied()
@@ -824,6 +827,31 @@ async def list_integrations():
     """Every supported agent integration and its available capability level."""
     installed = {item["key"] for item in await asyncio.to_thread(agents.catalog) if item["installed"]}
     return {"integrations": integrations.catalog(installed)}
+
+
+@app.post("/api/integrations/{agent}")
+async def install_integration(request: Request, agent: str):
+    """Install shelldeck's lifecycle hook/plugin into an agent's config (host only: it writes files in your home)."""
+    if not _host(request):
+        return err("host_only", 403)
+    try:
+        return await asyncio.to_thread(integrations.install, agent)
+    except KeyError:
+        return err("unsupported_agent", 404)
+    except (OSError, ValueError) as e:
+        return JSONResponse({"error": "install_failed", "detail": str(e)}, status_code=409)
+
+
+@app.delete("/api/integrations/{agent}")
+async def uninstall_integration(request: Request, agent: str):
+    if not _host(request):
+        return err("host_only", 403)
+    try:
+        return await asyncio.to_thread(integrations.uninstall, agent)
+    except KeyError:
+        return err("unsupported_agent", 404)
+    except (OSError, ValueError) as e:
+        return JSONResponse({"error": "uninstall_failed", "detail": str(e)}, status_code=409)
 
 
 def _tree_pids(shells: dict[str, int]) -> set[int]:

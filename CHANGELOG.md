@@ -10,6 +10,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - `POST /api/agent-reports`: integration reports tied to one terminal by its `SHELLDECK_AGENT_REPORT_TOKEN`, with validated state, TTL, display metadata and resume argv. Validated native agent sessions are stored in the new `agent_sessions` table.
 - `sd agent status`, `sd agent wait` (event-driven; a replacement agent process never satisfies an old wait) and `sd agent report`.
 - Persistent agent context (`context.db`): per-project task, state, memory, decisions, events and relationships, with FTS5 search across projects, secret redaction, stale-source detection, a context budget and Markdown projections in `.shelldeck/`. Commands: `sd context`, `resume`, `recall`, `memory`, `remember`, `discover`, `decide`, `decisions`, `task update`, `knowledge verify`, `projects`, `project` and `relate`.
+- Agent integrations, following the hook formats dotpals uses: lifecycle hooks for Claude Code, Gemini CLI, Cursor and Copilot CLI, and an OpenCode plugin (`sd integration install|uninstall|status|detect`, and an **Integrations** section on the AI agents page). Config edits are merged, backed up and atomic. Claude Code and OpenCode also report their native session for a later resume.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

@@ -545,11 +545,55 @@ def integration_list(json_: bool = typer.Option(False, "--json", help="Print mac
     if json_:
         typer.echo(json.dumps(rows, indent=2))
         return
-    table = Table("Agent", "Method", "Lifecycle", "Resume", "CLI", "Notes")
+    table = Table("Agent", "Method", "Lifecycle", "Resume", "CLI", "Integration", "Notes")
     for item in rows:
         table.add_row(item["agent"], item["kind"], "yes" if item["lifecycle"] else "screen/fallback",
-                      "yes" if item["session_restore"] else "no", "found" if item["available"] else "not found", item["notes"])
+                      "yes" if item["session_restore"] else "no", "found" if item["available"] else "not found",
+                      item["status"].replace("_", " "), item["notes"])
     console.print(table)
+
+
+def _integration_rows(agent: str = "") -> list[dict]:
+    rows = [r for r in _api("/api/integrations")["integrations"] if r.get("installable")]
+    if agent and not any(r["agent"] == agent for r in rows):
+        typer.echo(f"error: no installable integration for {agent!r} (have: {', '.join(r['agent'] for r in rows)})", err=True)
+        raise typer.Exit(1)
+    return [r for r in rows if not agent or r["agent"] == agent]
+
+
+@integration_app.command("detect")
+def integration_detect():
+    """Agent CLIs found on this machine that have an installable integration."""
+    for r in _integration_rows():
+        typer.echo(f"{r['agent']:<10} {'found' if r['available'] else 'not found':<10} {r['status'].replace('_', ' ')}")
+
+
+@integration_app.command("status")
+def integration_status(agent: str = typer.Argument("", help="One agent (default: all installable).")):
+    """Whether each lifecycle hook/plugin is installed, outdated (re-install) or not installed."""
+    for r in _integration_rows(agent):
+        typer.echo(f"{r['agent']:<10} {r['status'].replace('_', ' ')}")
+
+
+@integration_app.command("install")
+def integration_install(agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents (default: every one found).")):
+    """Add shelldeck's lifecycle hook/plugin to agents' configs (merged; other hooks stay; a backup is kept)."""
+    targets = agents_ or [r["agent"] for r in _integration_rows() if r["available"]]
+    if not targets:
+        typer.echo("no supported agent CLI found; name one: sd integration install claude")
+    for a in targets:
+        _integration_rows(a)
+        r = _api(f"/api/integrations/{a}", "POST")
+        typer.echo(f"{a}: {r['status'].replace('_', ' ')} ({r['file']})" + ("; restart OpenCode to load it" if a == "opencode" else ""))
+
+
+@integration_app.command("uninstall")
+def integration_uninstall(agents_: list[str] = typer.Argument(..., metavar="AGENT...")):
+    """Remove only shelldeck's hook/plugin from agents' configs."""
+    for a in agents_:
+        _integration_rows(a)
+        r = _api(f"/api/integrations/{a}", "DELETE")
+        typer.echo(f"{a}: {r['status'].replace('_', ' ')} ({r['file']})")
 
 
 @app.command()

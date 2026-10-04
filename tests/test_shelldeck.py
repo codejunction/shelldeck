@@ -917,3 +917,34 @@ def test_agent_wait_wakes_on_change_and_replacement(monkeypatch):
     monkeypatch.setattr(server, "_broadcast", quiet)
     reached, replaced = asyncio.run(go())
     assert reached["result"] == "reached" and replaced["result"] == "replaced"
+
+
+def test_report_token_alone_is_enough_locally_but_not_over_a_tunnel(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "ALLOWED_HOSTS", {"testserver"})
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setitem(server.manager.procs, "tl", Live())
+    monkeypatch.setitem(server.report_tokens, "tl", "tok-tl")
+    monkeypatch.setitem(server.agent_kind, "tl", ("claude", 3))
+    body = {"source": "integration:claude", "agent": "claude", "state": "working"}
+    with TestClient(server.app) as c:  # no CLI token, no login
+        monkeypatch.setattr(server, "_is_local", lambda conn: True)
+        assert c.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-tl"}).json()["status"]["state"] == "working"
+        assert c.get("/api/agent-status").status_code == 401  # the token opens nothing else
+        monkeypatch.setattr(server, "_is_local", lambda conn: False)
+        assert c.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-tl"}).status_code == 401
+    server.reports.forget("tl")
+    server.agent_status.pop("tl", None)

@@ -19,8 +19,8 @@ export async function renderAgents(el) {
   }
   const kept = keep(el);
   try {
-    const [agents, skills, handoffs] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs")]);
-    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs };
+    const [agents, skills, handoffs, ints] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs"), api("/api/integrations")]);
+    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs, integrations: ints.integrations.filter((i) => i.installable) };
   } catch (e) {
     return toastError(e);
   }
@@ -76,6 +76,7 @@ export async function renderAgents(el) {
       <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
       <tbody>${running}</tbody></table></div>
     ${handoffSection()}
+    ${integrationSection()}
     <div class="ag-head"><h2>Available agents</h2>
       ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
     <div class="ag-grid">${cards}</div>
@@ -175,6 +176,17 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  const integ = e.target.closest("[data-integration]");
+  if (integ) {
+    const { integration: agent, op } = integ.dataset;
+    try {
+      const r = await api(`/api/integrations/${agent}`, { method: op === "remove" ? "DELETE" : "POST" });
+      toast({ title: op === "remove" ? "Integration removed" : "Integration installed", body: r.file + (agent === "opencode" && op !== "remove" ? "\nRestart OpenCode to load it." : "") });
+      return renderAgents(el);
+    } catch (err) {
+      return toastError(err);
+    }
+  }
   const resume = e.target.closest("[data-resume]")?.dataset.resume;
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
@@ -212,4 +224,23 @@ function statusCell(st) {
   const src = st.source === "heuristic" ? "screen" : st.source;
   const why = st.reason ? ` · ${st.reason}` : "";
   return `<b>${esc(label)}</b>${esc(why)}<br><span class="faint">from ${esc(src)}</span>`;
+}
+
+/** Lifecycle integrations (hooks/plugins that report state), not to be confused with the skill (instructions). */
+function integrationSection() {
+  const rows = data.integrations || [];
+  if (!rows.length) return "";
+  const label = { installed: "installed", outdated: "outdated: reinstall", not_installed: "not installed", error: "config unreadable" };
+  const cards = rows
+    .map((i) => {
+      const on = i.status === "installed" || i.status === "outdated";
+      const btn = on
+        ? `${i.status === "outdated" ? `<button class="btn sm" data-integration="${i.agent}" data-op="install">Reinstall</button>` : ""}<button class="btn sm" data-integration="${i.agent}" data-op="remove">Remove</button>`
+        : `<button class="btn sm" data-integration="${i.agent}" data-op="install"${i.available ? "" : ' title="The CLI was not found; installs anyway"'}>Install</button>`;
+      return `<div class="card ag-card"><div class="ag-title"><b>${esc(i.agent)}</b><code class="faint">${esc(i.kind)}</code></div>
+        <p class="faint">${esc(label[i.status] || i.status)}${i.session_restore ? " · reports its session" : ""}${i.available ? "" : " · CLI not found"}</p><div class="row">${btn}</div></div>`;
+    })
+    .join("");
+  return `<div class="ag-head"><h2>Integrations</h2><span class="faint">Hooks that report working / needs you / done exactly, instead of reading the screen. The skill only teaches commands.</span></div>
+    <div class="ag-grid">${cards}</div>`;
 }

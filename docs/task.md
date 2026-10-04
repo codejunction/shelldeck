@@ -36,6 +36,19 @@
   startup/during-work/pre-stop context workflow (`sd context`, `recall`,
   `remember`, `discover`, `decide`, `task update`, `agent status/wait`)
   without exposing the database.
+- **2026-10-04 — Task 3.1 complete, 3.3/3.4 mostly complete, + Gemini, Cursor, Copilot:**
+  following dotpals' adapters (github.com/Rikinshah787/dotpals, bridge/adapters),
+  `integrations.INSTALLERS` installs lifecycle hooks for Claude Code, Gemini CLI,
+  Cursor and Copilot CLI and an OpenCode plugin. Shared JSON configs are merged
+  and only shelldeck-owned entries are touched; there is a one-time backup,
+  atomic writes and an outdated status. `python -m shelldeck.hook <agent>` maps
+  events to lifecycle state and reports with only the terminal token (local only).
+  CLI: `sd integration detect|status|install|uninstall`; API: `POST/DELETE
+  /api/integrations/{agent}`; the AI agents page has an Integrations section.
+  Verified end to end on a real server and PTY (hook -> blocked/approval from
+  `integration`, Claude native session stored). Still not verified against
+  installed agent binaries in this environment; Codex has no hook (screen
+  detection remains).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -137,13 +150,13 @@ state or automation behavior.
 
 ### Task 3.1: Establish the integration package and commands
 
-- [ ] Create `shelldeck/integrations/` with a common integration interface.
-- [ ] Implement discovery, install, uninstall, and status operations.
-- [ ] Add `sd integration detect|list|install|uninstall|status`.
-- [ ] Add authenticated API endpoints for the same operations.
-- [ ] Add an Agents-page distinction between a Shelldeck skill and a runtime
+- [x] Create the integration layer (`shelldeck/integrations.py` installers + `shelldeck/hook.py`) with a common interface.
+- [x] Implement discovery, install, uninstall, and status operations.
+- [x] Add `sd integration detect|list|install|uninstall|status`.
+- [x] Add authenticated API endpoints for the same operations.
+- [x] Add an Agents-page distinction between a Shelldeck skill and a runtime
   integration.
-- [ ] Use atomic writes when available and manage only Shelldeck-owned config
+- [x] Use atomic writes when available and manage only Shelldeck-owned config
   entries/files.
 
 **Primary files:** new `shelldeck/integrations/`, `shelldeck/cli.py`,
@@ -168,20 +181,27 @@ conversation without affecting unrelated Codex hooks.
 
 - [ ] Verify the current Claude Code hook schema and event names before writing
   an installer.
-- [ ] Install/remove only Shelldeck-owned hook entries and scripts.
-- [ ] Report native session identity; preserve screen detection for state.
-- [ ] Test default and overridden Claude configuration directories.
+- [x] Install/remove only Shelldeck-owned hook entries and scripts.
+- [x] Report native session identity; preserve screen detection for state.
+- [x] Test default and overridden Claude configuration directories.
 
 **Done when:** Claude Code installation is safe, idempotent, and reversible.
 
 ### Task 3.4: OpenCode integration
 
 - [ ] Verify supported OpenCode plugin APIs and version compatibility.
-- [ ] Implement lifecycle-state and selected-session reporting in a
+- [x] Implement lifecycle-state and selected-session reporting in a
   Shelldeck-owned plugin.
-- [ ] Treat this integration as the first authoritative lifecycle proof case.
+- [x] Treat this integration as the first authoritative lifecycle proof case.
 - [ ] Test permissions/questions, completion, interruptions, and multiple
   terminal sessions.
+
+### Task 3.5: Gemini CLI, Cursor and Copilot CLI integrations
+
+- [x] Hooks for Gemini CLI (`~/.gemini/settings.json`), Cursor (`~/.cursor/hooks.json`)
+  and Copilot CLI (`~/.copilot/hooks/shelldeck.json`), in the formats dotpals uses.
+- [x] Install/uninstall round-trip tests with unrelated config preserved.
+- [ ] Manual check against installed binaries.
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.
