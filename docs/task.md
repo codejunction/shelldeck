@@ -164,6 +164,15 @@
   Checked by installing `shelldeck==0.0.7rc1` with `--prerelease allow`: the
   version, the `sd agent` commands and the bundled detection rules are present.
   No tag or GitHub release, as release candidates get none.
+- **2026-10-04 — Deterministic capture (spec sections 13, 26–28, 40):** hooks
+  attach the finished tool call (command + ok, or edited file). The server
+  records COMMAND / TEST_RESULT / ERROR / FILE_EDIT events, updates Tests and
+  Last error, opens a context session per agent run (terminal + generation) and
+  writes `.shelldeck/sessions/<id>.md` with files, commands, tests, errors and
+  git on exit. People's shell commands are captured too. No tokens are used;
+  output, contents and sensitive files are never stored. Fixed a redaction bug
+  that could corrupt stored event JSON. Checked live (fake agent, hook events,
+  exit -> session file).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

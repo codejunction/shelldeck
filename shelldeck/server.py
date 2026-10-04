@@ -1056,6 +1056,8 @@ def _record_command(session_id: str, msg: dict) -> None:
     exit_code = msg.get("exit")
     duration = msg.get("ms")
     session = db.get_session(session_id) or {}
+    if isinstance(exit_code, int) and session_id not in agent_kind:  # a person's command; agents report theirs via hooks
+        _capture(session_id, "record_activity", {"command": command[:500], "ok": exit_code == 0})
     db.add_command(
         session_id, session.get("project_id"), session.get("cwd"), command,
         exit_code if isinstance(exit_code, int) else None,
@@ -1512,6 +1514,27 @@ def _save_native(sid: str, key: str, nat: dict) -> None:
         log.debug("native session not saved", exc_info=True)
 
 
+def _capture(sid: str, fn: str, *args, **kwargs) -> None:
+    """Deterministic context capture (context.record_activity / start_session / end_session) for the terminal's
+    project, on a thread: it never slows the agent or the event loop, and a failure is only logged."""
+    def run():
+        try:
+            project = _ctx_project({"session_id": sid})
+            if project:
+                getattr(context, fn)(project, *args, **kwargs)
+                if fn == "end_session":
+                    context.project_files(project)
+        except Exception:  # noqa: BLE001
+            log.warning("context capture failed", exc_info=True)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _ctx_session(sid: str) -> str | None:
+    """The context session id of the agent run in this terminal: terminal id + process generation."""
+    kind = agent_kind.get(sid)
+    return f"{sid}.{kind[1]}" if kind else None
+
+
 def _remember_state(sid: str, state: str) -> None:
     """last_state of a stored native session; best effort."""
     try:
@@ -1524,6 +1547,7 @@ async def _check_agents() -> None:
     found = await asyncio.to_thread(agents.running, _shell_pids())
     now = time.monotonic()
     for sid in [s for s in agent_kind if s not in found]:
+        _capture(sid, "end_session", _ctx_session(sid))
         agent_state.pop(sid, None)
         agent_kind.pop(sid)
         reports.forget(sid)
@@ -1535,7 +1559,10 @@ async def _check_agents() -> None:
     for sid, (key, _) in found.items():
         if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
             _generation[0] += 1
+            if sid in agent_kind:  # another agent took over the terminal: close the previous run first
+                _capture(sid, "end_session", _ctx_session(sid))
             agent_kind[sid] = (key, _generation[0])
+            _capture(sid, "start_session", _ctx_session(sid), key)
             _emit("agent.detected", {"session_id": sid, "agent": key, "generation": _generation[0]})
             reports.forget(sid)
         was = agent_state.get(sid, "idle")
@@ -1567,10 +1594,13 @@ async def agent_report(request: Request, payload: dict):
         return err("no_agent_running", 409)
     try:
         report, meta, ref = lifecycle.parse_report(payload, key)
+        act = lifecycle.parse_activity(payload.get("activity"))
     except lifecycle.ReportError as e:
         log.info("agent report rejected: session=%s agent=%s error=%s", sid, key, e)
         return err(str(e), 422)
     source = str(payload["source"])
+    if act:
+        _capture(sid, "record_activity", act, agent=key, session_id=_ctx_session(sid))
     if report:
         reports.put(sid, report, meta)
     if ref:

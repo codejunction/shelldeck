@@ -223,13 +223,19 @@ def _touch(conn, project_id: str) -> None:
 # ---------------------------------------------------------------------------------------------- writes
 
 
+def _payload(payload: dict | None) -> str:
+    """Redact each value, then serialize: redacting serialized JSON could eat a closing quote (`TOKEN=abc"}`)."""
+    clean = {k: _clean(v, 600) if isinstance(v, str) else v for k, v in (payload or {}).items()}
+    return json.dumps(clean)[:4000]
+
+
 def record_event(project: dict, type_: str, payload: dict | None = None, *, agent: str | None = None,
                  session_id: str | None = None, importance: int = 1) -> None:
     if type_ not in EVENT_TYPES:
         raise ValueError("invalid_event_type")
     with _connect() as conn:
         conn.execute("INSERT INTO events (project_id, session_id, agent, type, timestamp, payload, importance) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                     (project["id"], session_id, agent, type_, _now(), _clean(json.dumps(payload or {}), 2000), max(1, min(int(importance), 5))))
+                     (project["id"], session_id, agent, type_, _now(), _payload(payload), max(1, min(int(importance), 5))))
         # compaction: keep the newest MAX_EVENTS; important ones (>= 3) survive longer
         conn.execute("DELETE FROM events WHERE project_id = ? AND importance < 3 AND id NOT IN "
                      "(SELECT id FROM events WHERE project_id = ? ORDER BY id DESC LIMIT ?)", (project["id"], project["id"], MAX_EVENTS))
@@ -300,7 +306,7 @@ def record_decision(project: dict, title: str, decision: str = "", *, reason: st
 
 def save_state(project: dict, *, task: str | None = None, objective: str | None = None, plan: str | None = None, status: str | None = None,
                step: str | None = None, next_action: str | None = None, last_error: str | None = None, tests: str | None = None,
-               agent: str | None = None, session_id: str | None = None, git: bool = True) -> dict:
+               agent: str | None = None, session_id: str | None = None, git: bool = True, event: bool = True) -> dict:
     """Update the active task and the current state; a checkpoint. Only the fields given change."""
     if status and status.upper() not in TASK_STATUSES:
         raise ValueError("invalid_status")
@@ -339,6 +345,8 @@ def save_state(project: dict, *, task: str | None = None, objective: str | None 
         cols = ["project_id", "step", "next_action", "last_error", "tests", "agent", "session_id", "git_json", "updated_at"]
         conn.execute(f"INSERT OR REPLACE INTO state ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})", [st.get(c) for c in cols])
         _touch(conn, project["id"])
+    if not event:  # a capture-driven update (tests line, last error): the caller records its own event
+        return {}
     record_event(project, record_type, {"step": step, "status": status}, agent=agent, session_id=session_id, importance=2)
     return project_context(project)
 
@@ -612,3 +620,75 @@ def project_files(project: dict) -> None:
 def snapshot(project: dict) -> str:
     """The context section appended to a hand-off file: task, state, memory, decisions, git, recent events."""
     return "\n## Context snapshot\n\n```text\n" + project_context(project)["text"] + "\n```\n"
+
+
+# ---------------------------------------------------------------------------------------------- deterministic capture
+# What agents and people run, captured from hooks and shell integration (no model, no tokens): commands with their
+# outcome, test runs, file edits, and one session record per agent run.
+
+TEST_CMD = re.compile(r"\b(pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|playwright test|go test|cargo test|cargo nextest|"
+                      r"dotnet test|mvn\b.*\btest|gradle\w*\b.*\btest|phpunit|rspec|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test)\b", re.I)
+LOOKUP_CMD = re.compile(r"^\s*(grep|rg|ag|find|fd|ls|cat|head|tail|which|where|test|\[|git (?:status|diff|log|show|grep))\b")
+
+
+def record_activity(project: dict, act: dict, *, agent: str | None = None, session_id: str | None = None) -> None:
+    """One finished command or edit: an event; a test run also sets the project's Tests line; a failed command (not a
+    look-up like grep, whose non-zero exit means "no match") is an ERROR event and the last error."""
+    if "file" in act:
+        path = act["file"]
+        if SENSITIVE_FILE.search(path):
+            return
+        record_event(project, "FILE_CREATE" if act.get("change") == "write" else "FILE_EDIT", {"file": path}, agent=agent, session_id=session_id)
+        return
+    cmd, ok = _clean(act.get("command"), 500), bool(act.get("ok", True))
+    if not cmd:
+        return
+    if TEST_CMD.search(cmd):
+        record_event(project, "TEST_RESULT", {"command": cmd, "ok": ok}, agent=agent, session_id=session_id, importance=3)
+        save_state(project, tests=f"{'passed' if ok else 'FAILED'}: {cmd} ({_now()[:16].replace('T', ' ')} UTC)",
+                   agent=agent, session_id=session_id, git=False, event=False)
+    elif not ok and not LOOKUP_CMD.search(cmd):
+        record_event(project, "ERROR", {"command": cmd}, agent=agent, session_id=session_id, importance=3)
+        save_state(project, last_error=f"failed: {cmd}", agent=agent, session_id=session_id, git=False, event=False)
+    else:
+        record_event(project, "COMMAND", {"command": cmd, "ok": ok}, agent=agent, session_id=session_id)
+
+
+def start_session(project: dict, session_id: str, agent: str) -> None:
+    with _connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO sessions (id, project_id, agent, started_at) VALUES (?, ?, ?, ?)", (session_id, project["id"], agent, _now()))
+    record_event(project, "SESSION_START", {}, agent=agent, session_id=session_id, importance=2)
+
+
+def end_session(project: dict, session_id: str) -> Path | None:
+    """Close an agent run and write `.shelldeck/sessions/<id>.md` from its events (commands, tests, files, errors)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return None
+        conn.execute("UPDATE sessions SET ended_at = ?, status = 'ended' WHERE id = ?", (_now(), session_id))
+        events = [dict(r) for r in conn.execute("SELECT type, timestamp, payload FROM events WHERE session_id = ? ORDER BY id", (session_id,))]
+    record_event(project, "SESSION_STOP", {}, agent=row["agent"], session_id=session_id, importance=2)
+    load = [(e["type"], e["timestamp"], json.loads(e["payload"] or "{}")) for e in events]
+    files = sorted({p["file"] for t, _, p in load if t in ("FILE_EDIT", "FILE_CREATE") and "file" in p})
+    cmds = [p["command"] for t, _, p in load if t in ("COMMAND", "TEST_RESULT", "ERROR") and "command" in p]
+    tests = [f"{'passed' if p.get('ok') else 'FAILED'}: {p['command']}" for t, _, p in load if t == "TEST_RESULT"]
+    errors = [p["command"] for t, _, p in load if t == "ERROR"]
+    g = git_state(project["path"])
+    lines = [f"# Session {session_id}", "", f"Agent: {row['agent']}", f"Project: {project['name']}", f"Started: {row['started_at']}",
+             f"Ended: {_now()}", ""]
+    for title, items in (("Files changed", files), ("Commands", cmds[-40:]), ("Tests", tests[-10:]), ("Errors", errors[-10:])):
+        if items:
+            lines += [f"## {title}", "", *[f"- {i}" for i in items], ""]
+    if g:
+        lines += ["## Git", "", f"Branch: {g.get('branch')}", f"Commit: {g.get('commit')}", f"Dirty: {str(g.get('dirty')).lower()}", ""]
+    folder = Path(project["path"]) / ".shelldeck" / "sessions"
+    if not Path(project["path"]).is_dir():
+        return None
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
+    out = folder / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', session_id)}.md"
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out

@@ -150,6 +150,19 @@ def parse_resume_argv(raw, agent: str) -> tuple[str, ...]:
     return tuple(raw)
 
 
+def parse_activity(raw) -> dict | None:
+    """A finished tool call from a report: {command, ok} or {file, change}; bounded, control characters removed."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ReportError("invalid_activity")
+    if isinstance(raw.get("command"), str) and raw["command"].strip():
+        return {"command": _CTRL.sub(" ", raw["command"]).strip()[:500], "ok": bool(raw.get("ok", True))}
+    if isinstance(raw.get("file"), str) and raw["file"].strip():
+        return {"file": _CTRL.sub("", raw["file"]).strip()[:300], "change": "write" if raw.get("change") == "write" else "edit"}
+    raise ReportError("invalid_activity")
+
+
 def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[Report | None, DisplayMetadata, AgentSessionReference | None]:
     """Validate one report for a terminal whose running agent is `agent` (from process detection).
     With no `state` it is a session-only report (native session id, no lifecycle claim): Report is None."""

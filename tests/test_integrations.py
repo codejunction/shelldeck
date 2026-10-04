@@ -345,3 +345,19 @@ def test_priority_tier_first():
     assert [r["agent"] for r in rows[:4]] == ["claude", "codex", "gemini", "devin"]
     assert all(r["tier"] == "priority" and r["lifecycle"] and r["session_restore"] for r in rows[:4])
     assert {r["tier"] for r in rows[4:]} == {"later"}
+
+
+def test_hook_activity_from_finished_tools():
+    claude = hook.report("claude", {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"},
+                                    "tool_response": {"stdout": "secret output"}})
+    assert claude["activity"] == {"command": "uv run pytest -q", "ok": True} and "secret output" not in json.dumps(claude)
+    fail = hook.report("claude", {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_input": {"command": "make"}})
+    assert fail["activity"]["ok"] is False
+    edit = hook.report("claude", {"hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/p/a.py", "old_string": "x"}})
+    assert edit["activity"] == {"file": "/p/a.py", "change": "edit"}
+    gem = hook.report("gemini", {"hook_event_name": "AfterTool", "tool_name": "run_shell_command", "tool_input": {"command": "npm test"},
+                                 "tool_response": {"error": "exit 1"}})
+    assert gem["activity"] == {"command": "npm test", "ok": False}
+    codex = hook.report("codex", {"hook_event_name": "PostToolUse", "tool_name": "shell", "tool_input": {"command": ["cargo", "test"]}})
+    assert codex["activity"]["command"] == "cargo test"
+    assert "activity" not in hook.report("claude", {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}})

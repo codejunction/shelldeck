@@ -109,3 +109,24 @@ def test_context_api(client, tmp_path):
     assert client.post("/api/context/knowledge/nope/status", json={}).status_code == 404
     assert client.get("/api/context", params={"project": "missing"}).status_code == 404
     assert [p["name"] for p in client.get("/api/context/projects").json()["projects"]] == ["proj"]
+
+
+def test_deterministic_capture_and_session_file(home):
+    p = proj(home, "cap")
+    context.start_session(p, "t1.1", "claude")
+    context.record_activity(p, {"command": "uv run pytest -q", "ok": False}, agent="claude", session_id="t1.1")
+    context.record_activity(p, {"command": "grep -r TODO .", "ok": False}, agent="claude", session_id="t1.1")  # no match is not an error
+    context.record_activity(p, {"command": "make build TOKEN=abc123", "ok": False}, agent="claude", session_id="t1.1")
+    context.record_activity(p, {"file": "src/app.py", "change": "edit"}, agent="claude", session_id="t1.1")
+    context.record_activity(p, {"file": ".env", "change": "edit"}, agent="claude", session_id="t1.1")  # never recorded
+    ctx = context.project_context(p)
+    assert ctx["state"]["tests"].startswith("FAILED: uv run pytest -q")
+    assert ctx["state"]["last_error"] == "failed: make build TOKEN=[REDACTED]"
+    types = [e["type"] for e in context.recent_events(p, 20)]
+    assert "TEST_RESULT" in types and types.count("ERROR") == 1 and "COMMAND" in types and "FILE_EDIT" in types
+    out = context.end_session(p, "t1.1")
+    text = out.read_text()
+    assert out.name == "t1.1.md" and "Agent: claude" in text and "- src/app.py" in text and ".env" not in text
+    assert "FAILED: uv run pytest -q" in text and "abc123" not in text
+    context.record_activity(p, {"command": "uv run pytest -q", "ok": True})
+    assert context.project_context(p)["state"]["tests"].startswith("passed")

@@ -95,6 +95,44 @@ def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str |
     return state, ("approval" if state == BLOCKED else None)
 
 
+# tool-finished events whose payload names the tool and its input (Claude-shaped; Gemini's AfterTool; Copilot's
+# toolName/toolArgs). Only the command or the edited path leaves the agent: never output or file contents.
+AFTER_TOOL = {"PostToolUse": True, "PostToolUseFailure": False, "AfterTool": None, "postToolUse": True, "postToolUseFailure": False}
+SHELL_TOOLS = {"bash", "shell", "exec_command", "local_shell", "run_shell_command", "powershell", "run_terminal_cmd", "execute"}
+EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
+
+
+def activity(event: dict) -> dict | None:
+    """{command, ok} or {file, change} for a finished tool call, else None."""
+    name = event.get("hook_event_name") or ""
+    if name not in AFTER_TOOL:
+        return None
+    tool = str(event.get("tool_name") or event.get("toolName") or "")
+    args = event.get("tool_input") or event.get("toolArgs") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {"command": args}
+    if not isinstance(args, dict):
+        return None
+    ok = AFTER_TOOL[name]
+    if ok is None:  # Gemini: the response says whether it failed
+        resp = event.get("tool_response")
+        ok = not (isinstance(resp, dict) and resp.get("error"))
+    if tool.lower() in SHELL_TOOLS or (not tool and "command" in args):
+        cmd = args.get("command") or args.get("cmd")
+        if isinstance(cmd, list):
+            cmd = " ".join(str(c) for c in cmd)
+        if isinstance(cmd, str) and cmd.strip():
+            return {"command": cmd.strip()[:500], "ok": bool(ok)}
+    if tool.lower() in EDIT_TOOLS:
+        path = args.get("file_path") or args.get("path") or args.get("notebook_path")
+        if isinstance(path, str) and path:
+            return {"file": path[:300], "change": "write" if tool.lower() in ("write", "write_file", "create") else "edit"}
+    return None
+
+
 def report(agent: str, event: dict, forced: str | None = None) -> dict | None:
     """The report body for an event, with the native session for agents whose resume command is known."""
     state, reason = state_for(agent, event, forced)
@@ -111,6 +149,8 @@ def report(agent: str, event: dict, forced: str | None = None) -> dict | None:
         body["agent_session_id"], body["resume_argv"] = sid, RESUME[agent](sid)
     elif state == SESSION:
         return None
+    if act := activity(event):
+        body["activity"] = act
     return body
 
 
