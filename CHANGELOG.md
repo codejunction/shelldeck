@@ -2,6 +2,50 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.0.7] - 2026-10-04
+
+### Added
+
+- Server-owned agent lifecycle: `idle`, `working`, `blocked` (with a reason), `done` and `exited`. An integration report outranks screen/activity detection, and when it expires the server falls back to detection again. The AI agents page shows each agent's state and its source. Needs-you push alerts fire only when an agent becomes blocked.
+- `POST /api/agent-reports`: integration reports tied to one terminal by its `SHELLDECK_AGENT_REPORT_TOKEN`, with validated state, TTL, display metadata and resume argv. Validated native agent sessions are stored in the new `agent_sessions` table.
+- `sd agent status`, `sd agent wait` (event-driven; a replacement agent process never satisfies an old wait) and `sd agent report`.
+- Persistent agent context (`context.db`): per-project task, state, memory, decisions, events and relationships, with FTS5 search across projects, secret redaction, stale-source detection, a context budget and Markdown projections in `.shelldeck/`. Commands: `sd context`, `resume`, `recall`, `memory`, `remember`, `discover`, `decide`, `decisions`, `task update`, `knowledge verify`, `projects`, `project` and `relate`.
+- Agent integrations, following the hook formats dotpals uses: lifecycle hooks for Claude Code, Gemini CLI, Cursor and Copilot CLI, and an OpenCode plugin (`sd integration install|uninstall|status|detect`, and an **Integrations** section on the AI agents page). Config edits are merged, backed up and atomic. Claude Code and OpenCode also report their native session for a later resume.
+- Codex and Claude Code state and session ids are also read from their own logs (rollouts, `sessions/<pid>.json`) with no install. A quiet log expires quickly, so approval prompts still come from the screen.
+- Resume agent sessions after a restart: *Resumable sessions* on the AI agents page, `sd agent resume`, and the `agent_resume` setting (`ask` by default, `auto` or `never`). Only validated argv of plain words is run. Auto never resumes into an open hand-off, a missing folder or a missing CLI.
+- More integrations, following herdr's formats: Codex hooks (`~/.codex/hooks.json` + `[features] hooks = true`), and session-id hooks for Qwen Code, Qoder CLI, Factory Droid and Devin CLI. Resume commands for Codex, Copilot, Cursor, Devin, Droid, Qwen and Qoder. Session-only reports (no `state`) store a resumable session without claiming lifecycle state.
+- Integrations for Kimi Code (TOML block), MastraCode, Kilo Code (plugin), Grok, Antigravity CLI, Letta Code and Hermes Agent (session id), and extensions for Pi and OMP, following herdr's formats: 19 agents in all.
+- Priority integrations: Claude Code, Codex, Gemini CLI and Devin CLI (exact state + resume) are the supported set and the default install. Devin now reports its state from its hooks, and its session comes from `sessions.db` when a hook has no id. Gemini resumes with `gemini --resume <id>`. The other 15 integrations are marked preview.
+- Attention: project rollups in the sidebar (needs you > working > done), agents sorted by urgency with elapsed time, *Open next*, and done-until-seen. Tabs that open later get the current agent states over the alarm socket.
+- Agents start with their native command-line flags (`team.launch_line`): model, initial prompt, and per-run hooks for Claude Code through `--settings` (no global config change). This covers spawn, *Launch* on the AI agents page (now server-side, `POST /api/agent-start`), `sd agent start` and resume.
+- Native slash commands behind one set of actions (`sd agent cmd`, the *Actions* menu): compact, clear, new, model, status, resume, review, init and more, mapped per agent (Claude, Codex and Gemini verified from their sources; Devin from web sources). Codex hooks also report tool use and approval requests.
+- `sd agent prompt [--wait]`, `sd agent rename`, and `sd events subscribe` (SSE `/api/events`).
+- Screen detection rules moved into a versioned bundled file (`agent_detection/default.toml`), with per-agent local overrides in `<config>/agent-detection/<agent>.toml`. Invalid overrides are ignored and reported by `sd agent explain`.
+- `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
+- Context page: task and state editor, memory with verify/invalidate, decisions, related projects, and cross-project search.
+- `sd switch AGENT`: checkpoint the task and continue with another agent, which starts from `sd context`. *Message* action on the AI agents page. The skill teaches `sd agent prompt/cmd/wait` and `sd switch`. The Claude hook no longer registers `StopFailure`, which Claude Code 2.1.289 doesn't have.
+- Fact extraction by the agents themselves: *Extract facts* / `sd agent extract` sends one short prompt (on demand, refused while busy or blocked), and `sd remember` takes several facts in one call.
+- The support matrix (exact state, resume, and what each format was checked against) is in [docs/agent-integrations.md](docs/agent-integrations.md#support-matrix).
+- Deterministic capture: agent tool calls (command + success, edited file) from hooks and people's shell commands become context events. Test runs set the project's Tests line, failures (not look-ups like grep) set Last error, and each agent run writes `.shelldeck/sessions/<id>.md` when it ends.
+- Devin CLI: commands and flags cross-checked from web sources (slash commands `/compact /clear /new /model /context /resume /plan /revert /exit`, shell tool `exec` captured); its hooks are limited to the events Devin accepts.
+- Smart recall without embeddings: `sd recall --smart` and the `recall_agent` setting expand the query with an installed agent's smallest model (claude haiku, gemini flash-lite, codex/devin small tier) in its non-interactive mode. Only the query is sent; results are cached; it falls back to keywords.
+- Context page redesigned to read first: a *Working on* summary with *Edit*, compact facts and decisions with hover actions, recent activity in plain words, and one search box where you choose which installed agent and model widen the search (`sd recall --agent A --model M`, `GET /api/context/recall-agents`).
+- `sd init [PATH] [--task]`: adds the folder as a project and writes `.shelldeck/` right away, including an `AGENTS.md` with the shelldeck workflow for agents (never overwrites one you edited). Without it, the files still appear on first use.
+- Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
+
+### Changed
+
+- Tidier sidebar: Terminals, AI agents and Context stay visible; Bookmarks, Scheduler, Tasks, History, Task manager, Devices and Scratchpad fold under *More* (remembered); Settings gets its own line; Context has its own icon.
+- AI agents page: extract facts, message and native commands share one *Actions* menu per agent.
+- README screenshots refreshed.
+
+### Fixed
+
+- A redacted value could corrupt a stored context event (secrets are now redacted per value before serializing).
+- A stale screen verdict could beat a newer one on Windows' coarse clock.
+
 ## [0.0.6] - 2026-10-01
 
 ### Added
@@ -105,6 +149,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.7
 [0.0.6]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.6
 [0.0.5]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.5
 [0.0.4]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.4

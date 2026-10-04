@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -187,6 +188,21 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_handoffs_project ON handoffs(project_id);
+
+            -- native agent conversations reported by built-in integrations (resume_argv is validated argv, never shell text)
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                source TEXT NOT NULL,
+                integration_version INTEGER,
+                native_session_id TEXT,
+                resume_argv_json TEXT,
+                metadata_json TEXT,
+                last_state TEXT NOT NULL DEFAULT 'unknown',
+                last_seen_at TEXT NOT NULL,
+                resume_enabled INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
 
             DROP TABLE IF EXISTS note_tags;
             DROP TABLE IF EXISTS tags;
@@ -970,3 +986,36 @@ def close_handoff(handoff_id: str, status: str, result: str | None) -> None:
     with _connect() as conn:
         conn.execute("UPDATE handoffs SET status = ?, result = ?, updated_at = ? WHERE id = ?", (status, result, _now(), handoff_id))
         conn.commit()
+
+
+# -------------------------------------------------------------- agent sessions
+
+
+def save_agent_session(session_id: str, agent: str, source: str, native_id: str, argv: list[str], state: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO agent_sessions (session_id, agent, source, native_session_id, resume_argv_json, last_state, last_seen_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET agent = excluded.agent, source = excluded.source,"
+            " native_session_id = excluded.native_session_id, resume_argv_json = excluded.resume_argv_json,"
+            " last_state = excluded.last_state, last_seen_at = excluded.last_seen_at",
+            (session_id, agent, source, native_id, json.dumps(argv), state, _now()))
+        conn.commit()
+
+
+def touch_agent_session(session_id: str, state: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE agent_sessions SET last_state = ?, last_seen_at = ? WHERE session_id = ?", (state, _now(), session_id))
+        conn.commit()
+
+
+def list_agent_sessions() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM agent_sessions ORDER BY last_seen_at DESC")]
+
+
+def get_agent_session(session_id: str) -> dict | None:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM agent_sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None

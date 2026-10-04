@@ -1,6 +1,6 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
-import { S, newTerminal, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
-import { api, esc, icon, toast, toastError } from "./ui.js";
+import { ATTENTION, S, attentionOf, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
+import { api, esc, icon, promptDialog, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
 const TEAM_PROMPT = `You are one of several AI coding agents working in this project, each in its own shelldeck terminal with a person's name ($SHELLDECK_NICK).
@@ -16,29 +16,43 @@ export async function renderAgents(el) {
   if (!el.dataset.wired) {
     el.dataset.wired = "1";
     el.addEventListener("click", (e) => onClick(e, el));
+    el.addEventListener("change", (e) => onCommand(e, el));
   }
   const kept = keep(el);
   try {
-    const [agents, skills, handoffs] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs")]);
-    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs };
+    const [agents, skills, handoffs, ints, stored] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs"), api("/api/integrations"), api("/api/agent-sessions")]);
+    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs, stored: stored.sessions, integrations: ints.integrations.filter((i) => i.installable) };
+    for (const key of new Set(data.running.map((r) => r.agent))) {
+      if (!(key in COMMANDS)) COMMANDS[key] = (await api(`/api/agent-commands/${key}`)).commands;
+    }
   } catch (e) {
     return toastError(e);
   }
-  const running = data.running.length
-    ? data.running
+  const rank = (r) => ATTENTION.indexOf(attentionOf(r.session_id) || r.status?.state || "unknown");
+  const ordered = [...data.running].sort((a, b) => rank(a) - rank(b));
+  const blocked = ordered.filter((r) => attentionOf(r.session_id) === "blocked");
+  const done = ordered.filter((r) => attentionOf(r.session_id) === "done");
+  const banner = blocked.length || done.length
+    ? `<div class="card attn-banner" role="status">${blocked.length ? `<b>${blocked.length} need${blocked.length > 1 ? "" : "s"} you</b>` : ""}${done.length ? `<span>${done.length} finished, not seen yet</span>` : ""}
+        <button class="btn sm primary" data-open-next="${(blocked[0] || done[0]).session_id}">${icon("sparkle")}Open next</button></div>`
+    : "";
+  const running = ordered.length
+    ? ordered
         .map((r) => {
           const p = S.projects.find((x) => x.id === r.project_id);
           const parent = r.parent && S.projects.flatMap((x) => x.sessions).find((x) => x.id === r.parent);
           return `<tr data-sid="${r.session_id}" title="Open terminal">
             <td><b>${esc(r.nick || "")}</b>${parent ? `<br><span class="faint">sub-agent of ${esc(parent.nick || parent.id)}</span>` : ""}</td>
             <td><span class="ai-chip">${icon("sparkle")}<b>AI</b>${esc(r.label)}</span></td>
+            <td>${statusCell({ ...r.status, ...(S.serverStatus[r.session_id] || {}) }, attentionOf(r.session_id))}</td>
             <td class="mono">${esc(r.model || "") || '<span class="faint">default</span>'}</td>
             <td><span class="proj-dot" style="background:${p ? projectColor(p) : "var(--faint)"}"></span>${esc(r.project || "")}</td>
             <td>${esc(r.name || "")} <span class="faint mono">${esc(r.session_id)}</span></td>
+            <td>${commandMenu(r)}</td>
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="5" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
+    : `<tr><td colspan="7" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
 
   const projects = orderedProjects();
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
@@ -71,10 +85,13 @@ export async function renderAgents(el) {
   el.innerHTML = `<div class="page-head"><div><h1>AI agents</h1>
       <p>Coding agents running in your terminals are marked AI in their header. Each terminal has a name; agents in a project can see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>.</p></div>
       <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
+    ${banner}
     <div class="card mon-table"><table>
-      <thead><tr><th>Name</th><th>Agent</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
+      <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th><th></th></tr></thead>
       <tbody>${running}</tbody></table></div>
     ${handoffSection()}
+    ${resumeSection()}
+    ${integrationSection()}
     <div class="ag-head"><h2>Available agents</h2>
       ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
     <div class="ag-grid">${cards}</div>
@@ -157,18 +174,71 @@ function restore(el, k) {
   }
 }
 
-async function onClick(e, el) {
-  const sid = e.target.closest("tr[data-sid]")?.dataset.sid;
-  if (sid) return showSession(sid);
-  if (e.target.closest("[data-copy-prompt]")) {
-    await navigator.clipboard.writeText(TEAM_PROMPT).catch(() => {});
-    return toast({ title: "Team prompt copied", body: "Paste it into each agent." });
+const COMMANDS = {}; // agent -> its native commands (/api/agent-commands)
+
+/** The agent's own slash commands, by shelldeck action name (compact -> /compress in Gemini). */
+function commandMenu(r) {
+  const cmds = (COMMANDS[r.agent] || []).filter((c) => !c.takes_arg);
+  const opts = cmds.map((c) => `<option value="cmd:${c.action}">${esc(c.action)} (${esc(c.command)})</option>`).join("");
+  return `<select class="sm ag-actions" data-agent-cmd="${r.session_id}" aria-label="Actions for ${esc(r.nick || r.label)}">
+    <option value="">Actions…</option>
+    <option value="extract">Extract facts</option>
+    <option value="message">Message…</option>
+    ${opts ? `<optgroup label="${esc(r.label)} commands">${opts}</optgroup>` : ""}</select>`;
+}
+
+const BUSY = { agent_blocked: "It is waiting on a question: answer that first.", agent_working: "It is busy: try when it finishes (or use sd agent cmd --force)." };
+
+function busyToast(err, title) {
+  const code = Object.keys(BUSY).find((k) => String(err?.message || err).includes(k));
+  if (code) toast({ title, body: BUSY[code], kind: "warn" });
+  else toastError(err);
+}
+
+/** The row's Actions menu: extract facts, message, or one of the agent's own slash commands. */
+async function onCommand(e, el) {
+  const sel = e.target.closest("[data-agent-cmd]");
+  if (!sel || !sel.value) return;
+  const sid = sel.dataset.agentCmd;
+  const choice = sel.value;
+  sel.value = "";
+  try {
+    if (choice === "extract") {
+      await api(`/api/sessions/${sid}/extract`, { method: "POST" });
+      return toast({ title: "Asked it to save its facts", body: "They appear on the Context page." });
+    }
+    if (choice === "message") {
+      const text = await promptDialog("Message the agent", "", { label: "Prompt", ok: "Send" });
+      if (!text?.trim()) return;
+      await api("/api/agent-prompt", { method: "POST", body: { session_id: sid, text } });
+      return toast({ title: "Sent" });
+    }
+    const r = await api(`/api/sessions/${sid}/agent-command`, { method: "POST", body: { command: choice.slice(4) } });
+    toast({ title: `Sent ${r.typed}`, body: `to ${r.agent}` });
+  } catch (err) {
+    busyToast(err, "Not sent");
   }
-  const skill = e.target.closest("[data-skill]")?.dataset.skill;
-  if (skill) {
+}
+
+async function onClick(e, el) {
+  if (e.target.closest("select")) return; // the command menu, not "open terminal"
+  const again = e.target.closest("[data-resume-agent]")?.dataset.resumeAgent;
+  if (again) {
     try {
-      const { results } = await api("/api/skills", { method: "POST", body: { agents: [skill] } });
-      toast({ title: "Skill installed", body: results.map((r) => r.path).join("\n") });
+      await api(`/api/sessions/${again}/resume`, { method: "POST" });
+      showSession(again);
+      toast({ title: "Agent resumed" });
+      return renderAgents(el);
+    } catch (err) {
+      return toastError(err);
+    }
+  }
+  const integ = e.target.closest("[data-integration]");
+  if (integ) {
+    const { integration: agent, op } = integ.dataset;
+    try {
+      const r = await api(`/api/integrations/${agent}`, { method: op === "remove" ? "DELETE" : "POST" });
+      toast({ title: op === "remove" ? "Integration removed" : "Integration installed", body: r.file + (agent === "opencode" && op !== "remove" ? "\nRestart OpenCode to load it." : "") });
       return renderAgents(el);
     } catch (err) {
       return toastError(err);
@@ -178,15 +248,16 @@ async function onClick(e, el) {
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
   if (!key) return;
-  const agent = data.agents.find((a) => a.key === key);
   const model = e.target.closest(".ag-card").querySelector("[data-model]")?.value;
-  // every listed CLI takes --model; quote it for cmd/pwsh/bash alike only when needed
-  const command = agent.command + (model ? ` --model ${/^[\w.:/@-]+$/.test(model) ? model : `"${model}"`}` : "");
-  const term = await newTerminal(el.querySelector("[data-project]")?.value);
-  if (!term) return;
-  await term.ready();
-  term.send({ type: "input", data: `${command}\r` });
-  term.focus();
+  // the server builds the line with the agent's own flags (model, per-run hooks such as Claude's --settings)
+  try {
+    const r = await api("/api/agent-start", { method: "POST", body: { agent: key, project_id: el.querySelector("[data-project]")?.value, model } });
+    await refreshProjects();
+    const term = await showSession(r.session.id);
+    term?.focus();
+  } catch (err) {
+    toastError(err);
+  }
 }
 
 /** Open a terminal in the session's folder (added as a project if new) and run `devin -r <id>`. */
@@ -202,4 +273,58 @@ async function resumeDevin(d) {
   } catch (e) {
     toastError(e);
   }
+}
+
+/** Lifecycle state as text (never colour alone) plus where it came from: integration, screen/activity, unknown. */
+function statusCell(st, attention) {
+  if (!st) return '<span class="faint">unknown</span>';
+  // the screen can see a question the server can't (tab-side heuristic); "done" stays until you look
+  const label = attention === "blocked" ? "needs you" : attention === "done" ? "done (not seen)" : st.meta?.state_label || st.state;
+  const since = st.since ? ` · ${ago(st.since)}` : "";
+  const src = st.source === "heuristic" ? "screen" : st.source;
+  const why = st.reason ? ` · ${st.reason}` : "";
+  return `<b>${esc(label)}</b>${esc(why)}<br><span class="faint">from ${esc(src)}${since}</span>`;
+}
+
+function ago(t) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** Lifecycle integrations (hooks/plugins that report state), not to be confused with the skill (instructions). */
+function integrationSection() {
+  const all = data.integrations || [];
+  if (!all.length) return "";
+  const label = { installed: "installed", outdated: "outdated: reinstall", not_installed: "not installed", error: "config unreadable" };
+  const card = (i) => {
+      const on = i.status === "installed" || i.status === "outdated";
+      const btn = on
+        ? `${i.status === "outdated" ? `<button class="btn sm" data-integration="${i.agent}" data-op="install">Reinstall</button>` : ""}<button class="btn sm" data-integration="${i.agent}" data-op="remove">Remove</button>`
+        : `<button class="btn sm" data-integration="${i.agent}" data-op="install"${i.config_found ? "" : ' disabled title="Install the agent first (its config folder was not found)"'}>Install</button>`;
+      return `<div class="card ag-card"><div class="ag-title"><b>${esc(i.agent)}</b><code class="faint">${esc(i.kind)}</code></div>
+        <p class="faint">${esc(label[i.status] || i.status)}${i.lifecycle ? " · exact state" : " · session id only"}${i.session_restore ? " · resumable" : ""}${i.available ? "" : " · CLI not found"}</p><div class="row">${btn}</div></div>`;
+  };
+  const main = all.filter((i) => i.tier === "priority").map(card).join("");
+  const later = all.filter((i) => i.tier !== "priority");
+  return `<div class="ag-head"><h2>Integrations</h2><span class="faint">Hooks that report working / needs you / done exactly, instead of reading the screen. The skill only teaches commands.</span></div>
+    <div class="ag-grid">${main}</div>
+    ${later.length ? `<details class="ag-later"><summary class="faint">Preview: ${later.length} more agents (not fully supported yet)</summary><div class="ag-grid">${later.map(card).join("")}</div></details>` : ""}`;
+}
+
+const RESUME_WHY = { executable_not_found: "agent CLI not found", cwd_missing: "folder is gone", invalid_resume_argv: "stored command rejected", no_resume: "nothing to resume", agent_running: "running" };
+
+/** Stored agent sessions (from integrations or the agent's own logs) whose terminal has no agent now. */
+function resumeSection() {
+  const sessions = S.projects.flatMap((p) => p.sessions.map((s) => ({ ...s, project: p })));
+  const rows = (data.stored || []).filter((r) => !r.running && sessions.some((s) => s.id === r.session_id));
+  if (!rows.length) return "";
+  const body = rows
+    .map((r) => {
+      const s = sessions.find((x) => x.id === r.session_id);
+      const action = r.can_resume ? `<button class="btn sm" data-resume-agent="${r.session_id}">Resume</button>` : `<span class="faint">${esc(RESUME_WHY[r.error] || r.error || "")}</span>`;
+      return `<tr><td><b>${esc(s.nick || "")}</b></td><td>${esc(r.agent)}</td><td>${esc(r.last_state)}</td><td>${esc(s.project.name)}</td><td>${action}</td></tr>`;
+    })
+    .join("");
+  return `<div class="ag-head"><h2>Resumable sessions</h2><span class="faint">Agent conversations shelldeck can start again in their terminal (Settings: resume ask / auto / never).</span></div>
+    <div class="card mon-table"><table><thead><tr><th>Name</th><th>Agent</th><th>Last state</th><th>Project</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
 }

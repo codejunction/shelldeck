@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import tomllib
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -29,11 +31,32 @@ AGENTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]]
     "droid": ("Factory Droid", ("droid",), (), ()),
     "crush": ("Crush", ("crush",), (), ()),
     "kiro": ("Kiro CLI", ("kiro-cli",), (), ()),
+    "pi": ("Pi", ("pi",), (), ()),
+    "omp": ("OMP", ("omp",), (), ()),
+    "kimi": ("Kimi Code CLI", ("kimi",), (), ()),
+    "kilo": ("Kilo Code CLI", ("kilo",), (), ()),
+    "hermes": ("Hermes Agent", ("hermes",), (), ()),
+    "qodercli": ("Qoder CLI", ("qodercli",), (), ()),
+    "letta": ("Letta Code", ("letta",), (), ()),
+    "mastracode": ("MastraCode", ("mastracode",), (), ()),
+    "grok": ("Grok CLI", ("grok",), (), ()),
+    "antigravity": ("Antigravity CLI", ("agy",), (), ()),
+    "maki": ("Maki", ("maki",), (), ()),
+    "cline": ("Cline", ("cline",), (), ()),
+    "command": ("Command Code", ("command",), (), ()),
+    "muse": ("Muse Code", ("muse",), (), ()),
+    "prime": ("Prime Agent", ("prime",), (), ()),
     # found, never launched: a devin(.exe) outside Devin's cli/ install folder (see identify)
     "devin_desktop": ("Devin desktop", (), (), ()),
 }
 # Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
 # Keep in sync with QUESTION_RE in static/app.js.
+def question_rule(text: str) -> str | None:
+    """Which built-in prompt phrase QUESTION matched (a fixed phrase from the agents' binaries, not screen content)."""
+    found = list(QUESTION.finditer(text))
+    return found[-1].group(0).lower()[:40] if found else None
+
+
 QUESTION = re.compile(
     r"do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)"
     r"|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust"
@@ -215,7 +238,7 @@ def _claude_context(p: psutil.Process) -> dict | None:
     return {"state": info.get("status")}
 
 
-def _codex_context(p: psutil.Process) -> dict | None:
+def _codex_log(p: psutil.Process) -> Path | None:
     log = _files.get((p.pid, "codex"))
     if not log:
         # the newest rollout started in this folder after the process did
@@ -229,8 +252,13 @@ def _codex_context(p: psutil.Process) -> dict | None:
             if os.path.normcase(meta.get("cwd") or "") == cwd:
                 log = _files[(p.pid, "codex")] = f
                 break
-        if not log:
-            return None
+    return log
+
+
+def _codex_context(p: psutil.Process) -> dict | None:
+    log = _codex_log(p)
+    if not log:
+        return None
     window = used = None
     for line in _tail_lines(log):  # newest first: the latest usage and the latest window, whichever comes first
         try:
@@ -285,6 +313,88 @@ def context(pid: int, key: str) -> dict | None:
         return CONTEXT[key](psutil.Process(pid))
     except (psutil.Error, OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return None
+
+
+# Codex rollout events (as dotpals reads them) -> lifecycle state; the newest one decides
+CODEX_EVENTS = {"task_started": "working", "user_message": "working", "function_call": "working", "custom_tool_call": "working",
+                "function_call_output": "working", "custom_tool_call_output": "working", "task_complete": "done"}
+
+
+def _codex_native(p: psutil.Process) -> dict | None:
+    log = _codex_log(p)
+    if not log:
+        return None
+    with log.open(encoding="utf-8", errors="replace") as fh:
+        meta = json.loads(fh.readline() or "{}").get("payload") or {}
+    native = meta.get("id") or meta.get("session_id")
+    for line in _tail_lines(log, 128 * 1024):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        state = CODEX_EVENTS.get((d.get("payload") or {}).get("type"))
+        if state:
+            try:
+                at = datetime.fromisoformat(str(d.get("timestamp")).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                at = log.stat().st_mtime
+            out = {"state": state, "age": max(0.0, time.time() - at)}
+            if isinstance(native, str) and native:
+                out |= {"session_id": native, "resume_argv": ["codex", "resume", native]}
+            return out
+    return None
+
+
+def _claude_native(p: psutil.Process) -> dict | None:
+    try:
+        info = _json(Path.home() / ".claude" / "sessions" / f"{p.pid}.json")
+    except (OSError, ValueError):
+        return None
+    out = {"state": "working" if info.get("status") == "busy" else None, "age": 0.0}  # "idle" may be a prompt: screen decides
+    if isinstance(info.get("sessionId"), str) and info["sessionId"]:
+        out |= {"session_id": info["sessionId"], "resume_argv": ["claude", "--resume", info["sessionId"]]}
+    return out
+
+
+def _devin_native(p: psutil.Process) -> dict | None:
+    """Devin's session id from its sessions.db (the `-r` id, else the newest session in this folder since the process
+    started), so it can be resumed even when a hook payload carries no id. State comes from hooks or the screen."""
+    db = _devin_db()
+    if not db:
+        return None
+    cmd = p.cmdline()
+    sid = next((cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a in ("-r", "--resume")), None)
+    if not sid:
+        with closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1)) as conn:
+            row = conn.execute("SELECT id FROM sessions WHERE working_directory = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
+                               (p.cwd(), int(p.create_time()) - 5)).fetchone()
+        sid = row[0] if row else None
+    if not isinstance(sid, str) or not sid or sid.startswith("-"):
+        return None
+    return {"state": None, "age": 0.0, "session_id": sid, "resume_argv": ["devin", "--resume", sid]}
+
+
+NATIVE = {"codex": _codex_native, "claude": _claude_native, "devin": _devin_native}
+
+
+def native(shells: dict[str, int]) -> dict[str, dict]:
+    """Lifecycle the agents write in their own logs (no hook needed): session id -> {state, age, session_id?, resume_argv?}."""
+    out = {}
+    for sid, pid in shells.items():
+        try:
+            kids = psutil.Process(pid).children(recursive=True)
+        except psutil.Error:
+            continue
+        for k in kids:
+            try:
+                hit = identify(k)
+                if hit and hit[0] in NATIVE:
+                    if found := NATIVE[hit[0]](k):
+                        out[sid] = found
+                    break
+            except (psutil.Error, OSError, ValueError, sqlite3.Error):
+                continue
+    return out
 
 
 def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:

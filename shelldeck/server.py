@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import functools
 import hashlib
 import hmac
@@ -7,6 +8,8 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -23,10 +26,12 @@ import psutil
 import segno
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agents, auth, db, gitgraph, share, shells, stats, team
+from . import agent_commands, detection, smart_recall
+from . import agent_state as lifecycle
+from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -52,6 +57,8 @@ SETTINGS_DEFAULTS = {
     "terminal_theme": "default",
     "font_family": "",
     "editor": "vscode",
+    "agent_resume": "ask",
+    "recall_agent": "off",  # off | auto | claude | codex | gemini | devin: whose small model widens `sd recall --smart`  # never | ask | auto: start a stored agent session again when its terminal comes back
 }
 # keep in sync with TERMINAL_THEMES in static/app.js
 TERMINAL_THEMES = ("default", "dracula", "one-dark", "nord", "gruvbox-dark", "solarized-dark", "solarized-light", "github-light")
@@ -78,6 +85,21 @@ out_at: dict[str, float] = {}
 busy_since: dict[str, float] = {}
 burst: dict[str, str] = {}
 agent_state: dict[str, str] = {}
+# server-owned lifecycle (agent_state.py): reports per terminal, the resolved status sent to clients, the agent
+# kind and a generation that changes when a different agent process takes the terminal (pins waits)
+reports = lifecycle.Registry()
+agent_status: dict[str, dict] = {}
+agent_kind: dict[str, tuple[str, int]] = {}
+_generation = [0]
+report_tokens: dict[str, str] = {}  # terminal -> SHELLDECK_AGENT_REPORT_TOKEN of its current process
+REPORT_HEADER = "X-Shelldeck-Report-Token"
+# server events for `sd events subscribe` / GET /api/events (SSE): a bounded in-memory log; ids only grow
+EVENT_TYPES = ("agent.detected", "agent.state", "agent.command", "agent.exited", "agent.session_updated", "handoff.created", "handoff.completed",
+               "integration.changed")
+events_log: "collections.deque[dict]" = collections.deque(maxlen=500)
+_event_seq = [0]
+_event_waiters: list[asyncio.Event] = []
+_state_changed: list[asyncio.Event] = []  # set and replaced on every status change; `sd agent wait` awaits it
 AGENT_BUSY_S = 5  # output for at least this long counts as working (not a redraw or echo)
 # a sub-agent's question relayed to its parent (_forward_question): on the parent's screen, not asking you
 RELAYED = re.compile(r"\[shelldeck\]\s+Your\s+sub-agent[\s\S]*?really\s+their\s+call")
@@ -299,7 +321,10 @@ async def _guarded(request: Request, call_next):
         return err("forbidden_origin", 403)
     path = request.url.path
     request.state.session = None
-    if path.startswith("/api/") and not path.startswith(AUTH_EXEMPT):
+    # an integration inside a terminal (hook script, OpenCode plugin) holds only its terminal's report token;
+    # agent_report() checks it. Host-local only: never through a share tunnel or the network.
+    report_only = path == "/api/agent-reports" and request.method == "POST" and REPORT_HEADER in request.headers and _is_local(request)
+    if path.startswith("/api/") and not path.startswith(AUTH_EXEMPT) and not report_only:
         who = _who(request)
         if not who:
             return _denied()
@@ -772,6 +797,10 @@ async def write_settings(payload: dict):
             return err("invalid_font_family")
         if key == "editor" and value not in ("vscode", "system", "shelldeck"):
             return err("invalid_editor")
+        if key == "agent_resume" and value not in ("never", "ask", "auto"):
+            return err("invalid_agent_resume")
+        if key == "recall_agent" and value not in ("off", "auto", *smart_recall.PRIORITY):
+            return err("invalid_recall_agent")
     for key, value in payload.items():
         db.set_setting(key, str(value).strip())
     return get_settings()
@@ -795,7 +824,9 @@ async def list_agents():
     by_id = {s["id"]: s for s in db.list_sessions_with_project()}
     running = [
         {"session_id": sid, "name": s.get("name"), "nick": s.get("nick"), "parent": s.get("parent"), "project_id": s.get("project_id"), "project": s.get("project_name"),
-         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model, "state": agent_state.get(sid, "idle")}
+         "cwd": s.get("cwd"), "agent": key, "label": agents.AGENTS[key][0], "model": model, "state": agent_state.get(sid, "idle"),
+         "status": agent_status.get(sid) or lifecycle.to_dict(lifecycle.Status(lifecycle.State.UNKNOWN)),
+         "resumable": bool(db.get_agent_session(sid))}
         for sid, (key, model) in found.items() if (s := by_id.get(sid))
     ]
     return {
@@ -804,6 +835,42 @@ async def list_agents():
         "outside": await asyncio.to_thread(agents.outside, _tree_pids(shells)),
         "devin_sessions": await asyncio.to_thread(agents.devin_sessions),
     }
+
+
+@app.get("/api/integrations")
+async def list_integrations():
+    """Every supported agent integration and its available capability level."""
+    installed = {item["key"] for item in await asyncio.to_thread(agents.catalog) if item["installed"]}
+    return {"integrations": integrations.catalog(installed)}
+
+
+@app.post("/api/integrations/{agent}")
+async def install_integration(request: Request, agent: str):
+    """Install shelldeck's lifecycle hook/plugin into an agent's config (host only: it writes files in your home)."""
+    if not _host(request):
+        return err("host_only", 403)
+    try:
+        out = await asyncio.to_thread(integrations.install, agent)
+        _emit("integration.changed", {"agent": agent, "status": out["status"]})
+        return out
+    except KeyError:
+        return err("unsupported_agent", 404)
+    except (OSError, ValueError) as e:
+        return JSONResponse({"error": "install_failed", "detail": str(e)}, status_code=409)
+
+
+@app.delete("/api/integrations/{agent}")
+async def uninstall_integration(request: Request, agent: str):
+    if not _host(request):
+        return err("host_only", 403)
+    try:
+        out = await asyncio.to_thread(integrations.uninstall, agent)
+        _emit("integration.changed", {"agent": agent, "status": out["status"]})
+        return out
+    except KeyError:
+        return err("unsupported_agent", 404)
+    except (OSError, ValueError) as e:
+        return JSONResponse({"error": "uninstall_failed", "detail": str(e)}, status_code=409)
 
 
 def _tree_pids(shells: dict[str, int]) -> set[int]:
@@ -992,6 +1059,8 @@ def _record_command(session_id: str, msg: dict) -> None:
     exit_code = msg.get("exit")
     duration = msg.get("ms")
     session = db.get_session(session_id) or {}
+    if isinstance(exit_code, int) and session_id not in agent_kind:  # a person's command; agents report theirs via hooks
+        _capture(session_id, "record_activity", {"command": command[:500], "ok": exit_code == 0})
     db.add_command(
         session_id, session.get("project_id"), session.get("cwd"), command,
         exit_code if isinstance(exit_code, int) else None,
@@ -1296,7 +1365,8 @@ def _next_state(sid: str, was: str, now: float) -> str:
     if quiet:
         # ponytail: a regex over what the last burst drew (raw output is cursor-addressed), not xterm's screen;
         # an answered prompt is gone once the agent prints again
-        return "approval" if agents.QUESTION.search(RELAYED.sub("", _plain(burst.get(sid, "")))[-6000:]) else "idle"
+        key = agent_kind.get(sid, ("",))[0]
+        return "approval" if detection.match(key, RELAYED.sub("", _plain(burst.get(sid, "")))[-6000:]) else "idle"
     if now - busy_since.get(sid, now) > AGENT_BUSY_S:
         return "working"
     return "idle" if was == "approval" else was
@@ -1312,25 +1382,423 @@ async def _watch_agents() -> None:
             log.warning("agent state check failed", exc_info=True)
 
 
+def _legacy(status: dict) -> str:
+    """The pre-lifecycle working | approval | idle value, kept for older UI code and /api/agents."""
+    return {"blocked": "approval", "working": "working"}.get(status["state"], "idle")
+
+
+def _emit(type_: str, data: dict) -> None:
+    """Record an event and wake subscribers. Compact snapshots only: never screen text or native session ids."""
+    _event_seq[0] += 1
+    events_log.append({"id": _event_seq[0], "type": type_, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "data": data})
+    for ev in _event_waiters:
+        ev.set()
+    _event_waiters.clear()
+
+
+def _changed() -> None:
+    for ev in _state_changed:
+        ev.set()
+    _state_changed.clear()
+
+
+async def _publish(sid: str, status: dict, key: str | None) -> None:
+    """Broadcast a status change; a transition into blocked also notifies (push for top-level agents)."""
+    was = agent_status.get(sid)
+    if was and {k: v for k, v in was.items() if k != "since"} == status:
+        return
+    # when the state itself began (unchanged state, new detail: keep the start), for elapsed time in the UI
+    status = {**status, "since": was["since"] if was and was.get("state") == status["state"] and was.get("since") else time.time()}
+    agent_status[sid] = status
+    _changed()
+    if not was or was.get("state") != status["state"]:
+        _emit("agent.exited" if status["state"] == "exited" else "agent.state",
+              {"session_id": sid, "agent": key or agent_kind.get(sid, ("",))[0], "state": status["state"], "reason": status.get("reason"),
+               "source": status.get("source")})
+    await _broadcast({"type": "agent_state", "session_id": sid, "state": _legacy(status), "status": status})
+    if status["state"] != "blocked" or (was and was["state"] == "blocked") or not key:
+        return
+    s = db.get_session(sid)
+    if s and not s.get("parent"):  # sub-agents ask their parent, not you
+        project = db.get_project(s["project_id"]) if s.get("project_id") else None
+        msg = {"title": f"{agents.AGENTS[key][0]} needs you", "body": f"{s.get('nick') or sid} · {project['name'] if project else ''}",
+               "data": {"session_id": sid}}
+        if tokens := [t["token"] for t in db.list_push_tokens() if auth.alive(t["session_hash"])]:
+            threading.Thread(target=_push, args=(tokens, msg), daemon=True).start()
+
+
+def _status_of(sid: str, now: float | None = None) -> dict:
+    return lifecycle.to_dict(reports.status(sid, now), reports.metadata(sid, now))
+
+
+native_seen: dict[str, str] = {}  # terminal -> native session id last stored
+resumed: set[str] = set()  # terminals already auto-resumed in this server run
+SAFE_ARG = re.compile(r"[A-Za-z0-9._:/=@+-]{1,200}")  # needs no quoting in pwsh, cmd, bash, zsh or fish
+
+
+def _resume_plan(sid: str, auto: bool = False) -> tuple[str | None, str | None]:
+    """(command line, None) when a stored agent session can be resumed in this terminal, else (None, error code).
+    The line comes only from validated argv; nothing is rebuilt from terminal output."""
+    rec = db.get_agent_session(sid)
+    s = db.get_session(sid)
+    if not rec or not s or not rec.get("resume_argv_json"):
+        return None, "no_resume"
+    try:
+        argv = lifecycle.parse_resume_argv(json.loads(rec["resume_argv_json"]), rec["agent"])
+    except (ValueError, lifecycle.ReportError):
+        return None, "invalid_resume_argv"
+    if not all(SAFE_ARG.fullmatch(a) for a in argv):
+        return None, "invalid_resume_argv"
+    if not shutil.which(argv[0]):
+        return None, "executable_not_found"
+    cwd = s.get("cwd") or ((db.get_project(s["project_id"]) or {}).get("path") if s.get("project_id") else None)
+    if cwd and not Path(cwd).is_dir():
+        return None, "cwd_missing"
+    if auto and db.list_handoffs(to_sid=sid, status="open"):
+        return None, "open_handoff"  # a hand-off is reviewed by a person, never resumed silently
+    try:  # per-run hooks as the agent's own flag (Claude's --settings), placed before the resume args
+        extra = integrations.run_flags(rec["agent"])
+        return team.launch_line(rec["agent"], extra=extra) + " " + " ".join(argv[1:]), None
+    except (ValueError, OSError):
+        return " ".join(argv), None
+
+
+def _auto_resume(sid: str) -> None:
+    """On a terminal's first spawn after a restart: resume its agent when the setting is auto and it's safe."""
+    if sid in resumed or get_settings().get("agent_resume") != "auto":
+        return
+    resumed.add(sid)
+    rec = db.get_agent_session(sid)
+    if not rec or rec.get("last_state") == "exited":
+        return
+    line, why = _resume_plan(sid, auto=True)
+    if not line:
+        log.info("not resuming the agent in %s: %s", sid, why)
+        return
+    t = asyncio.get_running_loop().create_task(_start_agent(sid, line))
+    background.add(t)
+    t.add_done_callback(background.discard)
+
+
+@app.get("/api/agent-sessions")
+async def agent_sessions():
+    """Stored agent sessions and whether each can be resumed now. Native ids are never sent."""
+    running = set(agent_kind)
+    rows = []
+    for r in await asyncio.to_thread(db.list_agent_sessions):
+        line, why = await asyncio.to_thread(_resume_plan, r["session_id"])
+        rows.append({"session_id": r["session_id"], "agent": r["agent"], "source": r["source"].split(":", 1)[0], "last_state": r["last_state"],
+                     "last_seen_at": r["last_seen_at"], "running": r["session_id"] in running, "can_resume": bool(line) and r["session_id"] not in running,
+                     "error": "agent_running" if r["session_id"] in running else why})
+    return {"sessions": rows, "mode": get_settings().get("agent_resume")}
+
+
+@app.post("/api/sessions/{session_id}/resume")
+async def resume_agent(session_id: str):
+    """Start the terminal's stored agent session again (the user asked; works whatever the setting)."""
+    if session_id in agent_kind:
+        return err("agent_running", 409)
+    line, why = await asyncio.to_thread(_resume_plan, session_id)
+    if not line:
+        return err(why or "no_resume", 409)
+    if not manager.get(session_id):
+        resumed.add(session_id)  # this resume replaces the auto one
+        _attach(db.get_session(session_id), 30, 120)  # its pane resizes it when it opens
+    await _start_agent(session_id, line)
+    return {"command": line}
+
+
+def _save_native(sid: str, key: str, nat: dict) -> None:
+    """Store an agent's own session id and resume argv (validated like an integration's)."""
+    try:
+        argv = lifecycle.parse_resume_argv(nat.get("resume_argv"), key)
+        db.save_agent_session(sid, key, f"native:{key}", str(nat["session_id"])[:200], list(argv), nat.get("state") or "unknown")
+    except (lifecycle.ReportError, sqlite3.Error):
+        log.debug("native session not saved", exc_info=True)
+
+
+def _capture(sid: str, fn: str, *args, **kwargs) -> None:
+    """Deterministic context capture (context.record_activity / start_session / end_session) for the terminal's
+    project, on a thread: it never slows the agent or the event loop, and a failure is only logged."""
+    def run():
+        try:
+            project = _ctx_project({"session_id": sid})
+            if project:
+                getattr(context, fn)(project, *args, **kwargs)
+                if fn == "end_session":
+                    context.project_files(project)
+        except Exception:  # noqa: BLE001
+            log.warning("context capture failed", exc_info=True)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _ctx_session(sid: str) -> str | None:
+    """The context session id of the agent run in this terminal: terminal id + process generation."""
+    kind = agent_kind.get(sid)
+    return f"{sid}.{kind[1]}" if kind else None
+
+
+def _remember_state(sid: str, state: str) -> None:
+    """last_state of a stored native session; best effort."""
+    try:
+        db.touch_agent_session(sid, state)
+    except sqlite3.Error:
+        log.debug("agent session state not saved", exc_info=True)
+
+
 async def _check_agents() -> None:
     found = await asyncio.to_thread(agents.running, _shell_pids())
     now = time.monotonic()
-    for sid in [s for s in agent_state if s not in found]:
-        del agent_state[sid]
-        await _broadcast({"type": "agent_state", "session_id": sid, "state": "idle"})
+    for sid in [s for s in agent_kind if s not in found]:
+        _capture(sid, "end_session", _ctx_session(sid))
+        agent_state.pop(sid, None)
+        agent_kind.pop(sid)
+        reports.forget(sid)
+        native_seen.pop(sid, None)
+        _remember_state(sid, "exited")
+        await _publish(sid, {"state": "exited", "source": "process", "reason": None, "detail": None}, None)
+        agent_status.pop(sid, None)
+    natives = await asyncio.to_thread(agents.native, {sid: pid for sid, pid in _shell_pids().items() if sid in found})
     for sid, (key, _) in found.items():
+        if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
+            _generation[0] += 1
+            if sid in agent_kind:  # another agent took over the terminal: close the previous run first
+                _capture(sid, "end_session", _ctx_session(sid))
+            agent_kind[sid] = (key, _generation[0])
+            _capture(sid, "start_session", _ctx_session(sid), key)
+            _emit("agent.detected", {"session_id": sid, "agent": key, "generation": _generation[0]})
+            reports.forget(sid)
         was = agent_state.get(sid, "idle")
-        state = agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
-        if state == was:
-            continue
-        await _broadcast({"type": "agent_state", "session_id": sid, "state": state})
-        s = db.get_session(sid)
-        if state == "approval" and s and not s.get("parent"):  # sub-agents ask their parent, not you
-            project = db.get_project(s["project_id"]) if s.get("project_id") else None
-            msg = {"title": f"{agents.AGENTS[key][0]} needs you", "body": f"{s.get('nick') or sid} · {project['name'] if project else ''}",
-                   "data": {"session_id": sid}}
-            if tokens := [t["token"] for t in db.list_push_tokens() if auth.alive(t["session_hash"])]:
-                threading.Thread(target=_push, args=(tokens, msg), daemon=True).start()
+        agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
+        reports.put_heuristic(sid, lifecycle.heuristic(agent_state[sid], now))
+        if (nat := natives.get(sid)) and (rep := lifecycle.native_report(key, nat, now)):
+            reports.put(sid, rep)
+        if nat and nat.get("session_id") and native_seen.get(sid) != nat["session_id"]:
+            native_seen[sid] = nat["session_id"]
+            _save_native(sid, key, nat)
+        status = _status_of(sid, now)
+        if status["state"] != agent_status.get(sid, {}).get("state"):
+            _remember_state(sid, status["state"])
+        await _publish(sid, status, key)
+
+
+@app.post("/api/agent-reports")
+async def agent_report(request: Request, payload: dict):
+    """Lifecycle/metadata/native-session report from an integration running inside a terminal. The terminal
+    comes from its per-process report token, never from a session id in the body."""
+    token = request.headers.get(REPORT_HEADER, "")
+    sid = next((k for k, v in report_tokens.items() if token and hmac.compare_digest(v, token)), None)
+    if not sid or not manager.get(sid):
+        return err("invalid_report_token", 403)
+    if payload.get("session_id") not in (None, sid):
+        return err("session_mismatch", 403)
+    key = agent_kind.get(sid, (None,))[0] or await _agent_in(sid)
+    if not key:
+        return err("no_agent_running", 409)
+    try:
+        report, meta, ref = lifecycle.parse_report(payload, key)
+        act = lifecycle.parse_activity(payload.get("activity"))
+    except lifecycle.ReportError as e:
+        log.info("agent report rejected: session=%s agent=%s error=%s", sid, key, e)
+        return err(str(e), 422)
+    source = str(payload["source"])
+    if act:
+        _capture(sid, "record_activity", act, agent=key, session_id=_ctx_session(sid))
+    if report:
+        reports.put(sid, report, meta)
+    if ref:
+        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), agent_status.get(sid, {}).get("state", "unknown"))
+        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
+    status = _status_of(sid)
+    log.info("agent report: session=%s source=%s agent=%s state=%s", sid, source, key, status["state"] if report else "(session only)")
+    await _publish(sid, status, key)
+    return {"status": status}
+
+
+@app.get("/api/agent-status")
+async def agent_status_all(target: str = ""):
+    """Server-owned lifecycle status of every agent terminal (or one)."""
+    rows = [{"session_id": sid, "agent": agent_kind.get(sid, ("",))[0], "generation": agent_kind.get(sid, ("", 0))[1], **st}
+            for sid, st in agent_status.items() if not target or sid == target]
+    return {"agents": rows}
+
+
+@app.get("/api/agent-commands/{agent}")
+async def agent_command_list(agent: str):
+    """The agent's own slash commands behind shelldeck's actions (compact, model, resume, ...)."""
+    return {"agent": agent, "commands": agent_commands.catalog(agent)}
+
+
+@app.post("/api/sessions/{session_id}/agent-command")
+async def agent_command(session_id: str, payload: dict):
+    """Type an agent's native command (e.g. Gemini's /compress for `compact`) into its terminal. Refused while the agent
+    is blocked (it would answer the question) or working (most agents ignore or queue commands mid-turn) unless `force`."""
+    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    if not key:
+        return err("no_agent_running", 409)
+    try:
+        text = agent_commands.line(key, str(payload.get("command") or ""), str(payload.get("arg") or ""))
+    except ValueError as e:
+        return err(str(e))
+    state = (agent_status.get(session_id) or {}).get("state")
+    if state in ("blocked", "working") and not payload.get("force"):
+        return err(f"agent_{state}", 409)
+    if not await _type(session_id, text):
+        return err("not_running", 409)
+    _emit("agent.command", {"session_id": session_id, "agent": key, "command": payload.get("command")})
+    return {"agent": key, "typed": text}
+
+
+# One turn, few tool calls: duplicates and secrets are handled server-side, so the agent needn't read memory first,
+# and sd remember takes several facts at once. ponytail: wording tuned for brevity, not per agent.
+EXTRACT_PROMPT = ("[shelldeck] Save what you learned this session to project memory, briefly: "
+                  'sd remember "fact" "fact" ... (durable facts only, add --file for sources), '
+                  'sd decide "decision" -r "reason" for settled choices, and '
+                  'sd task update --step "..." --next "..." for where things stand. '
+                  "Duplicates are merged and secrets removed automatically, so don't read memory first. Then stop.")
+
+
+@app.post("/api/sessions/{session_id}/extract")
+async def extract_facts(session_id: str):
+    """On demand only: one prompt asking the agent to record its own session knowledge (no model runs in shelldeck).
+    Refused while the agent is blocked or working, like any prompt."""
+    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    if not key:
+        return err("no_agent_running", 409)
+    state = (agent_status.get(session_id) or {}).get("state")
+    if state in ("blocked", "working"):
+        return err(f"agent_{state}", 409)
+    if not await _type(session_id, EXTRACT_PROMPT):
+        return err("not_running", 409)
+    _emit("agent.command", {"session_id": session_id, "agent": key, "command": "extract"})
+    return {"agent": key}
+
+
+@app.post("/api/agent-prompt")
+async def agent_prompt(payload: dict):
+    """Type a prompt into an agent and, with `wait`, block until it reaches `until` in a state that began after the
+    prompt was sent. Refused while the agent is blocked (the text would answer its question)."""
+    sid = str(payload.get("session_id") or "")
+    text = str(payload.get("text") or "")[:20000]
+    if not text.strip():
+        return err("text_required")
+    if sid not in agent_kind:
+        return err("no_agent_running", 409)
+    if (agent_status.get(sid) or {}).get("state") == "blocked":
+        return err("agent_blocked", 409)
+    gen, sent = agent_kind[sid][1], time.time()
+    if not await _type(sid, team.one_line(text)):
+        return err("not_running", 409)
+    if not payload.get("wait"):
+        return {"result": "sent"}
+    until = {u for u in (payload.get("until") or ["done", "idle"]) if u in WAIT_STATES}
+    timeout = min(max(float(payload.get("timeout") or 600), 0.1), 3600)
+    return await _wait_for(sid, gen, lambda st: st["state"] in until and st.get("since", 0) >= sent, timeout)
+
+
+@app.get("/api/events")
+async def events_stream(request: Request, types: str = "", since: int = 0):
+    """Server-Sent Events: agent.* / handoff.* / integration.changed. Resume with Last-Event-ID or `since`."""
+    want = tuple(t for t in types.split(",") if t) or EVENT_TYPES
+    try:
+        last = int(request.headers.get("last-event-id") or since or 0)
+    except ValueError:
+        last = 0
+    if not since and "last-event-id" not in request.headers:
+        last = _event_seq[0]  # a new subscriber gets events from now on
+
+    async def stream():
+        nonlocal last
+        yield ": shelldeck events\n\n"
+        while not await request.is_disconnected():
+            for e in [e for e in list(events_log) if e["id"] > last]:
+                last = e["id"]
+                if e["type"].startswith(want):
+                    yield f"id: {e['id']}\nevent: {e['type']}\ndata: {json.dumps(e)}\n\n"
+            ev = asyncio.Event()
+            _event_waiters.append(ev)
+            try:
+                await asyncio.wait_for(ev.wait(), 15)
+            except TimeoutError:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/agent-explain/{session_id}")
+async def agent_explain(session_id: str):
+    """Why a terminal's agent has its state: process, every report and which one decides, the screen heuristic's
+    inputs, integration and stored session. Never raw screen text or native session ids."""
+    s = db.get_session(session_id)
+    if not s:
+        return err("session_not_found", 404)
+    key, gen = agent_kind.get(session_id, (None, None))
+    now = time.monotonic()
+    text = _plain(burst.get(session_id, ""))
+    hit = detection.match(key or "", RELAYED.sub("", text)[-6000:])
+    manifest = detection.load(key or "")
+    stored = await asyncio.to_thread(db.get_agent_session, session_id)
+    integ = integrations.status(key) if key in integrations.INSTALLERS else {"status": "unsupported"}
+    rows = lifecycle.explain(reports.reports.get(session_id, {}), now)
+    status = agent_status.get(session_id)
+    if not key:
+        why = "no agent process detected in this terminal"
+    elif not rows or not any(r["decides"] for r in rows):
+        why = "no live report: state unknown"
+    else:
+        win = next(r for r in rows if r["decides"])
+        why = f"{win['source']} decides (highest live priority {win['priority']})"
+        if win["source"].startswith("heuristic") and integ["status"] != "installed" and key in integrations.INSTALLERS:
+            why += f"; install the {key} integration for exact state (sd integration install {key})"
+    return {
+        "session_id": session_id, "nick": s.get("nick"), "agent": key, "generation": gen, "status": status, "why": why,
+        "reports": rows,
+        "heuristic": {"quiet_s": round(now - out_at[session_id], 1) if session_id in out_at else None,
+                      "burst_s": round(now - busy_since[session_id], 1) if session_id in busy_since else None,
+                      "question_rule": hit.id if hit else None, "rule_reason": hit.reason if hit else None,
+                      "legacy_state": agent_state.get(session_id)},
+        "manifest": {"source": manifest.source, "version": manifest.version, "rules": len(manifest.rules), "error": manifest.error},
+        "integration": {"status": integ["status"], "tier": "priority" if key in integrations.PRIORITY else "later" if key else None},
+        "stored_session": {"source": stored["source"], "last_state": stored["last_state"]} if stored else None,
+    }
+
+
+WAIT_STATES = {"idle", "working", "blocked", "done", "exited"}
+
+
+@app.post("/api/agent-wait")
+async def agent_wait(payload: dict):
+    """Long-poll until a terminal's agent reaches one of `until` (or exits, or is replaced). Event-driven:
+    it wakes on status changes, it doesn't read screens."""
+    sid = str(payload.get("session_id") or "")
+    until = {u for u in (payload.get("until") or []) if u in WAIT_STATES}
+    timeout = min(max(float(payload.get("timeout") or 600), 0.1), 3600)
+    if not until:
+        return err("invalid_until")
+    if sid not in agent_kind:
+        return err("no_agent_running", 409)
+    return await _wait_for(sid, agent_kind[sid][1], lambda st: st["state"] in until, timeout)
+
+
+async def _wait_for(sid: str, gen: int, reached, timeout: float) -> dict:
+    """Wait (no polling) until reached(status) for the agent process `gen`; a replaced or exited agent ends it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        cur = agent_kind.get(sid)
+        if not cur or cur[1] != gen:
+            return {"result": "exited" if not cur else "replaced", "status": agent_status.get(sid)}
+        st = agent_status.get(sid)
+        if st and reached(st):
+            return {"result": "reached", "status": st}
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return {"result": "timeout", "status": st}
+        ev = asyncio.Event()
+        _state_changed.append(ev)
+        try:
+            await asyncio.wait_for(ev.wait(), left)
+        except TimeoutError:
+            pass
 
 
 def _push(tokens: list[str], msg: dict) -> None:
@@ -1419,9 +1887,183 @@ def _handoff_files(handoff: dict) -> None:
     project = db.get_project(handoff["project_id"])
     try:
         if project:
-            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]))
+            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]), _snapshot(project["path"]))
     except OSError:
         log.warning("writing hand-off files failed", exc_info=True)
+
+
+def _snapshot(path: str) -> str:
+    """The project's context snapshot for a hand-off file; empty if the context store fails (never blocks a hand-off)."""
+    try:
+        p = context.project_for(path)
+        return context.snapshot(p) if p else ""
+    except Exception:  # noqa: BLE001 - context is an enhancement, not a dependency
+        log.warning("context snapshot failed", exc_info=True)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Agent context (context.py): tasks, state, memory, decisions, recall
+# ---------------------------------------------------------------------------
+
+
+def _ctx_project(payload: dict) -> dict | None:
+    """The context project named by `project` (shelldeck or context project name), or containing `cwd`."""
+    name = str(payload.get("project") or "").strip()
+    if name:
+        sd = next((p for p in db.list_projects() if p["name"].casefold() == name.casefold() or p["id"] == name), None)
+        return context.project_for(sd["path"]) if sd else context.project_for(name=name)
+    sid = str(payload.get("session_id") or "")
+    s = db.get_session(sid) if sid else None
+    cwd = str(payload.get("cwd") or "") or (s or {}).get("cwd")
+    if not cwd and s and s.get("project_id"):
+        cwd = (db.get_project(s["project_id"]) or {}).get("path")
+    return context.project_for(cwd) if cwd else None
+
+
+async def _ctx(fn, *args, **kwargs):
+    """Run a context call off the event loop; failures become a 4xx/503, never a crash."""
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except LookupError as e:
+        return err(str(e), 404)
+    except ValueError as e:
+        return err(str(e))
+    except sqlite3.Error:
+        log.warning("context store failed", exc_info=True)
+        return err("context_unavailable", 503)
+
+
+def _project_later(project: dict) -> None:
+    """Markdown projection in the background; agent interaction never waits on it."""
+    def run():
+        try:
+            context.project_files(project)
+        except Exception:  # noqa: BLE001
+            log.warning("context projection failed", exc_info=True)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _agent_for(payload: dict) -> str | None:
+    sid = str(payload.get("session_id") or "")
+    return agent_kind.get(sid, (None,))[0] or (str(payload.get("agent"))[:40] if payload.get("agent") else None)
+
+
+@app.get("/api/context")
+async def get_context(cwd: str = "", project: str = "", session_id: str = "", q: str = ""):
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    open_h = next(iter(db.list_handoffs(to_sid=session_id, status="open")), None) if session_id else None
+    return await _ctx(context.project_context, p, q, open_h)
+
+
+@app.post("/api/context/init")
+async def init_context(payload: dict):
+    """`sd init`: add the folder as a shelldeck project (if new) and write its `.shelldeck/` files now."""
+    path = Path(str(payload.get("path") or "")).expanduser()
+    if not path.is_dir():
+        return err("not_a_directory")
+    added = not any(Path(p["path"]).resolve() == path.resolve() for p in db.list_projects())
+    if added and payload.get("add_project", True):
+        db.ensure_project(str(path))
+    out = await _ctx(context.init_project, str(path), str(payload.get("task") or "").strip() or None)
+    if isinstance(out, dict):
+        out["added"] = added and payload.get("add_project", True)
+    return out
+
+
+@app.get("/api/context/projects")
+async def context_projects():
+    return {"projects": await _ctx(context.list_projects)}
+
+
+@app.get("/api/context/memory")
+async def get_memory(cwd: str = "", project: str = "", session_id: str = ""):
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    return {"project": p["name"], "memory": await _ctx(context.memory, p), "decisions": await _ctx(context.decisions, p)}
+
+
+@app.post("/api/context/memory")
+async def add_memory(payload: dict):
+    """`sd remember` / `sd discover`: a fact for this project's memory (secrets are redacted, duplicates merged)."""
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    k = await _ctx(context.record_memory, p, str(payload.get("text") or ""), kind="discover" if payload.get("kind") == "discover" else "remember",
+                   type_=str(payload.get("type") or ("discovery" if payload.get("kind") == "discover" else "note")),
+                   topic=str(payload.get("topic") or ""), title=str(payload.get("title") or ""), files=[str(f) for f in files[:20]],
+                   agent=_agent_for(payload), session_id=str(payload.get("session_id") or "") or None, scope=str(payload.get("scope") or "PROJECT"))
+    if isinstance(k, dict):
+        _project_later(p)
+    return k
+
+
+@app.post("/api/context/decisions")
+async def add_decision(payload: dict):
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    d = await _ctx(context.record_decision, p, str(payload.get("title") or ""), str(payload.get("decision") or ""),
+                   reason=str(payload.get("reason") or ""), alternatives=str(payload.get("alternatives") or ""),
+                   consequence=str(payload.get("consequence") or ""), agent=_agent_for(payload))
+    if isinstance(d, dict):
+        _project_later(p)
+    return d
+
+
+@app.post("/api/context/state")
+async def update_state(payload: dict):
+    """`sd task update`: the active task and current state (a checkpoint; git state is captured too)."""
+    p = await _ctx(_ctx_project, payload)
+    if not isinstance(p, dict):
+        return p or err("project_not_found", 404)
+    fields = {k: (str(payload[k]) if payload.get(k) is not None else None) for k in
+              ("task", "objective", "plan", "status", "step", "next_action", "last_error", "tests")}
+    out = await _ctx(context.save_state, p, **fields, agent=_agent_for(payload), session_id=str(payload.get("session_id") or "") or None)
+    if isinstance(out, dict):
+        _project_later(p)
+    return out
+
+
+@app.get("/api/context/recall")
+async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10, smart: bool = False,
+                 agent: str = "", model: str = ""):
+    """Keyword search. `agent` (+ optional `model`) picks who adds related keywords first; `smart` or the
+    recall_agent setting picks one automatically; agent=off forces plain keywords."""
+    p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
+    p = p if isinstance(p, dict) else None
+    setting = get_settings().get("recall_agent", "off")
+    if agent:
+        who = None if agent == "off" else smart_recall.pick(agent)
+    else:
+        who = smart_recall.pick(setting if setting != "off" else ("auto" if smart else "off"))
+    extra = await asyncio.to_thread(smart_recall.expand, q, who, model or None) if who else []
+    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)), True, extra), "expanded": extra, "agent": who,
+            "model": (model or smart_recall.small_model(who)) if who else None}
+
+
+@app.get("/api/context/recall-agents")
+async def recall_agents():
+    """Installed agents and their models, for choosing who widens a search."""
+    return {"agents": await asyncio.to_thread(smart_recall.choices), "default": get_settings().get("recall_agent", "off")}
+
+
+@app.post("/api/context/knowledge/{knowledge_id}/status")
+async def knowledge_status(knowledge_id: str, payload: dict):
+    return await _ctx(context.set_status, knowledge_id, str(payload.get("status") or "VERIFIED"))
+
+
+@app.post("/api/context/relationships")
+async def add_relationship(payload: dict):
+    p = await _ctx(_ctx_project, payload)
+    target = await _ctx(_ctx_project, {"project": payload.get("target")})
+    if not isinstance(p, dict) or not isinstance(target, dict):
+        return err("project_not_found", 404)
+    return await _ctx(context.relate, p, str(payload.get("relation") or "related-to"), target)
 
 
 async def _tell_sender(handoff: dict, text: str) -> None:
@@ -1453,6 +2095,7 @@ async def create_handoff(payload: dict):
     h = db.add_handoff(project_id=to["project_id"], from_sid=sender.get("id"), from_nick=sender.get("nick"),
                        to_sid=to["id"], to_nick=to["nick"], agent=key, model=None, task=task)
     await asyncio.to_thread(_handoff_files, h)
+    _emit("handoff.created", {"id": h["id"], "from": h["from_nick"], "to": h["to_nick"], "to_sid": h["to_sid"], "agent": key})
     project = db.get_project(to["project_id"]) or {"path": "."}
     reply = f'when finished run: sd done {h["id"]} "<summary>"'
     await _type(to["id"], team.one_line(
@@ -1474,6 +2117,7 @@ async def finish_handoff(handoff_id: str, payload: dict):
     db.close_handoff(handoff_id, status, result)
     h = db.get_handoff(handoff_id)
     await asyncio.to_thread(_handoff_files, h)
+    _emit("handoff.completed", {"id": h["id"], "status": h["status"], "to": h["to_nick"], "to_sid": h["to_sid"]})
     await _tell_sender(h, f"[shelldeck] {h['to_nick']} {'finished' if status == 'done' else 'gave up on'} hand-off {h['id']}: {result or '(no summary)'}")
     return h
 
@@ -1489,6 +2133,7 @@ def _orphan(session_id: str) -> list[dict]:
 
 async def _orphaned(session_id: str) -> None:
     for h in await asyncio.to_thread(_orphan, session_id):
+        _emit("handoff.completed", {"id": h["id"], "status": "exited", "to": h["to_nick"], "to_sid": h["to_sid"]})
         if not STOPPING.is_set():
             await _tell_sender(h, f"[shelldeck] {h['to_nick']}'s terminal closed before hand-off {h['id']} was done")
 
@@ -1519,7 +2164,8 @@ async def spawn_agent(payload: dict):
     h = db.add_handoff(project_id=project["id"], from_sid=parent["id"], from_nick=parent.get("nick"), to_sid=session["id"],
                        to_nick=session["nick"], agent=key, model=model, task=task)
     await asyncio.to_thread(_handoff_files, h)
-    line = team.spawn_line(key, model, team.kickoff(session["nick"], parent.get("nick") or "the user", h["id"]))
+    line = team.spawn_line(key, model, team.kickoff(session["nick"], parent.get("nick") or "the user", h["id"]),
+                           await asyncio.to_thread(integrations.run_flags, key))
     try:
         _attach(session, 30, 120)
     except Exception:  # noqa: BLE001 - spawn failures come from winpty/OS
@@ -1530,6 +2176,49 @@ async def spawn_agent(payload: dict):
     starter.add_done_callback(background.discard)
     await _broadcast({"type": "spawned", "session_id": session["id"], "parent": parent["id"]})
     return {"session": session, "handoff": h, "agent": key, "model": model, "command": line}
+
+
+@app.post("/api/agent-start")
+async def start_agent(payload: dict):
+    """A new terminal in a project running an agent, launched with its own command-line flags: model, per-run hooks
+    (Claude's --settings) and the initial prompt (team.SPAWN). A prompt that isn't plain words goes to a file."""
+    key = str(payload.get("agent") or "")
+    if key not in agents.AGENTS or not agents.AGENTS[key][1]:
+        return err("unknown_agent", 404)
+    project = db.get_project(str(payload.get("project_id") or ""))
+    if not project:
+        cwd = str(payload.get("cwd") or "")
+        sd = next((p for p in db.list_projects() if cwd and (Path(cwd).resolve() == Path(p["path"]).resolve()
+                                                          or Path(p["path"]).resolve() in Path(cwd).resolve().parents)), None)
+        project = sd
+    if not project or not Path(project["path"]).is_dir():
+        return err("project_not_found", 404)
+    prompt = " ".join(str(payload.get("prompt") or "").split())[:20000]
+    if prompt and key not in team.SPAWN:
+        return err("no_prompt_flag")
+    if prompt and (not team.SAFE_PROMPT.match(prompt) or len(prompt) > 400):
+        folder = Path(project["path"]) / ".shelldeck" / "prompts"
+        folder.mkdir(parents=True, exist_ok=True)
+        if not (folder.parent / ".gitignore").exists():
+            (folder.parent / ".gitignore").write_text("*\n", encoding="utf-8")
+        name = f"{db.short_id()}.md"
+        (folder / name).write_text(str(payload.get("prompt")).strip() + "\n", encoding="utf-8")
+        prompt = f"Read and do the task in .shelldeck/prompts/{name}"
+    model = str(payload.get("model") or "") or None
+    try:
+        line = team.launch_line(key, model, prompt or None, await asyncio.to_thread(integrations.run_flags, key))
+    except ValueError as e:
+        return err(str(e))
+    session = db.add_session(project["id"], cwd=project["path"], shell="", name=agents.AGENTS[key][0])
+    try:
+        _attach(session, 30, 120)
+    except Exception:  # noqa: BLE001
+        log.exception("agent start failed for session %s", session["id"])
+        return err("spawn_failed", 500)
+    starter = asyncio.create_task(_start_agent(session["id"], line))
+    background.add(starter)
+    starter.add_done_callback(background.discard)
+    return {"session": session, "agent": key, "command": line}
 
 
 async def _start_agent(session_id: str, line: str) -> None:
@@ -1707,7 +2396,7 @@ async def _pump(session_id: str) -> None:
             await _close(ws)
     finally:
         readers.pop(session_id, None)
-        for d in (out_at, busy_since, burst):
+        for d in (out_at, busy_since, burst, report_tokens):
             d.pop(session_id, None)
         manager.terminate(session_id)
         try:
@@ -1738,8 +2427,13 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             rows=rows,
             cols=cols,
             distro=settings["wsl_distro"] or None,
-            extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent"))) if v},
+            extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent")),
+                                         ("SHELLDECK_AGENT_REPORT_TOKEN", report_tokens.setdefault(sid, secrets.token_urlsafe(24)))) if v},
         )
+        try:
+            _auto_resume(sid)
+        except Exception:  # noqa: BLE001 - a resume problem must never stop the shell from opening
+            log.warning("agent auto-resume failed", exc_info=True)
     if session.get("parent"):
         ask_buf.setdefault(sid, "")  # watch this sub-agent for questions (_watch_questions)
     if sid not in readers:
@@ -1761,6 +2455,8 @@ async def alarms_ws(ws: WebSocket):
     socket_owner[ws] = who[1]
     try:
         await _send_alarm_snapshot(ws)
+        for sid, st in list(agent_status.items()):  # a tab that opens later sees current states too
+            await ws.send_json({"type": "agent_state", "session_id": sid, "state": _legacy(st), "status": st})
         while True:
             if (await ws.receive_text()) == '{"type":"ping"}':
                 await ws.send_text('{"type":"pong"}')

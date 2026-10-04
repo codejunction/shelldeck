@@ -50,16 +50,38 @@ SAFE_PROMPT = re.compile(r"^[\w .,:/-]+$")  # needs no quoting rules in pwsh, cm
 SAFE_MODEL = re.compile(r"^[\w.:/\[\]-]+$")
 
 
-def spawn_line(key: str, model: str | None, prompt: str) -> str:
-    """The command typed into the new terminal's shell."""
-    flag, before = SPAWN[key]
-    assert SAFE_PROMPT.match(prompt), prompt
+SAFE_PATH = re.compile(r'^[^"`$%!\n\r]+$')  # quoted in double quotes, nothing a shell expands inside them
+
+
+def _arg(a: str) -> str:
+    if re.fullmatch(r"[\w.:/=@+-]+", a):
+        return a
+    if not SAFE_PATH.match(a):
+        raise ValueError("unsafe_argument")
+    return f'"{a}"'
+
+
+def launch_line(key: str, model: str | None = None, prompt: str | None = None, extra: list[str] | tuple = ()) -> str:
+    """An agent's command line with its own flags: model, per-run settings (`extra`, e.g. Claude's --settings) and the
+    initial prompt the way that CLI takes it (SPAWN: claude/codex positional, gemini/qwen -i, devin after --,
+    opencode --prompt). The prompt must be SAFE_PROMPT so one double-quoted string works in every shell."""
     parts = [agents.AGENTS[key][1][0]]
     if model:
         if not SAFE_MODEL.match(model):
             raise ValueError("invalid_model")
-        parts += [flag, model]
-    return " ".join([*parts, *before, f'"{prompt}"'])
+        parts += [SPAWN[key][0] if key in SPAWN else "--model", model]
+    parts += [_arg(a) for a in extra]
+    if prompt:
+        if key not in SPAWN:
+            raise ValueError("no_prompt_flag")
+        assert SAFE_PROMPT.match(prompt), prompt
+        parts += [*SPAWN[key][1], f'"{prompt}"']
+    return " ".join(parts)
+
+
+def spawn_line(key: str, model: str | None, prompt: str, extra: list[str] | tuple = ()) -> str:
+    """The command typed into the new terminal's shell."""
+    return launch_line(key, model, prompt, extra)
 
 
 def kickoff(nick: str, parent_nick: str, handoff_id: str) -> str:
@@ -71,7 +93,7 @@ def kickoff(nick: str, parent_nick: str, handoff_id: str) -> str:
 # ------------------------------------------------------------ handoff files
 
 
-def write_files(project_path: str, handoff: dict, all_handoffs: list[dict]) -> None:
+def write_files(project_path: str, handoff: dict, all_handoffs: list[dict], snapshot: str = "") -> None:
     """<project>/.shelldeck/handoffs/<id>.md for the receiver and handoff.md as the index. Git ignores the folder."""
     root = Path(project_path) / ".shelldeck"
     (root / "handoffs").mkdir(parents=True, exist_ok=True)
@@ -86,7 +108,7 @@ def write_files(project_path: str, handoff: dict, all_handoffs: list[dict]) -> N
         f"## Task\n\n{h['task'].strip()}\n\n"
         f"## When done\n\nRun `sd done {h['id']} \"<summary>\"` (add `--failed` if you could not do it). "
         f"Ask {h['from_nick'] or 'the sender'} with `sd tell {h['from_nick'] or h['from_sid']} \"...\"`.\n\n"
-        f"## Result\n\n{(h.get('result') or '(pending)').strip()}\n",
+        f"## Result\n\n{(h.get('result') or '(pending)').strip()}\n{snapshot}",
         encoding="utf-8",
     )
     rows = "\n".join(
@@ -118,7 +140,7 @@ def one_line(text: str, limit: int = 2000) -> str:
 
 SKILL = """---
 name: shelldeck
-description: Work with other AI agents in shelldeck terminals. Use when SHELLDECK_SESSION_ID is set and the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent or terminal.
+description: Work with other AI agents in shelldeck terminals and keep shared project context. Use when SHELLDECK_SESSION_ID is set: at the start of work (sd context), when the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent, and before stopping.
 ---
 
 # shelldeck agent team
@@ -147,6 +169,25 @@ question (`sd peek <name>` for the full screen), decide, and answer with `sd ans
 Ask the user only when the decision is really theirs.
 When a sub-agent's hand-off is done and you checked its work, ask the user whether to close it, and run
 `sd close <name>` only after they agree (or when they tell you to close it).
+
+## Shared context (it outlives you; the next agent continues from it)
+
+At startup run `sd context`: it shows the active task, current state and next action, project memory,
+decisions, your open hand-off and recent events. Continue from the next action instead of starting over.
+- `sd recall "query"` searches knowledge and decisions from every project (e.g. "auth like acme-web").
+  Treat results as reference: read the source files and adapt; never copy secrets or code blindly.
+- `sd remember "fact" ["fact" ...] [--type architecture|api|convention|gotcha|...] [--file path]` (several in one call) and
+  `sd discover "finding" --file path` store durable facts (not chat). `sd decide "decision" -r "reason"`
+  records a settled decision; check `sd memory` first so you don't duplicate one.
+- `sd task update [IN_PROGRESS|BLOCKED|DONE] --task "..." --step "..." --next "..." --tests "..." --error "..."`
+  updates the task and state. Run it when the plan or step changes, after tests, and before you stop.
+- `sd agent status [name]` shows agent states; `sd agent wait <name> --until done --timeout 10m` waits for one
+  (exit 0 reached, 2 timeout, 3 it exited). `sd agent prompt <name> "text" --wait` sends a follow-up and waits for it.
+- `sd agent cmd <name> compact` runs that agent's own slash command (compact, clear, model, status, review, ...;
+  `sd agent cmd <agent> --list`). Commands and prompts are refused while the agent waits on a question.
+- `sd switch <agent> --note "where I stopped"` hands this project's task to another agent in a new terminal; it
+  starts from `sd context`. Use it only when the user asks.
+Never put passwords, tokens or keys into these commands.
 
 Rules:
 - A sub-agent (`SHELLDECK_PARENT` is set) cannot spawn more agents, and asks its parent (`sd tell`), not the user.

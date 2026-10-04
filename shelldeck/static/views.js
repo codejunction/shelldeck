@@ -4,6 +4,7 @@ import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
 import { renderAgents } from "./agents.js";
 import { renderScratch } from "./scratch.js";
+import { renderContext } from "./context.js";
 import { $, $$, api, authError, confirmDialog, dialog, esc, fmtTime, fromLocalInput, hydrateIcons, icon, menu, toLocalInput, toast, toastError, withEyes } from "./ui.js";
 
 let bookmarks = [];
@@ -15,9 +16,9 @@ export function init() {}
 export function show(view, el) {
   current = view;
   clearInterval(pollTimer);
-  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, agents: renderAgents, scratch: renderScratch }[view];
+  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, agents: renderAgents, scratch: renderScratch, context: renderContext }[view];
   render(el);
-  if (!["bookmarks", "monitor", "history", "scratch"].includes(view)) { // monitor refreshes from its own 2s poller
+  if (!["bookmarks", "monitor", "history", "scratch", "context"].includes(view)) { // monitor refreshes from its own 2s poller
     pollTimer = setInterval(() => {
       if (current === view && !el.hidden && !document.querySelector(".dialog-bg")) render(el);
       else if (el.hidden) clearInterval(pollTimer);
@@ -621,7 +622,15 @@ export async function settingsDialog() {
           <option value="shelldeck" ${s.editor === "shelldeck" ? "selected" : ""}>shelldeck's built-in editor</option>
           <option value="system" ${s.editor === "system" ? "selected" : ""}>System default app</option>
         </select></label>
-        <span></span>
+        <label class="field"><span>Smart search (sd recall --smart)</span><select name="recall_agent">
+          ${[["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]]
+            .map(([v, l]) => `<option value="${v}" ${(s.recall_agent || "off") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Resume agent sessions after a restart</span><select name="agent_resume">
+          <option value="ask" ${(s.agent_resume || "ask") === "ask" ? "selected" : ""}>Ask (a Resume button on AI agents)</option>
+          <option value="auto" ${s.agent_resume === "auto" ? "selected" : ""}>Automatically</option>
+          <option value="never" ${s.agent_resume === "never" ? "selected" : ""}>Never</option>
+        </select></label>
       </div>
       <p class="faint" style="margin:0 0 14px">New terminals use the default shell. Free layout scrolls when windows don't fit; use Tile all to arrange them.</p>
       <hr style="border:0;border-top:1px solid var(--border);margin:4px 0 14px" />
@@ -651,6 +660,8 @@ export async function settingsDialog() {
       project_tint: form.project_tint.value,
       terminal_theme: form.terminal_theme.value,
       editor: form.editor.value,
+      agent_resume: form.agent_resume.value,
+      recall_agent: form.recall_agent.value,
       font_family: form.font_family.value,
     });
     if (ok) {

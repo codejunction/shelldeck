@@ -1,0 +1,40 @@
+# Screen rules for agent lifecycle fallback detection (when no integration reports state).
+# Each rule matches the last screen of an agent that went quiet. Prompt strings come from the Claude Code, Codex and
+# Devin binaries; keep static/app.js QUESTION_RE in sync. Override per agent in <config>/agent-detection/<agent>.toml
+# (same format; a rule with the same id replaces this one, `disable = ["id"]` turns one off).
+version = 1
+
+[[rules]]
+id = "permission.proceed"
+pattern = "do you want to (?:proceed|make this edit|create|run|allow)"
+reason = "approval"
+
+[[rules]]
+id = "permission.would-you-like"
+pattern = "would you like to (?:proceed|run|make|grant|continue)"
+reason = "approval"
+
+[[rules]]
+id = "permission.allow-once"
+pattern = "yes, allow once|yes, and don't ask|allow (?:once|for this session)"
+reason = "approval"
+
+[[rules]]
+id = "trust.folder"
+pattern = "do you trust the files|yes, i trust"
+reason = "approval"
+
+[[rules]]
+id = "menu.enter-to-confirm"
+pattern = "enter to (?:select|confirm|approve)"
+reason = "question"
+
+[[rules]]
+id = "plan.review"
+pattern = "plan needs changes"
+reason = "question"
+
+[[rules]]
+id = "prompt.yes-no"
+pattern = "\\[y/n\\]|\\(y/n\\)"
+reason = "question"

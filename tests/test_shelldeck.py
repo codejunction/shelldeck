@@ -1,3 +1,4 @@
+import json
 import asyncio
 import sys
 import time
@@ -87,6 +88,9 @@ def test_agents(client, tmp_path, monkeypatch):
     data = client.get("/api/agents").json()
     assert data["running"] == [] and {"claude", "codex", "devin"} <= {a["key"] for a in data["agents"]}
     assert isinstance(data["outside"], list) and isinstance(data["devin_sessions"], list)
+    integrations = {item["agent"]: item for item in client.get("/api/integrations").json()["integrations"]}
+    assert integrations["opencode"]["lifecycle"] is True
+    assert integrations["amp"]["session_restore"] is False
 
     # Devin's session store: newest first, hidden ones skipped
     import sqlite3
@@ -114,6 +118,7 @@ def test_agents(client, tmp_path, monkeypatch):
 def test_team(client, tmp_path, monkeypatch):
     """Terminal nicks, sd spawn (without really starting a shell), hand-off files, done and orphaned hand-offs."""
     from shelldeck import team
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
 
     team._selfcheck()  # tiers, model picks, spawn line, skill install
     started = []
@@ -131,7 +136,9 @@ def test_team(client, tmp_path, monkeypatch):
     r = client.post("/api/spawn", json={"parent": a["id"], "task": "fix a typo in the readme", "agent": "claude", "model": "large"}).json()
     kid, h = r["session"], r["handoff"]
     assert kid["parent"] == a["id"] and r["model"] == "opus" and started == [r["command"]]
-    assert r["command"].startswith(f'claude --model opus "You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.')
+    # per-run hooks ride on Claude's own --settings flag (no global hook installed in this test home)
+    assert r["command"].startswith("claude --model opus --settings ") and "claude-settings.json" in r["command"]
+    assert f'"You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.' in r["command"]
     task_file = tmp_path / ".shelldeck" / "handoffs" / f"{h['id']}.md"
     assert "fix a typo in the readme" in task_file.read_text(encoding="utf-8")
     assert (tmp_path / ".shelldeck" / ".gitignore").read_text() == "*\n"
@@ -850,3 +857,337 @@ def test_devices_one_active_takeover_and_revoke(browser, tmp_path):
     d.post("/api/auth/login", json={"password": "longenough"})
     d.post("/api/auth/logout")
     assert c.get("/api/projects").status_code == 200
+
+
+def test_agent_reports_are_terminal_bound_and_authoritative(client, monkeypatch):
+    sent = []
+
+    async def broadcast(msg, host_only=False):
+        sent.append(msg)
+
+    monkeypatch.setattr(server, "_broadcast", broadcast)
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    for sid in ("ta", "tb"):
+        monkeypatch.setitem(server.manager.procs, sid, Live())
+        monkeypatch.setitem(server.report_tokens, sid, f"tok-{sid}")
+        monkeypatch.setitem(server.agent_kind, sid, ("opencode", 1))
+    body = {"source": "integration:opencode", "agent": "opencode", "state": "blocked", "blocked_reason": "question"}
+    assert client.post("/api/agent-reports", json=body).status_code == 403  # no token
+    assert client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "nope"}).status_code == 403
+    # terminal A's token can't speak for terminal B
+    assert client.post("/api/agent-reports", json={**body, "session_id": "tb"}, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()["error"] == "session_mismatch"
+    assert client.post("/api/agent-reports", json={**body, "agent": "codex"}, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()["error"] == "agent_mismatch"
+    r = client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-ta"}).json()
+    assert r["status"] == {"state": "blocked", "source": "integration", "reason": "question", "detail": None}
+    assert sent[-1]["session_id"] == "ta" and sent[-1]["state"] == "approval"  # legacy value kept for old clients
+    rows = client.get("/api/agent-status", params={"target": "ta"}).json()["agents"]
+    assert rows[0]["state"] == "blocked" and "tb" not in {x["session_id"] for x in rows}
+    # waits: reached at once, timeout, and a replaced agent process never satisfies an old wait
+    assert client.post("/api/agent-wait", json={"session_id": "ta", "until": ["blocked"]}).json()["result"] == "reached"
+    assert client.post("/api/agent-wait", json={"session_id": "ta", "until": ["idle"], "timeout": 0.2}).json()["result"] == "timeout"
+    assert client.post("/api/agent-wait", json={"session_id": "zz", "until": ["idle"]}).status_code == 409
+    for sid in ("ta", "tb"):
+        server.reports.forget(sid)
+        server.agent_status.pop(sid, None)
+
+
+def test_agent_wait_wakes_on_change_and_replacement(monkeypatch):
+    monkeypatch.setitem(server.agent_kind, "tw", ("codex", 7))
+    monkeypatch.setitem(server.agent_status, "tw", {"state": "working", "source": "heuristic", "reason": None, "detail": None})
+
+    async def go():
+        waiter = asyncio.create_task(server.agent_wait({"session_id": "tw", "until": ["idle"], "timeout": 5}))
+        await asyncio.sleep(0.05)
+        await server._publish("tw", {"state": "idle", "source": "heuristic", "reason": None, "detail": None}, None)
+        reached = await waiter
+        waiter = asyncio.create_task(server.agent_wait({"session_id": "tw", "until": ["blocked"], "timeout": 5}))
+        await asyncio.sleep(0.05)
+        server.agent_kind["tw"] = ("codex", 8)  # another agent process took the terminal
+        server._changed()
+        return reached, await waiter
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    reached, replaced = asyncio.run(go())
+    assert reached["result"] == "reached" and replaced["result"] == "replaced"
+
+
+def test_report_token_alone_is_enough_locally_but_not_over_a_tunnel(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "ALLOWED_HOSTS", {"testserver"})
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setitem(server.manager.procs, "tl", Live())
+    monkeypatch.setitem(server.report_tokens, "tl", "tok-tl")
+    monkeypatch.setitem(server.agent_kind, "tl", ("claude", 3))
+    body = {"source": "integration:claude", "agent": "claude", "state": "working"}
+    with TestClient(server.app) as c:  # no CLI token, no login
+        monkeypatch.setattr(server, "_is_local", lambda conn: True)
+        assert c.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-tl"}).json()["status"]["state"] == "working"
+        assert c.get("/api/agent-status").status_code == 401  # the token opens nothing else
+        monkeypatch.setattr(server, "_is_local", lambda conn: False)
+        assert c.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-tl"}).status_code == 401
+    server.reports.forget("tl")
+    server.agent_status.pop("tl", None)
+
+
+def test_resume_plan_is_safe(client, tmp_path, monkeypatch):
+    work = tmp_path / "w"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    monkeypatch.setattr(server.integrations, "run_flags", lambda agent: [])
+    assert server._resume_plan(sid) == (None, "no_resume")
+    db.save_agent_session(sid, "claude", "native:claude", "abc-123", ["claude", "--resume", "abc-123"], "working")
+    assert server._resume_plan(sid) == ("claude --resume abc-123", None)
+    rows = client.get("/api/agent-sessions").json()["sessions"]
+    assert rows[0]["can_resume"] and "abc-123" not in str(rows)  # native ids stay on the server
+    # a stored value that would need quoting (or could run more) is refused
+    db.save_agent_session(sid, "claude", "native:claude", "x", ["claude", "--resume", "x; rm -rf ~"], "working")
+    assert server._resume_plan(sid) == (None, "invalid_resume_argv")
+    db.save_agent_session(sid, "claude", "native:claude", "x", ["/bin/claude", "x"], "working")
+    assert server._resume_plan(sid) == (None, "invalid_resume_argv")
+    db.save_agent_session(sid, "claude", "native:claude", "abc", ["claude", "--resume", "abc"], "working")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: None)
+    assert server._resume_plan(sid) == (None, "executable_not_found")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: "/x")
+    db.update_session_cwd(sid, str(tmp_path / "gone"))
+    assert server._resume_plan(sid) == (None, "cwd_missing")
+    db.update_session_cwd(sid, str(work))
+    db.add_handoff(project_id=pid, from_sid=None, from_nick=None, to_sid=sid, to_nick="x", agent="claude", model=None, task="t")
+    assert server._resume_plan(sid, auto=True) == (None, "open_handoff")  # auto never resumes into a hand-off
+    assert server._resume_plan(sid)[0] == "claude --resume abc"  # a person asking may
+
+
+def test_auto_resume_respects_setting(client, monkeypatch, tmp_path):
+    started = []
+
+    async def fake_start(sid, line):
+        started.append((sid, line))
+
+    work = tmp_path / "w2"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    db.save_agent_session(sid, "codex", "native:codex", "t1", ["codex", "resume", "t1"], "done")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: "/x")
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+
+    async def go(mode):
+        server.resumed.discard(sid)
+        db.set_setting("agent_resume", mode)
+        server._auto_resume(sid)
+        await asyncio.sleep(0)
+
+    asyncio.run(go("ask"))
+    assert started == []
+    asyncio.run(go("auto"))
+    assert started == [(sid, "codex resume t1")]
+    asyncio.run(go("never"))
+    assert len(started) == 1
+    assert client.put("/api/settings", json={"agent_resume": "bogus"}).status_code == 400
+
+
+def test_session_only_report_stores_native_session_without_claiming_state(client, monkeypatch, tmp_path):
+    async def quiet(msg, host_only=False):
+        pass
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    work = tmp_path / "q"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setitem(server.manager.procs, sid, Live())
+    monkeypatch.setitem(server.report_tokens, sid, "tok-q")
+    monkeypatch.setitem(server.agent_kind, sid, ("qwen", 4))
+    body = {"source": "integration:qwen", "agent": "qwen", "agent_session_id": "q-1", "resume_argv": ["qwen", "--resume", "q-1"]}
+    r = client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-q"}).json()
+    assert r["status"]["state"] == "unknown" and not server.reports.reports.get(sid)
+    assert db.get_agent_session(sid)["native_session_id"] == "q-1"
+    assert client.post("/api/agent-reports", json={"source": "integration:qwen", "agent": "qwen"},
+                       headers={"X-Shelldeck-Report-Token": "tok-q"}).json()["error"] == "invalid_state"
+    server.agent_status.pop(sid, None)
+
+
+def test_agent_explain(client, monkeypatch, tmp_path):
+    from shelldeck import agent_state as lifecycle
+    work = tmp_path / "x"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    assert "no agent process" in client.get(f"/api/agent-explain/{sid}").json()["why"]
+    monkeypatch.setitem(server.agent_kind, sid, ("claude", 2))
+    now = time.monotonic()
+    server.reports.put(sid, lifecycle.heuristic("approval", now))
+    server.burst[sid] = "secret token abc\r\n Do you want to proceed?"
+    out = client.get(f"/api/agent-explain/{sid}").json()
+    assert out["reports"][0]["decides"] and out["reports"][0]["source"] == "heuristic:screen"
+    assert "sd integration install claude" in out["why"] and out["integration"]["tier"] == "priority"
+    assert out["heuristic"]["question_rule"] == "permission.proceed" and out["manifest"]["source"] == "bundled"
+    assert "secret" not in json.dumps(out)  # never screen text
+    r, _, _ = lifecycle.parse_report({"source": "integration:claude", "agent": "claude", "state": "working"}, "claude")
+    server.reports.put(sid, r)
+    out = client.get(f"/api/agent-explain/{sid}").json()
+    assert out["why"].startswith("integration:claude decides") and [x["decides"] for x in out["reports"]] == [True, False]
+    assert client.get("/api/agent-explain/nope").status_code == 404
+    server.reports.forget(sid)
+    server.burst.pop(sid, None)
+
+
+def test_events_and_prompt_wait(monkeypatch):
+    sent = []
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    async def fake_type(sid, text, enter=True):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tp", ("claude", 9))
+    monkeypatch.setitem(server.agent_status, "tp", {"state": "done", "source": "integration", "reason": None, "detail": None, "since": 1.0})
+
+    async def go():
+        start = server._event_seq[0]
+        waiter = asyncio.create_task(server.agent_prompt({"session_id": "tp", "text": "fix it", "wait": True, "timeout": 5}))
+        await asyncio.sleep(0.05)
+        assert not waiter.done()  # the old "done" (before the prompt) doesn't count
+        await server._publish("tp", {"state": "working", "source": "integration", "reason": None, "detail": None}, "claude")
+        await server._publish("tp", {"state": "done", "source": "integration", "reason": None, "detail": None}, "claude")
+        r = await waiter
+        await server._publish("tp", {"state": "blocked", "source": "integration", "reason": "approval", "detail": None}, None)
+        blocked = await server.agent_prompt({"session_id": "tp", "text": "y"})
+        types = [e["type"] for e in server.events_log if e["id"] > start]
+        return r, blocked, types
+
+    r, blocked, types = asyncio.run(go())
+    assert r["result"] == "reached" and sent == ["fix it"]
+    assert blocked.status_code == 409 and b"agent_blocked" in blocked.body
+    assert types == ["agent.state", "agent.state", "agent.state"]
+    assert all("text" not in e["data"] for e in server.events_log)
+
+
+
+def test_launch_lines_use_native_flags(tmp_path, monkeypatch):
+    from shelldeck import integrations, team
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path / "sd"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    flags = integrations.run_flags("claude")
+    settings = json.loads(open(flags[1]).read())
+    assert flags[0] == "--settings" and "PermissionRequest" in settings["hooks"]
+    assert integrations.run_flags("codex") == integrations.run_flags("gemini") == integrations.run_flags("devin") == []
+    (tmp_path / "claude").mkdir()
+    integrations.install("claude")
+    assert integrations.run_flags("claude") == []  # the global hook is installed: no duplicate per-run hook
+    assert team.launch_line("claude", "opus", "fix the tests", ["--settings", "/a b/c.json"]) == 'claude --model opus --settings "/a b/c.json" "fix the tests"'
+    assert team.launch_line("codex", None, "fix it") == 'codex "fix it"'
+    assert team.launch_line("gemini", "gemini-2.5-pro", "fix it") == 'gemini -m gemini-2.5-pro -i "fix it"'
+    assert team.launch_line("devin", None, "fix it") == 'devin -- "fix it"'
+    assert team.launch_line("amp", None) == "amp"
+    with pytest.raises(ValueError):
+        team.launch_line("amp", None, "x")
+    with pytest.raises(ValueError):
+        team.launch_line("claude", None, None, ["--settings", 'evil"$(x)'])
+
+
+def test_agent_start(client, tmp_path, monkeypatch):
+    started = []
+
+    async def fake_start(sid, line):
+        started.append(line)
+
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+    monkeypatch.setattr(server, "_attach", lambda s, r, c: None)
+    monkeypatch.setattr(server.integrations, "run_flags", lambda agent: [])
+    work = tmp_path / "p"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    r = client.post("/api/agent-start", json={"agent": "gemini", "project_id": pid, "prompt": "add a test"}).json()
+    assert r["command"] == 'gemini -i "add a test"'
+    r = client.post("/api/agent-start", json={"agent": "claude", "cwd": str(work), "prompt": 'use "quotes" & $vars'}).json()
+    assert r["command"].startswith('claude "Read and do the task in .shelldeck/prompts/')
+    name = r["command"].split("prompts/")[1].rstrip('"')
+    assert (work / ".shelldeck" / "prompts" / name).read_text().startswith('use "quotes"')
+    assert client.post("/api/agent-start", json={"agent": "amp", "project_id": pid, "prompt": "x"}).json()["error"] == "no_prompt_flag"
+    assert client.post("/api/agent-start", json={"agent": "nope", "project_id": pid}).status_code == 404
+
+
+def test_native_agent_commands(client, monkeypatch):
+    from shelldeck import agent_commands
+    assert agent_commands.line("gemini", "compact") == "/compress"
+    assert agent_commands.line("claude", "compact") == "/compact" and agent_commands.line("codex", "new") == "/new"
+    assert agent_commands.line("codex", "rename", "reviewer") == "/rename reviewer"
+    for agent, action, arg, code in (("amp", "compact", "", "no_native_commands"), ("gemini", "diff", "", "unsupported_command"),
+                                     ("claude", "compact", "x", "no_argument"), ("claude", "model", "a; rm -rf", "invalid_argument")):
+        with pytest.raises(ValueError, match=code):
+            agent_commands.line(agent, action, arg)
+    assert agent_commands.line("devin", "rewind") == "/revert" and agent_commands.line("devin", "status") == "/context"
+    assert {c["action"] for c in client.get("/api/agent-commands/claude").json()["commands"]} >= {"compact", "model", "resume"}
+    typed = []
+
+    async def fake_type(sid, text, enter=True):
+        typed.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tc", ("gemini", 1))
+    monkeypatch.setitem(server.agent_status, "tc", {"state": "idle", "source": "integration", "reason": None, "detail": None})
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact"}).json()["typed"] == "/compress"
+    server.agent_status["tc"] = {**server.agent_status["tc"], "state": "working"}
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact"}).json()["error"] == "agent_working"
+    assert client.post("/api/sessions/tc/agent-command", json={"command": "compact", "force": True}).status_code == 200
+    assert typed == ["/compress", "/compress"]
+    server.agent_status.pop("tc", None)
+
+
+def test_extract_facts_prompt(client, monkeypatch):
+    typed = []
+
+    async def fake_type(sid, text, enter=True):
+        typed.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tx", ("codex", 1))
+    monkeypatch.setitem(server.agent_status, "tx", {"state": "working", "source": "integration", "reason": None, "detail": None})
+    assert client.post("/api/sessions/tx/extract").json()["error"] == "agent_working"  # no prompt mid-turn
+    server.agent_status["tx"] = {**server.agent_status["tx"], "state": "done"}
+    assert client.post("/api/sessions/tx/extract").json()["agent"] == "codex"
+    assert len(typed) == 1 and "sd remember" in typed[0] and "don't read memory first" in typed[0]
+    assert len(server.EXTRACT_PROMPT) < 420  # one short turn
+    server.agent_status.pop("tx", None)

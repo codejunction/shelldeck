@@ -173,6 +173,15 @@ def test_share_refuses_a_short_password(monkeypatch):
     assert r.exit_code == 1 and "12+ characters" in r.output
 
 
+def test_integration_list_json(monkeypatch):
+    monkeypatch.setattr(cli, "_api", lambda path: {"integrations": [{"agent": "codex", "kind": "hook", "lifecycle": False,
+                                                                        "session_restore": True, "available": True, "notes": ""}]})
+    result = runner.invoke(cli.app, ["integration", "list", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == [{"agent": "codex", "kind": "hook", "lifecycle": False,
+                                         "session_restore": True, "available": True, "notes": ""}]
+
+
 def test_close_only_own_sub_agents(monkeypatch):
     sessions = [{"id": "me1", "nick": "Ada", "parent": None}, {"id": "kid1", "nick": "Maya", "parent": "me1"},
                 {"id": "user1", "nick": "Omar", "parent": None}]
@@ -196,3 +205,15 @@ def test_close_only_own_sub_agents(monkeypatch):
     assert ("DELETE", "/api/sessions/kid1") in calls
     monkeypatch.delenv("SHELLDECK_SESSION_ID")  # the user, outside shelldeck: any terminal
     assert runner.invoke(cli.app, ["close", "Omar"]).output.strip() == "closed Omar"
+
+
+def test_agent_explain_file(tmp_path):
+    from typer.testing import CliRunner
+
+    from shelldeck import cli
+    f = tmp_path / "screen.txt"
+    f.write_text("my password is hunter2\nAllow once?  Yes, allow once\n")
+    out = CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output
+    assert "blocked (approval)" in out and "permission.allow-once" in out and "hunter2" not in out
+    f.write_text("all good\n")
+    assert "no question found" in CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output

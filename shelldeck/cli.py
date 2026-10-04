@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import re
 import shutil
 import ssl
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -26,8 +28,10 @@ app = typer.Typer(
 )
 schedule_app = typer.Typer(help="Scheduled jobs.")
 task_app = typer.Typer(help="Personal task board.")
+integration_app = typer.Typer(help="Agent integration capabilities.")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(task_app, name="task")
+app.add_typer(integration_app, name="integration")
 
 HOST = "127.0.0.1"
 CFG = {"port": int(os.environ.get("SHELLDECK_PORT", "5455"))}
@@ -63,7 +67,8 @@ def _api(path: str, method: str = "GET", payload: dict | None = None, timeout: f
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
-            code = json.loads(e.read().decode()).get("error", e.reason)
+            body = json.loads(e.read().decode())
+            code = body.get("error", e.reason) + (f": {body['detail']}" if body.get("detail") else "")
         except ValueError:
             code = e.reason
         if code in ("locked", "setup_required"):
@@ -534,6 +539,74 @@ def agents(all_: bool = typer.Option(False, "--all", "-a", help="Every project, 
         typer.echo("\ninstalled: " + (", ".join(f"{a['command']} ({len(a['models'])} models)" for a in data["agents"] if a["installed"]) or "none"))
 
 
+@integration_app.command("list")
+def integration_list(json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")):
+    """List built-in integration coverage and lifecycle/resume capabilities."""
+    rows = _api("/api/integrations")["integrations"]
+    if json_:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    table = Table("Agent", "Tier", "Method", "Lifecycle", "Resume", "CLI", "Integration", "Notes")
+    for item in rows:
+        table.add_row(item["agent"], item["tier"], item["kind"], "yes" if item["lifecycle"] else "screen/fallback",
+                      "yes" if item["session_restore"] else "no", "found" if item["available"] else "not found",
+                      item["status"].replace("_", " "), item["notes"])
+    console.print(table)
+
+
+def _integration_rows(agent: str = "") -> list[dict]:
+    rows = [r for r in _api("/api/integrations")["integrations"] if r.get("installable")]
+    if agent and not any(r["agent"] == agent for r in rows):
+        typer.echo(f"error: no installable integration for {agent!r} (have: {', '.join(r['agent'] for r in rows)})", err=True)
+        raise typer.Exit(1)
+    return [r for r in rows if not agent or r["agent"] == agent]
+
+
+@integration_app.command("detect")
+def integration_detect():
+    """Agent CLIs found on this machine that have an installable integration."""
+    for r in _integration_rows():
+        typer.echo(f"{r['agent']:<12} {r['tier']:<9} {'found' if r['available'] else 'not found':<10} {r['status'].replace('_', ' ')}")
+
+
+@integration_app.command("status")
+def integration_status(agent: str = typer.Argument("", help="One agent (default: all installable).")):
+    """Whether each lifecycle hook/plugin is installed, outdated (re-install) or not installed."""
+    for r in _integration_rows(agent):
+        typer.echo(f"{r['agent']:<10} {r['status'].replace('_', ' ')}")
+
+
+@integration_app.command("install")
+def integration_install(
+    agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents (default: Claude, Codex, Gemini and Devin when found)."),
+    all_: bool = typer.Option(False, "--all", help="Also the preview integrations (installed agents only)."),
+):
+    """Add shelldeck's lifecycle hook/plugin to agents' configs (merged; other hooks stay; a backup is kept)."""
+    targets = agents_ or [r["agent"] for r in _integration_rows() if r["config_found"] and (all_ or r["tier"] == "priority")]
+    if not targets:
+        typer.echo("no supported agent CLI found; name one: sd integration install claude")
+    failed = False
+    for a in targets:
+        try:
+            _integration_rows(a)
+            r = _api(f"/api/integrations/{a}", "POST")
+        except typer.Exit:  # the error is printed; carry on with the rest
+            failed = True
+            continue
+        typer.echo(f"{a}: {r['status'].replace('_', ' ')} ({r['file']})" + ("; restart OpenCode to load it" if a == "opencode" else ""))
+    if failed:
+        raise typer.Exit(1)
+
+
+@integration_app.command("uninstall")
+def integration_uninstall(agents_: list[str] = typer.Argument(..., metavar="AGENT...")):
+    """Remove only shelldeck's hook/plugin from agents' configs."""
+    for a in agents_:
+        _integration_rows(a)
+        r = _api(f"/api/integrations/{a}", "DELETE")
+        typer.echo(f"{a}: {r['status'].replace('_', ' ')} ({r['file']})")
+
+
 @app.command()
 def peek(
     target: str = typer.Argument(..., help="Terminal nick, id, id prefix or name."),
@@ -892,6 +965,507 @@ def task_delete(task_id: str):
 def task_alarms():
     for a in _api("/api/tasks/alarms")["alarms"]:
         typer.echo(f"{a['id']}  {a['title']}  due={a.get('due_at')}")
+
+
+# ------------------------------------------------------------------ agent lifecycle (server-owned)
+
+agent_app = typer.Typer(help="Agent lifecycle status, waits and integration reports.")
+app.add_typer(agent_app, name="agent")
+
+
+def _status_line(r: dict) -> str:
+    reason = f" ({r['reason']})" if r.get("reason") else ""
+    return f"{r.get('nick') or r['session_id']}  {r.get('agent') or '?'}  {r['state']}{reason}  source={r['source']}"
+
+
+@agent_app.command("status")
+def agent_status(
+    target: str = typer.Argument("", help="Terminal nick, id or name (default: every agent terminal)."),
+    json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Lifecycle state (idle/working/blocked/done/exited) of agent terminals, and where it came from."""
+    sid = _session(target)["id"] if target else ""
+    rows = _api(f"/api/agent-status?target={sid}")["agents"]
+    nicks = {s["id"]: s.get("nick") for s in _api("/api/sessions")["sessions"]}
+    for r in rows:
+        r["nick"] = nicks.get(r["session_id"])
+    if json_:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        typer.echo("no agent status" + (f" for {target}" if target else ""))
+    for r in rows:
+        typer.echo(_status_line(r))
+
+
+def _duration(text: str) -> float:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text.strip())
+    if not m:
+        raise typer.BadParameter("use e.g. 30s, 10m or 1h")
+    return float(m[1]) * {"": 1, "s": 1, "m": 60, "h": 3600}[m[2]]
+
+
+@agent_app.command("wait")
+def agent_wait(
+    target: str = typer.Argument(..., help="Terminal nick, id or name running an agent."),
+    until: list[str] = typer.Option(["idle"], "--until", "-u", help="idle, working, blocked, done or exited (repeatable)."),
+    timeout: str = typer.Option("10m", "--timeout", "-t", help="Give up after this long (30s, 10m, 1h)."),
+    json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Block until an agent reaches a state; exits 0 when reached, 2 on timeout, 3 if the agent exited or was replaced."""
+    secs = _duration(timeout)
+    r = _api("/api/agent-wait", "POST", {"session_id": _session(target)["id"], "until": until, "timeout": secs}, timeout=secs + 15)
+    if json_:
+        typer.echo(json.dumps(r, indent=2))
+    else:
+        st = r.get("status") or {}
+        typer.echo(f"{r['result']}: {st.get('state', 'unknown')}" + (f" ({st['reason']})" if st.get("reason") else ""))
+    raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
+
+
+@agent_app.command("start")
+def agent_start(
+    agent: str = typer.Argument(..., help="claude, codex, gemini, devin, ..."),
+    prompt: str = typer.Argument("", help="Initial task, passed with the agent's own prompt flag."),
+    model: str = typer.Option("", "--model", "-m"),
+    project: str = typer.Option("", "--project", "-p", help="Project name (default: this folder's project)."),
+):
+    """Open a new terminal running an agent, launched with its native flags: model, per-run hooks (Claude's
+    --settings) and the prompt (claude/codex positional, gemini -i, devin --)."""
+    body: dict = {"agent": agent, "prompt": prompt, "model": model}
+    if project:
+        p = next((x for x in _api("/api/projects")["projects"] if x["name"].casefold() == project.casefold()), None)
+        if not p:
+            typer.echo(f"error: no project named {project!r}", err=True)
+            raise typer.Exit(1)
+        body["project_id"] = p["id"]
+    else:
+        body["cwd"] = os.getcwd()
+    r = _api("/api/agent-start", "POST", body)
+    typer.echo(f"started {r['session']['nick']} ({r['session']['id']}): {r['command'].split(' \"')[0]}")
+
+
+@agent_app.command("cmd")
+def agent_cmd(
+    target: str = typer.Argument(..., help="Terminal nick, id or name (or an agent kind with --list)."),
+    command: str = typer.Argument("", help="compact, clear, new, model, status, resume, review, init, memory, rename, export, diff, ..."),
+    arg: str = typer.Argument("", help="For model/rename: one word, e.g. a model name."),
+    list_: bool = typer.Option(False, "--list", "-l", help="List the commands this agent supports."),
+    force: bool = typer.Option(False, "--force", help="Send even while the agent is working or blocked."),
+):
+    """Run an agent's own slash command through one name: `sd agent cmd Maya compact` types /compact into Claude or
+    Codex, /compress into Gemini."""
+    if list_:
+        from . import agent_commands
+
+        agent = target if target in agent_commands.COMMANDS else (_api("/api/agent-status?target=" + _session(target)["id"])["agents"] or [{}])[0].get("agent")
+        for c in agent_commands.catalog(agent or ""):
+            typer.echo(f"{c['action']:<12} {c['command']:<14} {c['description']}" + ("" if c["verified"] else "  (unverified)"))
+        return
+    if not command:
+        typer.echo("usage: sd agent cmd TERMINAL COMMAND [ARG]   (sd agent cmd claude --list)", err=True)
+        raise typer.Exit(1)
+    r = _api(f"/api/sessions/{_session(target)['id']}/agent-command", "POST", {"command": command, "arg": arg, "force": force})
+    typer.echo(f"{r['agent']}: typed {r['typed']}")
+
+
+@agent_app.command("prompt")
+def agent_prompt(
+    target: str = typer.Argument(..., help="Terminal nick, id or name running an agent."),
+    text: str = typer.Argument(..., help="The prompt."),
+    wait: bool = typer.Option(False, "--wait", help="Block until the agent finishes this prompt."),
+    until: list[str] = typer.Option(["done", "idle"], "--until", "-u", help="With --wait: states that count as finished."),
+    timeout: str = typer.Option("10m", "--timeout", "-t"),
+):
+    """Send a prompt to an agent (refused while it is blocked on a question); --wait returns when it is done.
+    Exit codes with --wait: 0 reached, 2 timeout, 3 the agent exited or was replaced."""
+    secs = _duration(timeout)
+    r = _api("/api/agent-prompt", "POST", {"session_id": _session(target)["id"], "text": text, "wait": wait, "until": until, "timeout": secs},
+             timeout=secs + 15)
+    st = r.get("status") or {}
+    typer.echo(r["result"] + (f": {st.get('state')}" if st else ""))
+    if wait:
+        raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
+
+
+@agent_app.command("rename")
+def agent_rename(target: str = typer.Argument(...), name: str = typer.Argument(..., help="New terminal name, e.g. reviewer.")):
+    """Rename an agent's terminal (its nick stays)."""
+    s = _session(target)
+    _api(f"/api/sessions/{s['id']}", "PATCH", {"name": name})
+    typer.echo(f"{s.get('nick') or s['id']} is now {name!r}")
+
+
+events_app = typer.Typer(help="Server events (agent state, hand-offs, integrations).")
+app.add_typer(events_app, name="events")
+
+
+@events_app.command("subscribe")
+def events_subscribe(
+    types: str = typer.Option("", "--types", help="Comma-separated prefixes, e.g. agent.state,handoff (default: all)."),
+    since: int = typer.Option(0, "--since", help="Replay events after this id (from a previous run)."),
+):
+    """Print events as JSON lines until interrupted: agent.detected/state/exited/session_updated, handoff.created/completed,
+    integration.changed."""
+    q = urllib.parse.urlencode({k: v for k, v in (("types", types), ("since", since)) if v})
+    req = urllib.request.Request(_url(f"/api/events{'?' + q if q else ''}"), headers={"X-Shelldeck-Token": auth.read_cli_token(), "Accept": "text/event-stream"})
+    try:
+        with _open_url(req, 60) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace").rstrip("\n")
+                if line.startswith("data: "):
+                    typer.echo(line[6:])
+                    sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    except OSError:
+        typer.echo(f"shelldeck is not running on port {CFG['port']}", err=True)
+        raise typer.Exit(1) from None
+
+
+@agent_app.command("extract")
+def agent_extract(target: str = typer.Argument(..., help="Terminal nick, id or name running an agent.")):
+    """Ask the agent to save what it learned this session to project memory (one short prompt, on demand only)."""
+    r = _api(f"/api/sessions/{_session(target)['id']}/extract", "POST", {})
+    typer.echo(f"asked {r['agent']} to record its facts, decisions and state")
+
+
+@agent_app.command("explain")
+def agent_explain(
+    target: str = typer.Argument("", help="Terminal nick, id or name."),
+    file: Path = typer.Option(None, "--file", "-f", exists=True, dir_okay=False, help="Check saved screen text against the question rules instead."),
+    agent: str = typer.Option("", "--agent", "-a", help="With --file: whose rules (bundled + your override)."),
+    json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Why an agent has its state: which source decides, report ages, heuristic inputs. No screen text is shown."""
+    if file:
+        from . import detection
+
+        m = detection.load(agent)
+        hit = detection.match(agent, file.read_text(encoding="utf-8", errors="replace")[-6000:])
+        out = {"question_rule": hit.id if hit else None, "state": f"blocked ({hit.reason})" if hit else "no question found",
+               "manifest": {"source": m.source, "version": m.version, "error": m.error}}
+        if json_:
+            typer.echo(json.dumps(out, indent=2))
+        else:
+            typer.echo(out["state"] + (f": rule {hit.id}" if hit else "") + f"  (rules: {m.source} v{m.version})")
+            if m.error:
+                typer.echo(f"warning: {m.error}", err=True)
+        return
+    if not target:
+        typer.echo("usage: sd agent explain TERMINAL  (or --file screen.txt)", err=True)
+        raise typer.Exit(1)
+    out = _api(f"/api/agent-explain/{_session(target)['id']}")
+    if json_:
+        typer.echo(json.dumps(out, indent=2))
+        return
+    st = out.get("status") or {}
+    typer.echo(f"{out['nick'] or out['session_id']}: {out['agent'] or 'no agent'}  state={st.get('state', 'unknown')}"
+               + (f" ({st['reason']})" if st.get("reason") else ""))
+    typer.echo(f"why: {out['why']}")
+    for r in out["reports"]:
+        mark = "->" if r["decides"] else ("x " if r["expired"] else "  ")
+        typer.echo(f" {mark} {r['source']:<22} {r['state']:<8} age {r['age_s']}s, {'expired' if r['expired'] else f'{r['expires_in_s']}s left'}")
+    h = out["heuristic"]
+    typer.echo(f"screen: quiet {h['quiet_s']}s, burst {h['burst_s']}s, question rule: {h['question_rule'] or 'none'}")
+    m = out["manifest"]
+    typer.echo(f"rules: {m['source']} v{m['version']} ({m['rules']} rules)" + (f"; WARNING {m['error']}" if m["error"] else ""))
+    typer.echo(f"integration: {out['integration']['status'].replace('_', ' ')}" + (f" ({out['integration']['tier']})" if out["integration"]["tier"] else "")
+               + f"; stored session: {'yes (' + out['stored_session']['source'] + ')' if out['stored_session'] else 'no'}")
+
+
+@agent_app.command("resume")
+def agent_resume(target: str = typer.Argument("", help="Terminal nick, id or name (default: list resumable sessions).")):
+    """Start a terminal's stored agent session again (e.g. `claude --resume <id>` after a restart)."""
+    if not target:
+        rows = _api("/api/agent-sessions")["sessions"]
+        nicks = {s["id"]: s.get("nick") for s in _api("/api/sessions")["sessions"]}
+        if not rows:
+            typer.echo("no stored agent sessions")
+        for r in rows:
+            note = "resumable" if r["can_resume"] else (r["error"] or "").replace("_", " ")
+            typer.echo(f"{nicks.get(r['session_id']) or r['session_id']}  {r['agent']}  last {r['last_state']}  {note}")
+        return
+    r = _api(f"/api/sessions/{_session(target)['id']}/resume", "POST")
+    typer.echo(f"resumed: {r['command'].split()[0]} ...")
+
+
+@agent_app.command("report")
+def agent_report(
+    state: str = typer.Argument(..., help="idle, working, blocked, done or unknown."),
+    source: str = typer.Option(..., "--source", help="Reporter id, e.g. integration:opencode or custom:mytool."),
+    agent: str = typer.Option(..., "--agent", help="The agent kind running in this terminal (e.g. opencode)."),
+    reason: str = typer.Option("", "--reason", help="With blocked: approval, question, authentication, tool_error, external_wait."),
+    title: str = typer.Option("", "--title", help="Display-only work title."),
+    label: str = typer.Option("", "--label", help="Display-only state label."),
+    ttl: int = typer.Option(30000, "--ttl-ms", help="How long the report holds before falling back (max 120000)."),
+):
+    """Report lifecycle state from an integration inside a shelldeck terminal (uses its SHELLDECK_AGENT_REPORT_TOKEN)."""
+    token = os.environ.get("SHELLDECK_AGENT_REPORT_TOKEN")
+    if not token:
+        typer.echo("error: run this inside a shelldeck terminal", err=True)
+        raise typer.Exit(1)
+    payload = {"source": source, "agent": agent, "state": state, "blocked_reason": reason or None, "ttl_ms": ttl,
+               "metadata": {k: v for k, v in (("title", title), ("state_label", label)) if v} or None}
+    data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json", "X-Shelldeck-Token": auth.read_cli_token(), "X-Shelldeck-Report-Token": token}
+    req = urllib.request.Request(_url("/api/agent-reports"), data=data, method="POST", headers=headers)
+    try:
+        with _open_url(req, 10) as r:
+            typer.echo(json.loads(r.read().decode())["status"]["state"])
+    except urllib.error.HTTPError as e:
+        try:
+            code = json.loads(e.read().decode()).get("error", e.reason)
+        except ValueError:
+            code = e.reason
+        typer.echo(f"error: {code}", err=True)
+        raise typer.Exit(1) from None
+
+
+# ------------------------------------------------------------------ agent context (memory, decisions, recall)
+
+knowledge_app = typer.Typer(help="Shared knowledge lifecycle (NEW, VERIFIED, STALE, REVIEWED, INVALIDATED).")
+app.add_typer(knowledge_app, name="knowledge")
+
+
+def _where(project: str = "") -> dict:
+    """Which project a context command means: --project, else this terminal's session/cwd."""
+    if project:
+        return {"project": project}
+    return {"session_id": os.environ.get("SHELLDECK_SESSION_ID", ""), "cwd": os.getcwd()}
+
+
+def _qs(params: dict) -> str:
+    return urllib.parse.urlencode({k: v for k, v in params.items() if v})
+
+
+@app.command("context")
+def context_(
+    project: str = typer.Argument("", help="Another project's name (default: this folder's project)."),
+    query: str = typer.Option("", "--query", "-q", help="Also pull related knowledge from other projects."),
+    json_: bool = typer.Option(False, "--json", help="Print the full context package as JSON."),
+):
+    """The compact context an agent needs to continue: task, state, memory, decisions, git, hand-off, events."""
+    out = _api("/api/context?" + _qs({**_where(project), "q": query}))
+    typer.echo(json.dumps(out, indent=2) if json_ else out["text"])
+
+
+@app.command()
+def init(
+    path: Path = typer.Argument(Path("."), file_okay=False, help="Project folder (default: here)."),
+    task: str = typer.Option("", "--task", "-t", help="The first task to record."),
+    no_project: bool = typer.Option(False, "--no-project", help="Don't add it to the shelldeck sidebar."),
+):
+    """Set up a project for agents now: add it to shelldeck and write .shelldeck/ (STATE, TASK, MEMORY,
+    DECISIONS, AGENTS.md, .gitignore). Safe to run again."""
+    if not path.is_dir():
+        typer.echo(f"error: {path} is not a folder", err=True)
+        raise typer.Exit(1)
+    r = _api("/api/context/init", "POST", {"path": str(path.resolve()), "task": task, "add_project": not no_project})
+    typer.echo(f"{r['project']['name']}: {'added to shelldeck; ' if r.get('added') else ''}{r['folder']}")
+    typer.echo("  " + "  ".join(r["files"]))
+    typer.echo("agents here can start with: sd context")
+
+
+@app.command()
+def resume(json_: bool = typer.Option(False, "--json", help="Print JSON.")):
+    """Where to pick up: this project's most recent incomplete task, its next action and recent context."""
+    out = _api("/api/context?" + _qs(_where()))
+    task = out.get("task")
+    if json_:
+        typer.echo(json.dumps(out, indent=2))
+        return
+    if not task or task["status"] in ("DONE", "CANCELLED"):
+        typer.echo("no incomplete task in this project (start one: sd task update --task \"...\")")
+        return
+    typer.echo(out["text"])
+
+
+@app.command()
+def switch(
+    agent: str = typer.Argument(..., help="The agent to continue with: claude, codex, gemini, devin, ..."),
+    note: str = typer.Option("", "--note", "-n", help="Where you stopped, saved as the current step."),
+    model: str = typer.Option("", "--model", "-m"),
+):
+    """Hand this project's work to another agent: checkpoint the task and state, then open the new agent in a new terminal
+    of the same project, told to start from `sd context`. The current agent keeps running until you close it."""
+    me = os.environ.get("SHELLDECK_SESSION_ID", "")
+    sessions = _api("/api/sessions")["sessions"]
+    mine = next((s for s in sessions if s["id"] == me), None)
+    _api("/api/context/state", "POST", {**_where(), **({"step": note} if note else {}), "next_action": f"continue with {agent}"})
+    body = {"agent": agent, "model": model, "prompt": "Continue this project's task where the last agent stopped. First run: sd context"}
+    body |= {"project_id": mine["project_id"]} if mine and mine.get("project_id") else {"cwd": os.getcwd()}
+    r = _api("/api/agent-start", "POST", body)
+    typer.echo(f"checkpoint saved; {agent} started as {r['session']['nick']} ({r['session']['id']}). It starts from sd context.")
+
+
+@app.command()
+def recall(
+    query: str = typer.Argument(..., help="What you're looking for, e.g. \"authentication architecture\"."),
+    project: str = typer.Option("", "--project", "-p", help="Rank this project first (default: this folder's)."),
+    limit: int = typer.Option(10, "--limit", "-n"),
+    smart: bool = typer.Option(False, "--smart", "-s", help="Let an installed agent's smallest model add related keywords first."),
+    agent: str = typer.Option("", "--agent", help="Who adds related keywords: claude, codex, gemini, devin (or off)."),
+    model: str = typer.Option("", "--model", "-m", help="With --agent: the model to use (default: its smallest)."),
+    json_: bool = typer.Option(False, "--json", help="Print JSON."),
+):
+    """Search knowledge and decisions across every project. Results are reference material: adapt, don't copy."""
+    out = _api("/api/context/recall?" + _qs({**_where(project), "q": query, "limit": limit, "smart": "true" if smart else "",
+                                              "agent": agent, "model": model}), timeout=45)
+    rows = out["results"]
+    if out.get("expanded") and not json_:
+        typer.echo(f"also searched ({out['agent']} {out.get('model') or ''}): {', '.join(out['expanded'])}")
+    if json_:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        typer.echo("nothing found")
+    for i, r in enumerate(rows, 1):
+        flag = f" [{r['status']}]" if r["status"] in ("STALE", "NEW") else ""
+        typer.echo(f"{i}. {r['project']}  {r['title']}  ({r['type']}, relevance {r['relevance']}){flag}  {r['id']}")
+        typer.echo(f"   {' '.join(r['snippet'].split())[:300]}")
+        if r["sources"]:
+            typer.echo(f"   sources: {', '.join(r['sources'])}")
+
+
+@app.command()
+def memory(
+    action: str = typer.Argument("", help="Leave empty to list, or `search`."),
+    query: str = typer.Argument("", help="With search: the query."),
+    project: str = typer.Option("", "--project", "-p"),
+    json_: bool = typer.Option(False, "--json", help="Print JSON."),
+):
+    """This project's memory and decisions; `sd memory search <query>` searches every project."""
+    if action == "search":
+        recall(query or typer.prompt("query"), project, 10, False, "", "", json_)
+        return
+    if action:
+        typer.echo("usage: sd memory [search <query>]", err=True)
+        raise typer.Exit(1)
+    out = _api("/api/context/memory?" + _qs(_where(project)))
+    if json_:
+        typer.echo(json.dumps(out, indent=2))
+        return
+    typer.echo(f"# {out['project']}")
+    for k in out["memory"]:
+        typer.echo(f"- [{k['id']} {k['status']} {k['type']}] {' '.join(k['content'].split())}")
+    for d in out["decisions"]:
+        typer.echo(f"- [{d['id']} decision] {d['title']}" + (f" (because {d['reason']})" if d.get("reason") else ""))
+    if not out["memory"] and not out["decisions"]:
+        typer.echo("(empty: add with sd remember / sd decide)")
+
+
+def _record(kind: str, text: str, type_: str, topic: str, files: list[str], project: str, scope: str) -> None:
+    k = _api("/api/context/memory", "POST", {**_where(project), "kind": kind, "text": text, "type": type_, "topic": topic,
+                                             "files": files or [], "scope": scope})
+    typer.echo(f"{k['id']} saved to {k['project']} memory ({k['status']})")
+
+
+@app.command()
+def remember(
+    facts: list[str] = typer.Argument(..., help="One or more durable facts (each quoted). Several in one call saves agent turns."),
+    type_: str = typer.Option("note", "--type", help="architecture, api, database, convention, gotcha, pattern, ..."),
+    topic: str = typer.Option("", "--topic"),
+    file: list[str] = typer.Option(None, "--file", "-f", help="Source file it came from (relative; tracked for staleness)."),
+    project: str = typer.Option("", "--project", "-p"),
+    scope: str = typer.Option("PROJECT", "--scope", help="PROJECT or GLOBAL."),
+):
+    """Add facts to project memory (secrets are redacted; the same fact is merged, not duplicated)."""
+    for fact in facts:
+        _record("remember", fact, type_, topic, file, project, scope)
+
+
+@app.command()
+def discover(
+    finding: str = typer.Argument(..., help="Something you found out while working."),
+    type_: str = typer.Option("discovery", "--type"),
+    topic: str = typer.Option("", "--topic"),
+    file: list[str] = typer.Option(None, "--file", "-f", help="Source file supporting it (relative)."),
+    project: str = typer.Option("", "--project", "-p"),
+):
+    """Record a discovery (confidence 0.8 until verified)."""
+    _record("discover", finding, type_, topic, file, project, "PROJECT")
+
+
+@app.command()
+def decide(
+    title: str = typer.Argument(..., help="The decision, short."),
+    reason: str = typer.Option("", "--reason", "-r"),
+    alternatives: str = typer.Option("", "--alternatives", "-a"),
+    consequence: str = typer.Option("", "--consequence", "-c"),
+    project: str = typer.Option("", "--project", "-p"),
+):
+    """Record a settled decision so later agents don't reopen it."""
+    d = _api("/api/context/decisions", "POST", {**_where(project), "title": title, "reason": reason, "alternatives": alternatives,
+                                                "consequence": consequence})
+    typer.echo(f"decision {d['id']} recorded")
+
+
+@app.command("decisions")
+def decisions_(project: str = typer.Option("", "--project", "-p")):
+    """This project's decisions."""
+    for d in _api("/api/context/memory?" + _qs(_where(project)))["decisions"]:
+        typer.echo(f"{d['created_at'][:10]}  {d['id']}  {d['title']}" + (f"  (because {d['reason']})" if d.get("reason") else ""))
+
+
+@task_app.command("update")
+def task_update(
+    status: str = typer.Argument("", help="TODO, IN_PROGRESS, BLOCKED, DONE or CANCELLED (optional)."),
+    task: str = typer.Option("", "--task", help="The task title (starts a task if none is open)."),
+    objective: str = typer.Option("", "--objective"),
+    plan: str = typer.Option("", "--plan"),
+    step: str = typer.Option("", "--step", help="What you're doing now."),
+    next_action: str = typer.Option("", "--next", help="What the next agent should do first."),
+    error: str = typer.Option("", "--error", help="The last error, if any."),
+    tests: str = typer.Option("", "--tests", help="Test state, e.g. \"42 passed, 1 failing: test_x\"."),
+    project: str = typer.Option("", "--project", "-p"),
+):
+    """Update the active agent task and current state (a checkpoint; git branch/commit/changes are captured)."""
+    fields = {"task": task, "objective": objective, "plan": plan, "status": status, "step": step, "next_action": next_action,
+              "last_error": error, "tests": tests}
+    out = _api("/api/context/state", "POST", {**_where(project), **{k: v for k, v in fields.items() if v}})
+    t = out.get("task") or {}
+    typer.echo(f"{out['project']['name']}: {t.get('title', '(no task)')} [{t.get('status', '-')}]")
+
+
+@knowledge_app.command("verify")
+def knowledge_verify(
+    knowledge_id: str = typer.Argument(..., help="Knowledge id (from sd memory / sd recall)."),
+    status: str = typer.Option("VERIFIED", "--status", "-s", help="VERIFIED, REVIEWED, STALE or INVALIDATED."),
+):
+    """Mark knowledge verified against its sources (or reviewed/stale/invalidated)."""
+    k = _api(f"/api/context/knowledge/{knowledge_id}/status", "POST", {"status": status})
+    typer.echo(f"{k['id']} is now {k['status']}")
+
+
+@app.command("projects")
+def projects_(json_: bool = typer.Option(False, "--json")):
+    """Projects known to the agent context store."""
+    rows = _api("/api/context/projects")["projects"]
+    if json_:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    for r in rows:
+        t = r.get("task") or {}
+        typer.echo(f"{r['name']}  {r['path']}  knowledge={r['knowledge']}" + (f"  task: {t['title']} [{t['status']}]" if t else ""))
+
+
+@app.command("project")
+def project_(name: str = typer.Argument(...)):
+    """One project's context (same as `sd context NAME`)."""
+    typer.echo(_api("/api/context?" + _qs({"project": name}))["text"])
+
+
+@app.command()
+def relate(
+    target: str = typer.Argument(..., help="The other project's name."),
+    relation: str = typer.Option("related-to", "--relation", "-r", help="related-to, depends-on, uses-pattern, shares-database-with."),
+    project: str = typer.Option("", "--project", "-p"),
+):
+    """Link this project to another, so recall ranks its knowledge higher."""
+    r = _api("/api/context/relationships", "POST", {**_where(project), "target": target, "relation": relation})
+    typer.echo(f"{r['source']} {r['relation']} {r['target']}")
+
 
 
 def _commands() -> set[str]:
