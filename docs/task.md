@@ -199,6 +199,12 @@
   (Terminals, AI agents, Context) stay visible; seven tools fold under a
   remembered *More* (auto-opens when one is active); Settings has its own line;
   Context got a layers icon. Checked in a browser, closed and open.
+- **2026-10-04 — Context page redesigned + agent/model choice (user feedback):**
+  read-first layout (Working on summary with Edit, compact facts and decisions,
+  plain-words activity, a link-projects fold), and search lets you pick the agent
+  and model that widen the query (`recall?agent=&model=`, `recall-agents`,
+  `sd recall --agent --model`; the default is the cheapest model). Checked in a
+  browser with real Claude haiku.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

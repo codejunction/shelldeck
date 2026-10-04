@@ -120,7 +120,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - `views.js`: bookmarks, scheduler, tasks, settings, add-project, alarms.
   - `devices.js`: Devices view (signed-in browsers, in use / idle, revoke).
   - `editor.js`: `openFile(path, {sid, mode, line})` dialog: textarea + line-number gutter, markdown preview, image view, Ctrl+S, dirty guard through `dialog().canClose`. Used by `sd edit/view`, the palette's *Open file…* and clickable paths when the `editor` setting is `shelldeck`.
-  - `context.js`: Context view over `/api/context*` (project picker, task/state form, memory verify/invalidate, decisions, relationships, recall). Not polled, so forms keep their input.
+  - `context.js`: Context view over `/api/context*`: read-first *Working on* summary (`editing` toggles the form), facts and decisions with hover actions, `describe()` turns events into plain words, search results replace the body, and the search box's agent and model pickers come from `/api/context/recall-agents` (`smart_recall.choices()`). Not polled, so forms keep their input.
   - `md.js`: small markdown renderer (escapes everything first; http(s) links and images only) for the viewer and the scratchpad.
   - The alarm socket (`/ws/alarms`) also carries `open_file`, `spawned` (app.js opens the sub-agent's pane and gives focus back) and `handoff` (toast + chime).
   - `history.js`: Command history view (`/api/history`, `commands` table, filled by `{"type":"command"}` socket messages from the UI) and the search-all dialog (`/api/search` over `PtyManager.searchable`).

@@ -138,9 +138,14 @@ def test_recall_api_smart(client, tmp_path, monkeypatch):
     folder.mkdir()
     client.post("/api/context/memory", json={"cwd": str(folder), "text": "Login uses OAuth"})
     monkeypatch.setattr(smart_recall, "pick", lambda s: "claude" if s in ("auto", "claude") else None)
-    monkeypatch.setattr(smart_recall, "expand", lambda q, agent: ["oauth"])
+    seen = []
+    monkeypatch.setattr(smart_recall, "expand", lambda q, agent, model=None: seen.append((agent, model)) or ["oauth"])
+    monkeypatch.setattr(smart_recall, "small_model", lambda agent: "haiku")
     plain = client.get("/api/context/recall", params={"q": "auth"}).json()
     assert plain["results"] == [] and plain["expanded"] == [] and plain["agent"] is None
     smart = client.get("/api/context/recall", params={"q": "auth", "smart": True}).json()
     assert smart["agent"] == "claude" and smart["expanded"] == ["oauth"] and smart["results"][0]["snippet"] == "Login uses OAuth"
+    chosen = client.get("/api/context/recall", params={"q": "auth", "agent": "claude", "model": "sonnet"}).json()
+    assert chosen["model"] == "sonnet" and seen[-1] == ("claude", "sonnet")
+    assert client.get("/api/context/recall", params={"q": "auth", "agent": "off", "smart": True}).json()["agent"] is None
     assert client.put("/api/settings", json={"recall_agent": "nope"}).status_code == 400

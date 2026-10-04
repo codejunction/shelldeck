@@ -49,3 +49,12 @@ def test_recall_with_expanded_terms_finds_more(tmp_path, monkeypatch):
     context.record_memory(p, "Login uses OAuth with JWT access tokens")
     assert context.recall("auth", p) == []  # no shared keyword
     assert context.recall("auth", p, extra=["oauth", "jwt"])[0]["title"].startswith("Login uses OAuth")
+
+
+def test_chosen_model_and_choices(monkeypatch):
+    monkeypatch.setattr(smart_recall.shutil, "which", lambda exe: f"/bin/{exe}" if exe in ("claude", "gemini") else None)
+    assert smart_recall.argv("claude", "auth", "sonnet")[:4] == ["/bin/claude", "-p", "--model", "sonnet"]
+    assert smart_recall.argv("claude", "auth", "x; rm -rf /") is None  # a model must be one plain word
+    rows = {r["agent"]: r for r in smart_recall.choices()}
+    assert set(rows) == {"claude", "gemini"} and rows["claude"]["default"] == "haiku" and rows["gemini"]["default"] == "flash-lite"
+    assert rows["claude"]["models"][0] == "haiku"

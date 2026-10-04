@@ -1288,13 +1288,16 @@ def recall(
     project: str = typer.Option("", "--project", "-p", help="Rank this project first (default: this folder's)."),
     limit: int = typer.Option(10, "--limit", "-n"),
     smart: bool = typer.Option(False, "--smart", "-s", help="Let an installed agent's smallest model add related keywords first."),
+    agent: str = typer.Option("", "--agent", help="Who adds related keywords: claude, codex, gemini, devin (or off)."),
+    model: str = typer.Option("", "--model", "-m", help="With --agent: the model to use (default: its smallest)."),
     json_: bool = typer.Option(False, "--json", help="Print JSON."),
 ):
     """Search knowledge and decisions across every project. Results are reference material: adapt, don't copy."""
-    out = _api("/api/context/recall?" + _qs({**_where(project), "q": query, "limit": limit, "smart": "true" if smart else ""}), timeout=45)
+    out = _api("/api/context/recall?" + _qs({**_where(project), "q": query, "limit": limit, "smart": "true" if smart else "",
+                                              "agent": agent, "model": model}), timeout=45)
     rows = out["results"]
     if out.get("expanded") and not json_:
-        typer.echo(f"also searched ({out['agent']}): {', '.join(out['expanded'])}")
+        typer.echo(f"also searched ({out['agent']} {out.get('model') or ''}): {', '.join(out['expanded'])}")
     if json_:
         typer.echo(json.dumps(rows, indent=2))
         return
@@ -1317,7 +1320,7 @@ def memory(
 ):
     """This project's memory and decisions; `sd memory search <query>` searches every project."""
     if action == "search":
-        recall(query or typer.prompt("query"), project, 10, False, json_)
+        recall(query or typer.prompt("query"), project, 10, False, "", "", json_)
         return
     if action:
         typer.echo("usage: sd memory [search <query>]", err=True)

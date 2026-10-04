@@ -2015,14 +2015,26 @@ async def update_state(payload: dict):
 
 
 @app.get("/api/context/recall")
-async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10, smart: bool = False):
-    """Keyword search; with smart (or the recall_agent setting) an agent's small model adds related keywords first."""
+async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10, smart: bool = False,
+                 agent: str = "", model: str = ""):
+    """Keyword search. `agent` (+ optional `model`) picks who adds related keywords first; `smart` or the
+    recall_agent setting picks one automatically; agent=off forces plain keywords."""
     p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
     p = p if isinstance(p, dict) else None
     setting = get_settings().get("recall_agent", "off")
-    agent = smart_recall.pick(setting if setting != "off" else ("auto" if smart else "off"))
-    extra = await asyncio.to_thread(smart_recall.expand, q, agent) if agent else []
-    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)), True, extra), "expanded": extra, "agent": agent}
+    if agent:
+        who = None if agent == "off" else smart_recall.pick(agent)
+    else:
+        who = smart_recall.pick(setting if setting != "off" else ("auto" if smart else "off"))
+    extra = await asyncio.to_thread(smart_recall.expand, q, who, model or None) if who else []
+    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)), True, extra), "expanded": extra, "agent": who,
+            "model": (model or smart_recall.small_model(who)) if who else None}
+
+
+@app.get("/api/context/recall-agents")
+async def recall_agents():
+    """Installed agents and their models, for choosing who widens a search."""
+    return {"agents": await asyncio.to_thread(smart_recall.choices), "default": get_settings().get("recall_agent", "off")}
 
 
 @app.post("/api/context/knowledge/{knowledge_id}/status")

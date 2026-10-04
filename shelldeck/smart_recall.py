@@ -29,12 +29,19 @@ def _prompt(query: str) -> str:
             "Reply with the keywords only, comma-separated, no explanation.")
 
 
-def argv(agent: str, query: str) -> list[str] | None:
-    """The agent's own non-interactive mode with its smallest model (claude -p, codex exec, gemini -p, devin -p)."""
+def small_model(agent: str) -> str | None:
+    return SMALL.get(agent) or team.pick_model(agent, "small", "")
+
+
+def argv(agent: str, query: str, model: str | None = None) -> list[str] | None:
+    """The agent's own non-interactive mode (claude -p, codex exec, gemini -p, devin -p) with the chosen model,
+    else its smallest one. A model name must be one plain word (team.SAFE_MODEL)."""
     exe = shutil.which(agents.AGENTS[agent][1][0]) if agent in agents.AGENTS else None
     if not exe:
         return None
-    model = SMALL.get(agent) or team.pick_model(agent, "small", query)
+    if model and not team.SAFE_MODEL.match(model):
+        return None
+    model = model or small_model(agent)
     prompt = _prompt(query)
     if agent == "claude":
         return [exe, "-p", *(["--model", model] if model else []), prompt]
@@ -45,6 +52,18 @@ def argv(agent: str, query: str) -> list[str] | None:
     if agent == "devin":
         return [exe, "-p", *(["--model", model] if model else []), "--", prompt]
     return None
+
+
+def choices() -> list[dict]:
+    """Installed priority agents with their models (smallest first as the default), for the search box's pickers."""
+    out = []
+    for a in PRIORITY:
+        if not shutil.which(agents.AGENTS[a][1][0]):
+            continue
+        small = small_model(a)
+        models = [m for m in agents.models(a) if team.SAFE_MODEL.match(m)]
+        out.append({"agent": a, "label": agents.AGENTS[a][0], "default": small, "models": ([small] if small else []) + [m for m in models if m != small]})
+    return out
 
 
 def pick(setting: str) -> str | None:
@@ -72,18 +91,19 @@ def _cache(conn) -> None:
                  " created_at TEXT NOT NULL, PRIMARY KEY (agent, query))")
 
 
-def expand(query: str, agent: str) -> list[str]:
-    """Related keywords for a query from the agent's small model; cached; [] on any failure (search still works)."""
+def expand(query: str, agent: str, model: str | None = None) -> list[str]:
+    """Related keywords for a query from the agent's model (its smallest by default); cached; [] on any failure."""
     q = " ".join(context.redact(query).split())[:200].lower()
     if not q:
         return []
     context.init()
     with context._connect() as conn:
         _cache(conn)
-        row = conn.execute("SELECT terms FROM query_expansions WHERE agent = ? AND query = ?", (agent, q)).fetchone()
+        key = f"{agent}:{model}" if model else agent
+        row = conn.execute("SELECT terms FROM query_expansions WHERE agent = ? AND query = ?", (key, q)).fetchone()
     if row:
         return json.loads(row["terms"])
-    cmd = argv(agent, q)
+    cmd = argv(agent, q, model)
     if not cmd:
         return []
     env = {k: v for k, v in os.environ.items() if k not in ("SHELLDECK_AGENT_REPORT_TOKEN", "SHELLDECK_SESSION_ID")}
@@ -99,5 +119,5 @@ def expand(query: str, agent: str) -> list[str]:
         with context._connect() as conn:
             _cache(conn)
             conn.execute("INSERT OR REPLACE INTO query_expansions VALUES (?, ?, ?, ?)",
-                         (agent, q, json.dumps(terms), datetime.now(timezone.utc).isoformat(timespec="seconds")))
+                         (key, q, json.dumps(terms), datetime.now(timezone.utc).isoformat(timespec="seconds")))
     return terms
