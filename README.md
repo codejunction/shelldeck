@@ -165,6 +165,7 @@ In the sidebar, Ctrl+click or middle-click a terminal to open it in a split. Rig
 | Terminal colors | default (follows theme), Dracula, One Dark, Nord, Gruvbox Dark, Solarized Dark, Solarized Light, GitHub Light | default |
 | Terminal font | any installed monospace font; empty uses Cascadia / Nerd Font | empty |
 | Open file paths with | VS Code (at the line), shelldeck's built-in editor, system default app | VS Code |
+| Resume agent sessions after a restart | Ask, automatically, never | Ask |
 | Password | created on first visit, changed here (current + new) | required |
 
 </details>
