@@ -181,7 +181,12 @@ decisions, your open hand-off and recent events. Continue from the next action i
   records a settled decision; check `sd memory` first so you don't duplicate one.
 - `sd task update [IN_PROGRESS|BLOCKED|DONE] --task "..." --step "..." --next "..." --tests "..." --error "..."`
   updates the task and state. Run it when the plan or step changes, after tests, and before you stop.
-- `sd agent status [name]` shows agent states; `sd agent wait <name> --until idle --timeout 10m` waits for one.
+- `sd agent status [name]` shows agent states; `sd agent wait <name> --until done --timeout 10m` waits for one
+  (exit 0 reached, 2 timeout, 3 it exited). `sd agent prompt <name> "text" --wait` sends a follow-up and waits for it.
+- `sd agent cmd <name> compact` runs that agent's own slash command (compact, clear, model, status, review, ...;
+  `sd agent cmd <agent> --list`). Commands and prompts are refused while the agent waits on a question.
+- `sd switch <agent> --note "where I stopped"` hands this project's task to another agent in a new terminal; it
+  starts from `sd context`. Use it only when the user asks.
 Never put passwords, tokens or keys into these commands.
 
 Rules:

@@ -1258,6 +1258,24 @@ def resume(json_: bool = typer.Option(False, "--json", help="Print JSON.")):
 
 
 @app.command()
+def switch(
+    agent: str = typer.Argument(..., help="The agent to continue with: claude, codex, gemini, devin, ..."),
+    note: str = typer.Option("", "--note", "-n", help="Where you stopped, saved as the current step."),
+    model: str = typer.Option("", "--model", "-m"),
+):
+    """Hand this project's work to another agent: checkpoint the task and state, then open the new agent in a new terminal
+    of the same project, told to start from `sd context`. The current agent keeps running until you close it."""
+    me = os.environ.get("SHELLDECK_SESSION_ID", "")
+    sessions = _api("/api/sessions")["sessions"]
+    mine = next((s for s in sessions if s["id"] == me), None)
+    _api("/api/context/state", "POST", {**_where(), **({"step": note} if note else {}), "next_action": f"continue with {agent}"})
+    body = {"agent": agent, "model": model, "prompt": "Continue this project's task where the last agent stopped. First run: sd context"}
+    body |= {"project_id": mine["project_id"]} if mine and mine.get("project_id") else {"cwd": os.getcwd()}
+    r = _api("/api/agent-start", "POST", body)
+    typer.echo(f"checkpoint saved; {agent} started as {r['session']['nick']} ({r['session']['id']}). It starts from sd context.")
+
+
+@app.command()
 def recall(
     query: str = typer.Argument(..., help="What you're looking for, e.g. \"authentication architecture\"."),
     project: str = typer.Option("", "--project", "-p", help="Rank this project first (default: this folder's)."),

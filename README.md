@@ -211,6 +211,7 @@ sd remember FACT / sd discover FINDING [--type T] [--file F]   add to project me
 sd decide TITLE [-r REASON]          record a settled decision (sd decisions lists them)
 sd task update [STATUS] [--task --step --next --tests --error]   update the active task and state
 sd knowledge verify ID [--status S]  mark knowledge VERIFIED, REVIEWED, STALE or INVALIDATED
+sd switch AGENT [--note TEXT]        checkpoint this project's task and continue it with another agent in a new terminal
 sd projects / sd project NAME / sd relate PROJECT   known projects, one project, link related projects
 sd install-skill [AGENT...] [--remove]   teach agent CLIs the sd team commands (automatic on server start)
 sd edit FILE / sd view FILE          open a file in shelldeck's editor / viewer

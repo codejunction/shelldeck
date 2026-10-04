@@ -26,7 +26,7 @@ SESSION = "session"  # report only the agent's session id (for resume); state st
 EVENTS: dict[str, dict[str, str | None]] = {
     "claude": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
                "PostToolUseFailure": WORKING, "PermissionRequest": BLOCKED, "SubagentStart": WORKING, "PreCompact": WORKING,
-               "Stop": DONE, "StopFailure": IDLE, "SessionEnd": None, "Notification": None},
+               "Stop": DONE, "SessionEnd": None, "Notification": None},  # names checked in Claude Code 2.1.289's cli.js
     "gemini": {"SessionStart": IDLE, "BeforeAgent": WORKING, "BeforeTool": WORKING, "AfterTool": WORKING, "PreCompress": WORKING,
                "AfterAgent": DONE, "Notification": BLOCKED, "SessionEnd": None},
     "cursor": {"sessionStart": IDLE, "beforeSubmitPrompt": WORKING, "afterShellExecution": WORKING, "afterFileEdit": WORKING,

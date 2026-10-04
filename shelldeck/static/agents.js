@@ -1,6 +1,6 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
 import { ATTENTION, S, attentionOf, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
-import { api, esc, icon, toast, toastError } from "./ui.js";
+import { api, esc, icon, promptDialog, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
 const TEAM_PROMPT = `You are one of several AI coding agents working in this project, each in its own shelldeck terminal with a person's name ($SHELLDECK_NICK).
@@ -181,7 +181,8 @@ function commandMenu(r) {
   const cmds = (COMMANDS[r.agent] || []).filter((c) => !c.takes_arg);
   if (!cmds.length) return "";
   const opts = cmds.map((c) => `<option value="${c.action}">${esc(c.action)} (${esc(c.command)})${c.verified ? "" : " ?"}</option>`).join("");
-  return `<select class="sm" data-agent-cmd="${r.session_id}" aria-label="Run a ${esc(r.label)} command"><option value="">Command…</option>${opts}</select>`;
+  return `<button class="btn sm" data-message="${r.session_id}" title="Send a prompt (refused while it waits on a question)">Message</button>
+    <select class="sm" data-agent-cmd="${r.session_id}" aria-label="Run a ${esc(r.label)} command"><option value="">Command…</option>${opts}</select>`;
 }
 
 async function onCommand(e, el) {
@@ -202,6 +203,19 @@ async function onCommand(e, el) {
 
 async function onClick(e, el) {
   if (e.target.closest("select")) return; // the command menu, not "open terminal"
+  const msgTo = e.target.closest("[data-message]")?.dataset.message;
+  if (msgTo) {
+    const text = await promptDialog("Message the agent", "", { label: "Prompt", ok: "Send" });
+    if (!text?.trim()) return;
+    try {
+      await api("/api/agent-prompt", { method: "POST", body: { session_id: msgTo, text } });
+      toast({ title: "Sent" });
+    } catch (err) {
+      if (String(err?.message || err).includes("agent_blocked")) toast({ title: "Not sent", body: "It is waiting on a question: answer that first.", kind: "warn" });
+      else toastError(err);
+    }
+    return;
+  }
   const sid = e.target.closest("tr[data-sid]")?.dataset.sid;
   if (sid) return showSession(sid);
   if (e.target.closest("[data-copy-prompt]")) {

@@ -23,6 +23,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Screen detection rules moved into a versioned bundled file (`agent_detection/default.toml`), with per-agent local overrides in `<config>/agent-detection/<agent>.toml`. Invalid overrides are ignored and reported by `sd agent explain`.
 - `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
 - Context page: task and state editor, memory with verify/invalidate, decisions, related projects, and cross-project search.
+- `sd switch AGENT`: checkpoint the task and continue with another agent, which starts from `sd context`. *Message* action on the AI agents page. The skill teaches `sd agent prompt/cmd/wait` and `sd switch`. The Claude hook no longer registers `StopFailure`, which Claude Code 2.1.289 doesn't have.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

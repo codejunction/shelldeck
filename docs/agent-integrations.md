@@ -18,7 +18,7 @@ approve, deny or block a tool.
 
 | Agent | What is installed | Where (env override) | Session/resume |
 | --- | --- | --- | --- |
-| Claude Code | Hook entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `PreCompact`, `Stop`, `StopFailure` (all `async`) | `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR`) | yes: `claude --resume <id>` |
+| Claude Code | Hook entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `PreCompact`, `Stop` (all `async`; names checked in Claude Code 2.1.289) | `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR`) | yes: `claude --resume <id>` |
 | Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` (approval) | `~/.gemini/settings.json` (`GEMINI_DIR`) | yes: `gemini --resume <id>` (docs: session management) |
 | Cursor (editor and CLI) | `hooks.json` entries for the watching hooks (`sessionStart`, `beforeSubmitPrompt`, `after*`, `postToolUse*`, `subagentStop`, `preCompact`, `stop`) | `~/.cursor/hooks.json` (`CURSOR_DIR`) | yes: `cursor-agent --resume <id>` |
 | GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | yes: `copilot --resume=<id>` |

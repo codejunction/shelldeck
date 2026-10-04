@@ -139,6 +139,12 @@
   (replace / disable / add), invalid overrides ignored and reported in
   `sd agent explain` (rule id, manifest source/version, warning). The server's
   heuristic uses it; the wheel includes the file; docs/agent-detection.md added.
+- **2026-10-04 — Remaining CLI/UI items:** `sd switch <agent>` (checkpoint +
+  start the agent via `/api/agent-start` with a `sd context` kickoff), a
+  *Message* action on the AI agents page (refused while blocked), and the skill
+  now teaches agent prompt/cmd/wait/switch. Claude hook events were checked
+  against Claude Code 2.1.289's bundle: `StopFailure` doesn't exist there and was
+  removed. Checked live.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -269,7 +275,7 @@ conversation without affecting unrelated Codex hooks.
 
 ### Task 3.3: Claude Code integration
 
-- [ ] Verify the current Claude Code hook schema and event names before writing
+- [x] Verify the current Claude Code hook schema and event names before writing
   an installer.
 - [x] Install/remove only Shelldeck-owned hook entries and scripts.
 - [x] Report native session identity; preserve screen detection for state.
@@ -403,12 +409,12 @@ attribution; stale detection works on file changes; verification CLI works.
 - [x] Add `sd context [PROJECT]` — show current or named project context.
 - [x] Add `sd memory [search <query>]` — show/search project memory.
 - [x] Add `sd projects` and `sd project <name>` — list/show projects.
-- [ ] Add `sd handoff` / `sd handoffs` / `sd done <id>` — enhanced with
+- [x] Add `sd handoff` / `sd handoffs` / `sd done <id>` — enhanced with
   full context snapshots (task, state, memory, decisions, git, tests, files,
   events, next action, related projects — section 44).
 - [x] Add `sd resume` — resume most recent incomplete task.
-- [ ] Add `sd switch <agent>` — create handoff and switch active agent.
-- [ ] Add agent-accessible commands: `sd context`, `sd recall`, `sd memory`,
+- [x] Add `sd switch <agent>` — create handoff and switch active agent.
+- [x] Add agent-accessible commands: `sd context`, `sd recall`, `sd memory`,
   `sd handoff`, `sd done`, `sd tell <agent>`, plus optional `sd remember`,
   `sd decide`, `sd discover`, `sd task update` (section 34).
 
@@ -452,12 +458,12 @@ at checkpoints; sensitive files are excluded.
 
 ### Task 5.7: Background processing and performance
 
-- [ ] Add background worker infrastructure for knowledge extraction,
+- [~] Add background worker infrastructure for knowledge extraction (Markdown projection and context calls run off the event loop; no LLM extraction or embeddings yet),
   embedding generation, Markdown projection, event compaction, stale
   detection, and indexing (section 56).
-- [ ] Ensure agent terminal interaction never blocks on context processing
+- [x] Ensure agent terminal interaction never blocks on context processing
   (section 55): startup <100ms, recall <100ms, SQLite search <50ms.
-- [ ] Implement failure handling: context system failure logs warning but
+- [x] Implement failure handling: context system failure logs warning but
   agent execution continues (section 57).
 
 **Primary files:** new `shelldeck/workers.py`, `shelldeck/context_store.py`,
@@ -490,7 +496,7 @@ settings.
 - [x] Add atomic `sd agent prompt --wait` semantics.
 - [x] Add agent attach/rename commands (rename; manually started agents are attached automatically by process detection).
 - [x] Add an event subscription endpoint/transport and `sd events subscribe`.
-- [ ] Update the installed skill only after these commands are tested.
+- [x] Update the installed skill only after these commands are tested.
 
 **Done when:** supervisors can wait for an agent state transition without
 polling screen text, and a new agent process cannot satisfy an old wait.
@@ -500,7 +506,7 @@ polling screen text, and a new agent process cannot satisfy an old wait.
 - [x] Add a prioritized attention section to `static/agents.js`.
 - [x] Display semantic state, source, reason, elapsed time, model/context,
   role/title, and integration health.
-- [~] Add direct actions appropriate to the viewer's permissions (open, open next and resume done; peek/answer/message via CLI): open, peek,
+- [x] Add direct actions appropriate to the viewer's permissions (open, open next, message, native commands, resume; peek/answer via CLI): open, peek,
   answer, message, resume, diagnose, reassign, and close.
 - [x] Add project sidebar rollups with accessible text/icon state indicators.
 - [x] Keep completed agents visible until reviewed; do not re-alert unchanged
