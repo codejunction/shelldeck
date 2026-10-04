@@ -149,3 +149,19 @@ def test_recall_api_smart(client, tmp_path, monkeypatch):
     assert chosen["model"] == "sonnet" and seen[-1] == ("claude", "sonnet")
     assert client.get("/api/context/recall", params={"q": "auth", "agent": "off", "smart": True}).json()["agent"] is None
     assert client.put("/api/settings", json={"recall_agent": "nope"}).status_code == 400
+
+
+def test_sd_init_writes_shelldeck_folder(client, tmp_path):
+    folder = tmp_path / "newproj"
+    folder.mkdir()
+    r = client.post("/api/context/init", json={"path": str(folder), "task": "First feature"}).json()
+    assert r["added"] and r["project"]["name"] == "newproj"
+    assert {".gitignore", "AGENTS.md", "STATE.md", "TASK.md", "MEMORY.md", "DECISIONS.md"} <= set(r["files"])
+    assert "First feature" in (folder / ".shelldeck" / "TASK.md").read_text()
+    assert [p["path"] for p in client.get("/api/projects").json()["projects"]] == [str(folder)]
+    # again: nothing duplicated; a hand-edited AGENTS.md (marker removed) is kept
+    (folder / ".shelldeck" / "AGENTS.md").write_text("my own rules\n")
+    r = client.post("/api/context/init", json={"path": str(folder)}).json()
+    assert not r["added"] and (folder / ".shelldeck" / "AGENTS.md").read_text() == "my own rules\n"
+    assert len(client.get("/api/projects").json()["projects"]) == 1
+    assert client.post("/api/context/init", json={"path": str(tmp_path / "nope")}).json()["error"] == "not_a_directory"

@@ -208,6 +208,11 @@
 - **2026-10-04 — 0.0.7rc3 published to PyPI** (release run 37229022371, CI green):
   the decluttered sidebar, the redesigned Context page and the agent/model choice
   for search. Installed from PyPI and checked.
+- **2026-10-04 — `sd init` (user request):** `POST /api/context/init` adds the
+  folder as a shelldeck project and writes `.shelldeck/` now (STATE, TASK,
+  MEMORY, DECISIONS, `.gitignore`, and an `AGENTS.md` with the agent workflow
+  from spec section 12, which a user-edited copy never overwrites); `--task`
+  records the first task. Idempotent. Checked live in a fresh folder.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

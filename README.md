@@ -207,6 +207,7 @@ sd agent explain TERMINAL [--json]   why an agent has its state: deciding source
 sd agent explain --file SCREEN.txt [--agent A]   check saved screen text against the detection rules (docs/agent-detection.md)
 sd agent resume [TERMINAL]           list stored agent sessions, or start one again (claude --resume, codex resume, opencode --session)
 sd agent report STATE --source S --agent A   report state from an integration inside a terminal
+sd init [PATH] [--task TEXT]         set up a project for agents now: add it to shelldeck, write .shelldeck/ (STATE, TASK, MEMORY, DECISIONS, AGENTS.md)
 sd context [PROJECT] [-q QUERY]      task, state, next action, memory, decisions, hand-off, git, events
 sd resume                            this project's unfinished task and where to pick it up
 sd recall QUERY [--smart | --agent A [--model M]]   search every project; an agent's model can add related keywords first

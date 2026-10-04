@@ -692,3 +692,33 @@ def end_session(project: dict, session_id: str) -> Path | None:
     out = folder / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', session_id)}.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     return out
+
+
+AGENTS_MARKER = "<!-- written by sd init; delete this line to keep your own edits -->"
+AGENTS_MD = AGENTS_MARKER + """
+# Working in this project with shelldeck
+
+shelldeck keeps this project's context so any agent can continue where the last one stopped.
+The files next to this one are written from it; change them with the commands below, not by hand.
+
+- At the start: `sd context` (task, next step, facts, decisions, recent activity).
+- Missing background: `sd recall "topic"` searches every project (reference only: adapt, don't copy).
+- While working: `sd remember "fact" "fact"` for durable facts (add `--file path` for the source),
+  `sd decide "choice" -r "reason"` for settled decisions.
+- Before stopping: `sd task update --step "..." --next "..."`; test results and commands are recorded for you.
+- Never put passwords, tokens or keys into these commands.
+"""
+
+
+def init_project(path: str, task: str | None = None) -> dict:
+    """`sd init`: register the folder and write `.shelldeck/` now (STATE/TASK/MEMORY/DECISIONS.md, AGENTS.md,
+    .gitignore) instead of on first use. Idempotent; an AGENTS.md without our marker is left alone."""
+    project = project_for(path)
+    if task:
+        save_state(project, task=task, event=True)
+    project_files(project)
+    agents_md = Path(project["path"]) / ".shelldeck" / "AGENTS.md"
+    if not agents_md.exists() or agents_md.read_text(encoding="utf-8", errors="replace").startswith(AGENTS_MARKER):
+        agents_md.write_text(AGENTS_MD, encoding="utf-8")
+    return {"project": project, "folder": str(Path(project["path"]) / ".shelldeck"),
+            "files": sorted(p.name for p in (Path(project["path"]) / ".shelldeck").iterdir())}

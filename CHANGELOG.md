@@ -32,6 +32,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Smart recall without embeddings: `sd recall --smart`, a Context page toggle and the `recall_agent` setting expand the query with an installed agent's smallest model (claude haiku, gemini flash-lite, codex/devin small tier) in its non-interactive mode. Only the query is sent; results are cached; it falls back to keywords.
 - Tidier sidebar: Terminals, AI agents and Context stay visible; Bookmarks, Scheduler, Tasks, History, Task manager, Devices and Scratchpad fold under *More* (remembered); Settings gets its own line; Context has its own icon.
 - Context page redesigned to read first: a *Working on* summary with *Edit*, compact facts and decisions with hover actions, recent activity in plain words, and one search box where you choose which installed agent and model widen the search (`sd recall --agent A --model M`, `GET /api/context/recall-agents`).
+- `sd init [PATH] [--task]`: adds the folder as a project and writes `.shelldeck/` right away, including an `AGENTS.md` with the shelldeck workflow for agents (never overwrites one you edited). Without it, the files still appear on first use.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

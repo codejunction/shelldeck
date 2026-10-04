@@ -1958,6 +1958,21 @@ async def get_context(cwd: str = "", project: str = "", session_id: str = "", q:
     return await _ctx(context.project_context, p, q, open_h)
 
 
+@app.post("/api/context/init")
+async def init_context(payload: dict):
+    """`sd init`: add the folder as a shelldeck project (if new) and write its `.shelldeck/` files now."""
+    path = Path(str(payload.get("path") or "")).expanduser()
+    if not path.is_dir():
+        return err("not_a_directory")
+    added = not any(Path(p["path"]).resolve() == path.resolve() for p in db.list_projects())
+    if added and payload.get("add_project", True):
+        db.ensure_project(str(path))
+    out = await _ctx(context.init_project, str(path), str(payload.get("task") or "").strip() or None)
+    if isinstance(out, dict):
+        out["added"] = added and payload.get("add_project", True)
+    return out
+
+
 @app.get("/api/context/projects")
 async def context_projects():
     return {"projects": await _ctx(context.list_projects)}

@@ -1251,6 +1251,23 @@ def context_(
 
 
 @app.command()
+def init(
+    path: Path = typer.Argument(Path("."), file_okay=False, help="Project folder (default: here)."),
+    task: str = typer.Option("", "--task", "-t", help="The first task to record."),
+    no_project: bool = typer.Option(False, "--no-project", help="Don't add it to the shelldeck sidebar."),
+):
+    """Set up a project for agents now: add it to shelldeck and write .shelldeck/ (STATE, TASK, MEMORY,
+    DECISIONS, AGENTS.md, .gitignore). Safe to run again."""
+    if not path.is_dir():
+        typer.echo(f"error: {path} is not a folder", err=True)
+        raise typer.Exit(1)
+    r = _api("/api/context/init", "POST", {"path": str(path.resolve()), "task": task, "add_project": not no_project})
+    typer.echo(f"{r['project']['name']}: {'added to shelldeck; ' if r.get('added') else ''}{r['folder']}")
+    typer.echo("  " + "  ".join(r["files"]))
+    typer.echo("agents here can start with: sd context")
+
+
+@app.command()
 def resume(json_: bool = typer.Option(False, "--json", help="Print JSON.")):
     """Where to pick up: this project's most recent incomplete task, its next action and recent context."""
     out = _api("/api/context?" + _qs(_where()))
