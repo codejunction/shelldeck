@@ -26,6 +26,8 @@ approve, deny or block a tool.
 | Antigravity CLI | One `shelldeck` block (`PreInvocation`) in `hooks.json`, which is keyed by hook name: session id only | `~/.gemini/config/` (`ANTIGRAVITY_CLI_CONFIG_DIR`) | yes: `agy --conversation <id>` |
 | Grok CLI | Its own `hooks/shelldeck.json` (`SessionStart`): session id only | `~/.grok/` (`GROK_HOME`) | yes: `grok --resume <id>` |
 | Kilo Code CLI | The OpenCode plugin, pointed at Kilo (`plugin/shelldeck.js`) | `~/.config/kilo/` (`XDG_CONFIG_HOME`) | yes: `kilo --session <id>` |
+| Letta Code | `SessionStart` (`quiet`): session id only; the default conversation resumes per agent | `~/.letta/settings.json` | yes: `letta --conversation <id>` or `--conversation default --agent <id>` |
+| Hermes Agent | A Python plugin, `plugins/shelldeck-agent-state/`, listed under `plugins.enabled` in `config.yaml`. An inline or unusual YAML layout is refused (add it by hand) | `~/.hermes/` (`HERMES_HOME`; `%LOCALAPPDATA%\hermes` on Windows) | yes: `hermes --resume <id>` |
 | OpenCode | A plugin, `plugins/shelldeck.js`, that posts `chat.message`, `tool.execute.before`, `session.*` and `permission.*` | `~/.config/opencode/` (`XDG_CONFIG_HOME`) | yes: `opencode --session <id>` |
 
 **Without installing anything**, shelldeck also reads two agents' own logs (source `native`):
@@ -38,9 +40,9 @@ approve, deny or block a tool.
 A native "working" holds only 15 s past the last log event, so a prompt waiting for approval (the log goes quiet) is
 picked up by screen detection again. An integration report outranks native, which outranks the screen.
 
-**Session id only** (Qwen, Qoder, Droid, Devin, Grok, Antigravity): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
+**Session id only** (Qwen, Qoder, Droid, Devin, Grok, Antigravity, Letta, Hermes): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
 
-Installing needs the agent's config folder (install and run the agent once first). Pi, OMP (TypeScript extensions), Hermes (Python plugin), Letta and the rest keep using screen detection for now (see `sd integration list`).
+Installing needs the agent's config folder (install and run the agent once first). Pi and OMP (TypeScript extensions) and the rest keep using screen detection for now (see `sd integration list`).
 
 ## Commands
 

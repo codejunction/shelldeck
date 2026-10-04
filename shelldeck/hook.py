@@ -46,6 +46,7 @@ EVENTS: dict[str, dict[str, str | None]] = {
                    "PermissionRequest": BLOCKED, "PermissionResult": WORKING, "SubagentStart": WORKING, "SubagentEnd": WORKING,
                    "Interrupt": IDLE, "AgentEnd": DONE, "Stop": DONE},
     "grok": {"SessionStart": SESSION},
+    "letta": {"SessionStart": SESSION},
     "antigravity": {"PreInvocation": SESSION},
     "copilot": {"sessionStart": IDLE, "userPromptSubmitted": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING,
                 "notification": None, "errorOccurred": IDLE, "agentStop": DONE, "sessionEnd": None},
@@ -61,6 +62,9 @@ RESUME = {
     "qodercli": lambda i: ["qodercli", "--resume", i], "cursor": lambda i: ["cursor-agent", "--resume", i],
     "kimi": lambda i: ["kimi", "--session", i], "mastracode": lambda i: ["mastracode", "--thread", i],
     "grok": lambda i: ["grok", "--resume", i], "antigravity": lambda i: ["agy", "--conversation", i],
+    "hermes": lambda i: ["hermes", "--resume", i],
+    # Letta's default conversation is per agent: "default:<agent id>"
+    "letta": lambda i: ["letta", "--conversation", "default", "--agent", i[8:]] if i.startswith("default:") else ["letta", "--conversation", i],
 }
 STATES = {WORKING, IDLE, DONE, BLOCKED, SESSION}  # an explicit state in the installed command (matcher-specific hooks)
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
@@ -96,6 +100,9 @@ def report(agent: str, event: dict, forced: str | None = None) -> dict | None:
     if state != SESSION:
         body |= {"state": state, "blocked_reason": reason, "ttl_ms": TTL_MS[state]}
     sid = next((v for k in SESSION_KEYS if isinstance(v := event.get(k), str) and v and not v.startswith("-")), None)
+    if agent == "letta" and sid == "default":
+        aid = event.get("agent_id")
+        sid = f"default:{aid}" if isinstance(aid, str) and aid and not aid.startswith("-") else None
     if sid and agent in RESUME:
         body["agent_session_id"], body["resume_argv"] = sid, RESUME[agent](sid)
     elif state == SESSION:

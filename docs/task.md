@@ -74,6 +74,12 @@
   (own hook file, session) and Antigravity CLI (named block, session). 15 agents
   are installable, 9 with exact lifecycle. Pi, OMP and Hermes (TS/Python plugin
   APIs) and Letta remain on screen detection.
+- **2026-10-04 — Letta and Hermes:** Letta (`SessionStart` session hook,
+  resume via `--conversation [default --agent]`) and Hermes (Python plugin +
+  `plugins.enabled` YAML edit that refuses layouts it doesn't know). 17 agents
+  are installable. The OpenCode plugin was verified end to end inside a real
+  terminal (permission.asked -> blocked/approval from `integration`). Pi/OMP
+  remain.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -229,7 +235,8 @@ conversation without affecting unrelated Codex hooks.
 - [x] Install/uninstall round-trip tests with unrelated config preserved.
 - [ ] Manual check against installed binaries.
 - [x] Kimi (TOML hooks), Kilo (plugin), MastraCode, Grok, Antigravity.
-- [ ] Pi/OMP (TypeScript extensions), Hermes (Python plugin), Letta.
+- [x] Hermes (Python plugin), Letta.
+- [ ] Pi/OMP (TypeScript extensions).
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.

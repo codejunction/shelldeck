@@ -225,3 +225,41 @@ def test_forced_state_from_installed_command(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "session_id": "k"})))
     hook.main(["kimi", "blocked"])
     assert sent[0]["state"] == "blocked" and sent[0]["blocked_reason"] == "question" and sent[0]["resume_argv"] == ["kimi", "--session", "k"]
+
+
+def test_letta_session_hook(homes):
+    d = homes / "home" / ".letta"
+    d.mkdir(parents=True)
+    integrations.install("letta")
+    group = json.loads((d / "settings.json").read_text())["hooks"]["SessionStart"][0]
+    assert group["hooks"][0]["quiet"] is True and group["hooks"][0]["timeout"] == 10_000
+    assert hook.report("letta", {"hook_event_name": "SessionStart", "conversation_id": "default", "agent_id": "agent-7"})["resume_argv"] == [
+        "letta", "--conversation", "default", "--agent", "agent-7"]
+    assert hook.report("letta", {"hook_event_name": "SessionStart", "conversation_id": "conv-2"})["resume_argv"] == ["letta", "--conversation", "conv-2"]
+    assert hook.report("letta", {"hook_event_name": "SessionStart", "conversation_id": "default"}) is None
+    integrations.uninstall("letta")
+    assert json.loads((d / "settings.json").read_text()) == {}
+
+
+@pytest.mark.parametrize("before", ["", "model: x\n", "model: x\nplugins:\n  enabled:\n    - other\n  dir: y\nui: z\n"])
+def test_hermes_plugin_and_yaml(homes, monkeypatch, before):
+    monkeypatch.setenv("HERMES_HOME", str(homes / "hermes"))
+    (homes / "hermes").mkdir()
+    cfg = homes / "hermes" / "config.yaml"
+    cfg.write_text(before)
+    integrations.install("hermes")
+    integrations.install("hermes")
+    assert cfg.read_text().count("- shelldeck-agent-state") == 1
+    assert integrations.status("hermes")["status"] == "installed"
+    assert (homes / "hermes" / "plugins" / "shelldeck-agent-state" / "plugin.yaml").exists()
+    integrations.uninstall("hermes")
+    assert cfg.read_text() == before and not (homes / "hermes" / "plugins" / "shelldeck-agent-state").exists()
+
+
+def test_hermes_refuses_inline_yaml(homes, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(homes / "hermes"))
+    (homes / "hermes").mkdir()
+    (homes / "hermes" / "config.yaml").write_text("plugins: {enabled: [a]}\n")
+    with pytest.raises(ValueError, match="by hand"):
+        integrations.install("hermes")
+    assert not (homes / "hermes" / "plugins").exists()

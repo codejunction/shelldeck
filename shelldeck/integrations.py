@@ -36,8 +36,8 @@ INTEGRATIONS: tuple[Integration, ...] = (
     Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True, "session id only; state from the screen"),
     Integration("droid", "hook", False, True, "session id only; state from the screen"),
     Integration("kimi", "hook", True, True, "needs Kimi Code 0.14+"), Integration("kilo", "plugin", True, True),
-    Integration("hermes", "plugin", False, True), Integration("qodercli", "hook", False, True, "session id only; state from the screen"),
-    Integration("qwen", "hook", False, True, "session id only; state from the screen"), Integration("letta", "hook", False, True, "experimental upstream integration"),
+    Integration("hermes", "plugin", False, True, "session id only; state from the screen"), Integration("qodercli", "hook", False, True, "session id only; state from the screen"),
+    Integration("qwen", "hook", False, True, "session id only; state from the screen"), Integration("letta", "hook", False, True, "session id only; experimental upstream"),
     Integration("mastracode", "hook", True, True), Integration("grok", "hook", False, True, "session id only; state from the screen"),
     Integration("antigravity", "hook", False, True, "session id only; state from the screen"), Integration("amp", "screen", False, False),
     Integration("kiro", "screen", False, False), Integration("maki", "screen", False, False),
@@ -410,6 +410,133 @@ class KimiToml:
         return True, text.endswith(kimi_block())
 
 
+HERMES_PLUGIN = "shelldeck-agent-state"
+HERMES_INIT = '''"""Hermes plugin installed by shelldeck (`sd integration install hermes`): reports the session id to the
+shelldeck terminal it runs in, so the conversation can be resumed. Outside shelldeck it does nothing."""
+
+# shelldeck-hermes-plugin v1
+import json
+import os
+import urllib.request
+
+_INTERACTIVE = {"cli", "tui", "desktop", "acp"}
+
+
+def _report(**kwargs):
+    token = os.environ.get("SHELLDECK_AGENT_REPORT_TOKEN")
+    sid = kwargs.get("session_id")
+    if not token or kwargs.get("platform") not in _INTERACTIVE or not isinstance(sid, str) or not sid or sid.startswith("-"):
+        return
+    body = {"source": "integration:hermes", "agent": "hermes", "agent_session_id": sid, "resume_argv": ["hermes", "--resume", sid]}
+    req = urllib.request.Request("http://127.0.0.1:" + os.environ.get("SHELLDECK_PORT", "5455") + "/api/agent-reports",
+                                 data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Shelldeck-Report-Token": token})
+    try:
+        urllib.request.urlopen(req, timeout=1).read()
+    except Exception:
+        pass
+
+
+def _observed(**kwargs):
+    if kwargs.get("platform") == "cli":
+        _report(**kwargs)
+
+
+def register(ctx):
+    ctx.register_hook("on_session_start", _report)
+    ctx.register_hook("on_session_reset", _report)
+    ctx.register_hook("pre_llm_call", _observed)
+'''
+HERMES_MANIFEST = f"name: {HERMES_PLUGIN}\nversion: \"1.0\"\ndescription: Report the Hermes session id to shelldeck\n"
+
+
+def hermes_enable(text: str, on: bool) -> str:
+    """Add/remove the plugin in config.yaml's `plugins.enabled` block list. Only simple layouts are edited;
+    anything else raises ValueError so the file is left alone (herdr edits the same key)."""
+    item = f"    - {HERMES_PLUGIN}"
+    lines = text.splitlines()
+    top = [i for i, line in enumerate(lines) if line.startswith("plugins:")]
+    if not top:
+        if not on:
+            return text
+        body = text.rstrip("\n")
+        return (body + "\n" if body else "") + f"plugins:\n  enabled:\n{item}\n"
+    i = top[0]
+    if lines[i].strip() != "plugins:":
+        raise ValueError("config.yaml has an inline `plugins:` value; add shelldeck-agent-state to plugins.enabled by hand")
+    end = next((j for j in range(i + 1, len(lines)) if lines[j] and not lines[j].startswith((" ", "#"))), len(lines))
+    en = next((j for j in range(i + 1, end) if lines[j].rstrip() == "  enabled:"), None)
+    if on:
+        if any(line.rstrip() == item for line in lines[i:end]):
+            return text
+        if en is None:
+            if any(lines[j].startswith("  enabled") for j in range(i + 1, end)):
+                raise ValueError("config.yaml lists plugins.enabled inline; add shelldeck-agent-state to it by hand")
+            lines[i + 1:i + 1] = ["  enabled:", item]
+        else:
+            lines.insert(en + 1, item)
+    else:
+        lines = [line for j, line in enumerate(lines) if not (i < j < end and line.rstrip() == item)]
+        k = next((j for j, line in enumerate(lines) if line.rstrip() == "  enabled:"), None)
+        # drop an `enabled:` / `plugins:` we left empty
+        if k is not None and (k + 1 >= len(lines) or not lines[k + 1].startswith("    ")):
+            del lines[k]
+            p = lines.index("plugins:") if "plugins:" in lines else None
+            if p is not None and (p + 1 >= len(lines) or not lines[p + 1].startswith(" ")):
+                del lines[p]
+    out = "\n".join(lines)
+    return out + "\n" if out else ""
+
+
+class HermesPlugin:
+    agent = "hermes"
+
+    @property
+    def root(self) -> Path:
+        if os.environ.get("HERMES_HOME"):
+            return Path(os.environ["HERMES_HOME"])
+        if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+            return Path(os.environ["LOCALAPPDATA"]) / "hermes"
+        return Path.home() / ".hermes"
+
+    @property
+    def file(self) -> Path:
+        return self.root / "plugins" / HERMES_PLUGIN / "__init__.py"
+
+    def install(self) -> dict:
+        if not self.root.is_dir():
+            raise ValueError(f"hermes config folder not found at {self.root}; install hermes first")
+        cfg = self.root / "config.yaml"
+        text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+        new = hermes_enable(text, True)  # raises before anything is written
+        _write(self.file, HERMES_INIT)
+        _write(self.file.with_name("plugin.yaml"), HERMES_MANIFEST)
+        if new != text:
+            _backup(cfg)
+            _write(cfg, new)
+        return {"file": str(self.file)}
+
+    def uninstall(self) -> dict:
+        cfg = self.root / "config.yaml"
+        if cfg.exists():
+            text = cfg.read_text(encoding="utf-8")
+            try:
+                new = hermes_enable(text, False)
+            except ValueError:
+                new = text
+            if new != text:
+                _write(cfg, new)
+        shutil.rmtree(self.file.parent, ignore_errors=True)
+        return {"file": str(self.file)}
+
+    def state(self) -> tuple[bool, bool]:
+        if not self.file.exists():
+            return False, False
+        cfg = self.root / "config.yaml"
+        enabled = cfg.exists() and f"    - {HERMES_PLUGIN}" in cfg.read_text(encoding="utf-8").splitlines()
+        return True, enabled and self.file.read_text(encoding="utf-8") == HERMES_INIT
+
+
 def _copilot_file() -> str:
     hooks = {e: [{"type": "command", "command": hook_command("copilot", e), "timeoutSec": 5}] for e in hook.EVENTS["copilot"]}
     return json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n"
@@ -490,6 +617,9 @@ INSTALLERS = {
     "devin": JsonHooks("devin", lambda: _devin_dir() / "config.json", _cmd_entry("devin", 10)),
     "mastracode": JsonHooks("mastracode", lambda: Path.home() / ".mastracode" / "hooks.json", _flat_entry("mastracode", 10_000), key=None),
     "kimi": KimiToml(),
+    "letta": JsonHooks("letta", lambda: Path.home() / ".letta" / "settings.json",
+                       lambda e: {"hooks": [{"type": "command", "command": hook_command("letta"), "timeout": 10_000, "quiet": True}]}),
+    "hermes": HermesPlugin(),
     "antigravity": NamedBlock("antigravity", lambda: _home("ANTIGRAVITY_CLI_CONFIG_DIR", ".gemini", "config") / "hooks.json", _antigravity_block),
     "grok": OwnFile("grok", lambda: _home("GROK_HOME", ".grok") / "hooks" / "shelldeck.json", _grok_file, "-m shelldeck.hook grok"),
     "kilo": OwnFile("kilo", lambda: _xdg() / "kilo" / "plugin" / "shelldeck.js", lambda: _opencode_plugin("kilo"), "shelldeck-kilo-plugin"),
@@ -501,6 +631,8 @@ INSTALLERS = {
 def _root(inst) -> Path:
     """The agent's own config folder (installing needs it to exist)."""
     f = inst.file
+    if isinstance(inst, HermesPlugin):
+        return inst.root
     return f.parent.parent if f.parent.name in ("hooks", "plugins", "plugin") else f.parent
 
 
