@@ -622,6 +622,10 @@ export async function settingsDialog() {
           <option value="shelldeck" ${s.editor === "shelldeck" ? "selected" : ""}>shelldeck's built-in editor</option>
           <option value="system" ${s.editor === "system" ? "selected" : ""}>System default app</option>
         </select></label>
+        <label class="field"><span>Smart search (sd recall --smart)</span><select name="recall_agent">
+          ${[["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]]
+            .map(([v, l]) => `<option value="${v}" ${(s.recall_agent || "off") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
         <label class="field"><span>Resume agent sessions after a restart</span><select name="agent_resume">
           <option value="ask" ${(s.agent_resume || "ask") === "ask" ? "selected" : ""}>Ask (a Resume button on AI agents)</option>
           <option value="auto" ${s.agent_resume === "auto" ? "selected" : ""}>Automatically</option>
@@ -657,6 +661,7 @@ export async function settingsDialog() {
       terminal_theme: form.terminal_theme.value,
       editor: form.editor.value,
       agent_resume: form.agent_resume.value,
+      recall_agent: form.recall_agent.value,
       font_family: form.font_family.value,
     });
     if (ok) {

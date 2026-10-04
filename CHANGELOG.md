@@ -29,6 +29,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Deterministic capture: agent tool calls (command + success, edited file) from hooks and people's shell commands become context events. Test runs set the project's Tests line, failures (not look-ups like grep) set Last error, and each agent run writes `.shelldeck/sessions/<id>.md` when it ends.
 - Fixed: a redacted value could corrupt a stored context event (secrets are now redacted per value before serializing).
 - Devin CLI: commands and flags cross-checked from web sources (slash commands `/compact /clear /new /model /context /resume /plan /revert /exit`, shell tool `exec` captured); its hooks are limited to the events Devin accepts.
+- Smart recall without embeddings: `sd recall --smart`, a Context page toggle and the `recall_agent` setting expand the query with an installed agent's smallest model (claude haiku, gemini flash-lite, codex/devin small tier) in its non-interactive mode. Only the query is sent; results are cached; it falls back to keywords.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

@@ -179,6 +179,13 @@
   path and hook events. Devin rejects unknown hook events, so a test now guards
   the installed set. Added its shell tool name `exec` for capture, and expanded
   and verified its slash commands. Running the real CLI is still blocked.
+- **2026-10-04 — Smart recall without embeddings (user decision):** the
+  `recall_agent` setting, `sd recall --smart` and a Context page toggle. An
+  installed agent's smallest model, in its own non-interactive mode, expands the
+  query into ≤8 keywords that are ORed into the FTS search. Token-lean: only the
+  query is sent, the reply is short, results are cached per (agent, query), and
+  it falls back to keywords. Checked live with the real Claude Code CLI: "auth"
+  -> authentication, oauth, token, ... found the OAuth fact in ~5 s, then cached.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

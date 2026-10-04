@@ -130,3 +130,17 @@ def test_deterministic_capture_and_session_file(home):
     assert "FAILED: uv run pytest -q" in text and "abc123" not in text
     context.record_activity(p, {"command": "uv run pytest -q", "ok": True})
     assert context.project_context(p)["state"]["tests"].startswith("passed")
+
+
+def test_recall_api_smart(client, tmp_path, monkeypatch):
+    from shelldeck import smart_recall
+    folder = tmp_path / "sm"
+    folder.mkdir()
+    client.post("/api/context/memory", json={"cwd": str(folder), "text": "Login uses OAuth"})
+    monkeypatch.setattr(smart_recall, "pick", lambda s: "claude" if s in ("auto", "claude") else None)
+    monkeypatch.setattr(smart_recall, "expand", lambda q, agent: ["oauth"])
+    plain = client.get("/api/context/recall", params={"q": "auth"}).json()
+    assert plain["results"] == [] and plain["expanded"] == [] and plain["agent"] is None
+    smart = client.get("/api/context/recall", params={"q": "auth", "smart": True}).json()
+    assert smart["agent"] == "claude" and smart["expanded"] == ["oauth"] and smart["results"][0]["snippet"] == "Login uses OAuth"
+    assert client.put("/api/settings", json={"recall_agent": "nope"}).status_code == 400

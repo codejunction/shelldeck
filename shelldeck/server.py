@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_commands, detection
+from . import agent_commands, detection, smart_recall
 from . import agent_state as lifecycle
 from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
 from . import scheduler as sched
@@ -57,7 +57,8 @@ SETTINGS_DEFAULTS = {
     "terminal_theme": "default",
     "font_family": "",
     "editor": "vscode",
-    "agent_resume": "ask",  # never | ask | auto: start a stored agent session again when its terminal comes back
+    "agent_resume": "ask",
+    "recall_agent": "off",  # off | auto | claude | codex | gemini | devin: whose small model widens `sd recall --smart`  # never | ask | auto: start a stored agent session again when its terminal comes back
 }
 # keep in sync with TERMINAL_THEMES in static/app.js
 TERMINAL_THEMES = ("default", "dracula", "one-dark", "nord", "gruvbox-dark", "solarized-dark", "solarized-light", "github-light")
@@ -798,6 +799,8 @@ async def write_settings(payload: dict):
             return err("invalid_editor")
         if key == "agent_resume" and value not in ("never", "ask", "auto"):
             return err("invalid_agent_resume")
+        if key == "recall_agent" and value not in ("off", "auto", *smart_recall.PRIORITY):
+            return err("invalid_recall_agent")
     for key, value in payload.items():
         db.set_setting(key, str(value).strip())
     return get_settings()
@@ -2012,10 +2015,14 @@ async def update_state(payload: dict):
 
 
 @app.get("/api/context/recall")
-async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10):
+async def recall(q: str, cwd: str = "", project: str = "", session_id: str = "", limit: int = 10, smart: bool = False):
+    """Keyword search; with smart (or the recall_agent setting) an agent's small model adds related keywords first."""
     p = await _ctx(_ctx_project, {"cwd": cwd, "project": project, "session_id": session_id})
     p = p if isinstance(p, dict) else None
-    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)))}
+    setting = get_settings().get("recall_agent", "off")
+    agent = smart_recall.pick(setting if setting != "off" else ("auto" if smart else "off"))
+    extra = await asyncio.to_thread(smart_recall.expand, q, agent) if agent else []
+    return {"results": await _ctx(context.recall, q, p, max(1, min(limit, 50)), True, extra), "expanded": extra, "agent": agent}
 
 
 @app.post("/api/context/knowledge/{knowledge_id}/status")

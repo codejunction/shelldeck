@@ -39,6 +39,7 @@ export async function renderContext(el) {
       (<code>context.db</code>); secrets are removed before anything is saved. Agents use <code>sd context</code>, <code>sd recall</code>, <code>sd remember</code>.</p></div>
       ${names.length ? `<label class="muted">Project <select data-ctx-project>${names.map((n) => `<option ${n === selected ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>` : ""}</div>
     <form class="card ctx-search" data-form="recall"><input name="q" placeholder="Search every project's knowledge and decisions, e.g. authentication" aria-label="Search context" />
+      <label class="muted small" title="An installed agent's smallest model adds related keywords first (a few tokens per new query; cached)"><input type="checkbox" name="smart" /> smart</label>
       <button class="btn">${icon("search")}Search</button></form>
     <div class="ctx-results"></div>
     ${body}`;
@@ -113,7 +114,7 @@ async function onSubmit(e, el) {
   const f = Object.fromEntries(new FormData(form).entries());
   const where = { project: selected };
   try {
-    if (form.dataset.form === "recall") return showResults(el, f.q);
+    if (form.dataset.form === "recall") return showResults(el, f.q, !!f.smart);
     if (form.dataset.form === "state") await api("/api/context/state", { method: "POST", body: { ...where, ...f } });
     if (form.dataset.form === "remember") {
       if (!f.text.trim()) return;
@@ -131,16 +132,17 @@ async function onSubmit(e, el) {
   }
 }
 
-async function showResults(el, q) {
+async function showResults(el, q, smart = false) {
   const box = $(".ctx-results", el);
   if (!q.trim()) {
     box.innerHTML = "";
     return;
   }
-  const { results } = await api(`/api/context/recall?q=${encodeURIComponent(q)}&project=${encodeURIComponent(selected || "")}`);
+  const { results, expanded, agent } = await api(`/api/context/recall?q=${encodeURIComponent(q)}&project=${encodeURIComponent(selected || "")}${smart ? "&smart=true" : ""}`);
+  const also = expanded?.length ? `<p class="faint small">Also searched (${esc(agent)}): ${expanded.map(esc).join(", ")}</p>` : smart ? `<p class="faint small">No agent available for smart search: keywords only.</p>` : "";
   box.innerHTML = results.length
-    ? `<div class="card"><p class="faint small">Reference material, best match first, with its project and source files: check the sources and adapt, don't copy.</p><ul class="ctx-list">${results
+    ? `<div class="card">${also}<p class="faint small">Reference material, best match first, with its project and source files: check the sources and adapt, don't copy.</p><ul class="ctx-list">${results
         .map((r) => `<li><b>${esc(r.project || "")}</b> · ${esc(r.title)} <span class="faint small">(${esc(r.type)}, relevance ${r.relevance}${r.status === "STALE" ? ", stale" : ""})</span><br>${esc(r.snippet)}${r.sources.length ? `<br><span class="faint small">from ${r.sources.map(esc).join(", ")}</span>` : ""}</li>`)
         .join("")}</ul></div>`
-    : `<div class="card faint">Nothing found for ${esc(q)}.</div>`;
+    : `<div class="card faint">${also}Nothing found for ${esc(q)}.</div>`;
 }
