@@ -204,6 +204,14 @@ class Registry:
         if meta is not None and meta != DisplayMetadata():
             self.meta.setdefault(sid, {})[report.source] = (meta, report.expires_at)
 
+    def put_heuristic(self, sid: str, report: Report) -> None:
+        """The screen check's latest verdict replaces its previous one (heuristic:screen vs heuristic:activity), or a stale
+        question could outlive the answer: with Windows' ~16ms clock both can carry the same timestamp."""
+        live = self.reports.setdefault(sid, {})
+        for key in [k for k in live if k.startswith("heuristic:")]:
+            del live[key]
+        live[report.source] = report
+
     def status(self, sid: str, now: float | None = None) -> Status:
         t = monotonic() if now is None else now
         live = {k: r for k, r in self.reports.get(sid, {}).items() if not r.expired(t)}

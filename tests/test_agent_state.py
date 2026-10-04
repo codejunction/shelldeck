@@ -74,3 +74,10 @@ def test_registry_falls_back_when_integration_expires_and_metadata_is_presentati
     st = reg.status("t", 6)  # integration expired: the screen heuristic decides again
     assert (st.state, st.blocked_reason) == (State.BLOCKED, "approval")
     assert reg.metadata("t", 6) == DisplayMetadata()
+
+
+def test_heuristic_verdict_replaces_the_previous_one_even_with_equal_timestamps():
+    reg = Registry()
+    reg.put_heuristic("t", heuristic("approval", 5))
+    reg.put_heuristic("t", heuristic("idle", 5))  # same clock tick, as on Windows
+    assert reg.status("t", 5).state is State.IDLE

@@ -155,6 +155,10 @@
 - **2026-10-04 — Support matrix:** docs/agent-integrations.md lists each
   installable agent's tier, method, exact-state and resume support, and what
   its format was verified against; the CHANGELOG links to it.
+- **2026-10-04 — Windows CI fix (0.0.7rc1 run):** a stale `heuristic:screen`
+  blocked report could outlive the next `heuristic:activity` verdict when both
+  had the same timestamp (Windows' ~16ms monotonic clock). `Registry.put_heuristic`
+  now replaces the previous heuristic verdict.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

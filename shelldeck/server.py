@@ -1540,7 +1540,7 @@ async def _check_agents() -> None:
             reports.forget(sid)
         was = agent_state.get(sid, "idle")
         agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
-        reports.put(sid, lifecycle.heuristic(agent_state[sid], now))
+        reports.put_heuristic(sid, lifecycle.heuristic(agent_state[sid], now))
         if (nat := natives.get(sid)) and (rep := lifecycle.native_report(key, nat, now)):
             reports.put(sid, rep)
         if nat and nat.get("session_id") and native_seen.get(sid) != nat["session_id"]:
