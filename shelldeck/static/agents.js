@@ -181,7 +181,8 @@ function commandMenu(r) {
   const cmds = (COMMANDS[r.agent] || []).filter((c) => !c.takes_arg);
   if (!cmds.length) return "";
   const opts = cmds.map((c) => `<option value="${c.action}">${esc(c.action)} (${esc(c.command)})${c.verified ? "" : " ?"}</option>`).join("");
-  return `<button class="btn sm" data-message="${r.session_id}" title="Send a prompt (refused while it waits on a question)">Message</button>
+  return `<button class="btn sm" data-extract="${r.session_id}" title="Ask it to save what it learned to project memory (one short prompt)">Extract facts</button>
+    <button class="btn sm" data-message="${r.session_id}" title="Send a prompt (refused while it waits on a question)">Message</button>
     <select class="sm" data-agent-cmd="${r.session_id}" aria-label="Run a ${esc(r.label)} command"><option value="">Command…</option>${opts}</select>`;
 }
 
@@ -203,6 +204,18 @@ async function onCommand(e, el) {
 
 async function onClick(e, el) {
   if (e.target.closest("select")) return; // the command menu, not "open terminal"
+  const ex = e.target.closest("[data-extract]")?.dataset.extract;
+  if (ex) {
+    try {
+      await api(`/api/sessions/${ex}/extract`, { method: "POST" });
+      toast({ title: "Asked it to save its facts", body: "They appear on the Context page." });
+    } catch (err) {
+      const busy = ["agent_blocked", "agent_working"].find((k) => String(err?.message || err).includes(k));
+      if (busy) toast({ title: "Not sent", body: busy === "agent_blocked" ? "It is waiting on a question: answer that first." : "It is busy: try when it finishes.", kind: "warn" });
+      else toastError(err);
+    }
+    return;
+  }
   const msgTo = e.target.closest("[data-message]")?.dataset.message;
   if (msgTo) {
     const text = await promptDialog("Message the agent", "", { label: "Prompt", ok: "Send" });

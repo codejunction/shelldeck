@@ -1123,6 +1123,13 @@ def events_subscribe(
         raise typer.Exit(1) from None
 
 
+@agent_app.command("extract")
+def agent_extract(target: str = typer.Argument(..., help="Terminal nick, id or name running an agent.")):
+    """Ask the agent to save what it learned this session to project memory (one short prompt, on demand only)."""
+    r = _api(f"/api/sessions/{_session(target)['id']}/extract", "POST", {})
+    typer.echo(f"asked {r['agent']} to record its facts, decisions and state")
+
+
 @agent_app.command("explain")
 def agent_explain(
     target: str = typer.Argument("", help="Terminal nick, id or name."),
@@ -1332,15 +1339,16 @@ def _record(kind: str, text: str, type_: str, topic: str, files: list[str], proj
 
 @app.command()
 def remember(
-    fact: str = typer.Argument(..., help="A durable fact about this project (not a transient note)."),
+    facts: list[str] = typer.Argument(..., help="One or more durable facts (each quoted). Several in one call saves agent turns."),
     type_: str = typer.Option("note", "--type", help="architecture, api, database, convention, gotcha, pattern, ..."),
     topic: str = typer.Option("", "--topic"),
     file: list[str] = typer.Option(None, "--file", "-f", help="Source file it came from (relative; tracked for staleness)."),
     project: str = typer.Option("", "--project", "-p"),
     scope: str = typer.Option("PROJECT", "--scope", help="PROJECT or GLOBAL."),
 ):
-    """Add a fact to project memory (secrets are redacted; the same fact is merged, not duplicated)."""
-    _record("remember", fact, type_, topic, file, project, scope)
+    """Add facts to project memory (secrets are redacted; the same fact is merged, not duplicated)."""
+    for fact in facts:
+        _record("remember", fact, type_, topic, file, project, scope)
 
 
 @app.command()

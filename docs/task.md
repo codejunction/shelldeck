@@ -145,6 +145,13 @@
   now teaches agent prompt/cmd/wait/switch. Claude hook events were checked
   against Claude Code 2.1.289's bundle: `StopFailure` doesn't exist there and was
   removed. Checked live.
+- **2026-10-04 — Fact extraction by the agents (user decision, the token-lean
+  option):** no LLM in shelldeck. `POST /api/sessions/{id}/extract`,
+  `sd agent extract` and an *Extract facts* button send one short prompt, on
+  demand only and refused while working or blocked. The prompt tells the agent
+  that dedup and redaction happen server-side, so it doesn't read memory first;
+  `sd remember` takes several facts per call. Checked live (multi-fact save,
+  near-duplicate merged).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -458,7 +465,7 @@ at checkpoints; sensitive files are excluded.
 
 ### Task 5.7: Background processing and performance
 
-- [~] Add background worker infrastructure for knowledge extraction (Markdown projection and context calls run off the event loop; no LLM extraction or embeddings yet),
+- [x] Add background worker infrastructure for knowledge extraction (Markdown projection and context calls run off the event loop; extraction is done by the agents on demand, no LLM in shelldeck),
   embedding generation, Markdown projection, event compaction, stale
   detection, and indexing (section 56).
 - [x] Ensure agent terminal interaction never blocks on context processing

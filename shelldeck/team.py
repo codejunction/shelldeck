@@ -176,7 +176,7 @@ At startup run `sd context`: it shows the active task, current state and next ac
 decisions, your open hand-off and recent events. Continue from the next action instead of starting over.
 - `sd recall "query"` searches knowledge and decisions from every project (e.g. "auth like acme-web").
   Treat results as reference: read the source files and adapt; never copy secrets or code blindly.
-- `sd remember "fact" [--type architecture|api|convention|gotcha|...] [--file path]` and
+- `sd remember "fact" ["fact" ...] [--type architecture|api|convention|gotcha|...] [--file path]` (several in one call) and
   `sd discover "finding" --file path` store durable facts (not chat). `sd decide "decision" -r "reason"`
   records a settled decision; check `sd memory` first so you don't duplicate one.
 - `sd task update [IN_PROGRESS|BLOCKED|DONE] --task "..." --step "..." --next "..." --tests "..." --error "..."`

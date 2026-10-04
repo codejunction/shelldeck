@@ -1616,6 +1616,31 @@ async def agent_command(session_id: str, payload: dict):
     return {"agent": key, "typed": text}
 
 
+# One turn, few tool calls: duplicates and secrets are handled server-side, so the agent needn't read memory first,
+# and sd remember takes several facts at once. ponytail: wording tuned for brevity, not per agent.
+EXTRACT_PROMPT = ("[shelldeck] Save what you learned this session to project memory, briefly: "
+                  'sd remember "fact" "fact" ... (durable facts only, add --file for sources), '
+                  'sd decide "decision" -r "reason" for settled choices, and '
+                  'sd task update --step "..." --next "..." for where things stand. '
+                  "Duplicates are merged and secrets removed automatically, so don't read memory first. Then stop.")
+
+
+@app.post("/api/sessions/{session_id}/extract")
+async def extract_facts(session_id: str):
+    """On demand only: one prompt asking the agent to record its own session knowledge (no model runs in shelldeck).
+    Refused while the agent is blocked or working, like any prompt."""
+    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    if not key:
+        return err("no_agent_running", 409)
+    state = (agent_status.get(session_id) or {}).get("state")
+    if state in ("blocked", "working"):
+        return err(f"agent_{state}", 409)
+    if not await _type(session_id, EXTRACT_PROMPT):
+        return err("not_running", 409)
+    _emit("agent.command", {"session_id": session_id, "agent": key, "command": "extract"})
+    return {"agent": key}
+
+
 @app.post("/api/agent-prompt")
 async def agent_prompt(payload: dict):
     """Type a prompt into an agent and, with `wait`, block until it reaches `until` in a state that began after the

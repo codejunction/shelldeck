@@ -1173,3 +1173,21 @@ def test_native_agent_commands(client, monkeypatch):
     assert client.post("/api/sessions/tc/agent-command", json={"command": "compact", "force": True}).status_code == 200
     assert typed == ["/compress", "/compress"]
     server.agent_status.pop("tc", None)
+
+
+def test_extract_facts_prompt(client, monkeypatch):
+    typed = []
+
+    async def fake_type(sid, text, enter=True):
+        typed.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tx", ("codex", 1))
+    monkeypatch.setitem(server.agent_status, "tx", {"state": "working", "source": "integration", "reason": None, "detail": None})
+    assert client.post("/api/sessions/tx/extract").json()["error"] == "agent_working"  # no prompt mid-turn
+    server.agent_status["tx"] = {**server.agent_status["tx"], "state": "done"}
+    assert client.post("/api/sessions/tx/extract").json()["agent"] == "codex"
+    assert len(typed) == 1 and "sd remember" in typed[0] and "don't read memory first" in typed[0]
+    assert len(server.EXTRACT_PROMPT) < 420  # one short turn
+    server.agent_status.pop("tx", None)
