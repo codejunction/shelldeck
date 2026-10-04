@@ -51,6 +51,12 @@ AGENTS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]]
 }
 # Approval menus and questions of Claude Code, Codex and Devin (strings from their binaries), plus [y/n].
 # Keep in sync with QUESTION_RE in static/app.js.
+def question_rule(text: str) -> str | None:
+    """Which built-in prompt phrase QUESTION matched (a fixed phrase from the agents' binaries, not screen content)."""
+    found = list(QUESTION.finditer(text))
+    return found[-1].group(0).lower()[:40] if found else None
+
+
 QUESTION = re.compile(
     r"do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:proceed|run|make|grant|continue)"
     r"|yes, allow once|yes, and don't ask|allow (?:once|for this session)|do you trust the files|yes, i trust"

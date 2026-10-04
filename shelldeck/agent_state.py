@@ -254,3 +254,14 @@ def native_report(agent: str, found: dict, now: float | None = None) -> Report |
     t = monotonic() if now is None else now
     source = f"native:{agent}"
     return Report(source, Status(State(state), source=source), t + hold - age, t - age)
+
+
+def explain(reports: dict[str, Report], now: float | None = None) -> list[dict]:
+    """Every report for a terminal, highest authority first, with age, time left and whether it decides the state."""
+    t = monotonic() if now is None else now
+    live = [r for r in reports.values() if not r.expired(t)]
+    winner = max(live, key=lambda r: (SOURCE_PRIORITY.get(r.category, 0), r.reported_at)) if live else None
+    rows = sorted(reports.values(), key=lambda r: (-SOURCE_PRIORITY.get(r.category, 0), -r.reported_at))
+    return [{"source": r.source, "priority": SOURCE_PRIORITY.get(r.category, 0), "state": str(r.status.state),
+             "reason": r.status.blocked_reason, "age_s": round(t - r.reported_at, 1), "expires_in_s": round(r.expires_at - t, 1),
+             "expired": r.expired(t), "decides": r is winner} for r in rows]

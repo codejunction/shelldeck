@@ -98,6 +98,12 @@
   an *Open next* banner across projects, done-until-seen, and the current state
   sent to newly opened tabs. Checked in a browser with a real blocked agent
   (sidebar "needs you", banner, toast).
+- **2026-10-04 — Task 7.2 complete:** `GET /api/agent-explain/{sid}` and
+  `sd agent explain TARGET|--file F [--json]`. It shows the process generation,
+  every report (decides / expired / age / time left), the heuristic inputs
+  (quiet, burst, matched built-in question phrase) and integration/stored-session
+  status, with a hint to install the integration when the screen decides. It
+  never returns screen text or native ids. Checked live.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -481,10 +487,10 @@ one click, including across projects.
 
 ### Task 7.2: Explain diagnostics
 
-- [ ] Add `sd agent explain TARGET` and JSON/file variants.
-- [ ] Show process identity, active authority, report age, manifest source and
+- [x] Add `sd agent explain TARGET` and JSON/file variants.
+- [x] Show process identity, active authority, report age, manifest source and
   version, matched rule, and fallback reason.
-- [ ] Redact raw screen output by default.
+- [x] Redact raw screen output by default.
 
 **Done when:** maintainers can determine why a state was selected without adding
 temporary logging or exposing private terminal content.

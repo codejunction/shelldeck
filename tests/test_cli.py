@@ -205,3 +205,15 @@ def test_close_only_own_sub_agents(monkeypatch):
     assert ("DELETE", "/api/sessions/kid1") in calls
     monkeypatch.delenv("SHELLDECK_SESSION_ID")  # the user, outside shelldeck: any terminal
     assert runner.invoke(cli.app, ["close", "Omar"]).output.strip() == "closed Omar"
+
+
+def test_agent_explain_file(tmp_path):
+    from typer.testing import CliRunner
+
+    from shelldeck import cli
+    f = tmp_path / "screen.txt"
+    f.write_text("my password is hunter2\nAllow once?  Yes, allow once\n")
+    out = CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output
+    assert "blocked" in out and "yes, allow once" in out and "hunter2" not in out
+    f.write_text("all good\n")
+    assert "no question found" in CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output

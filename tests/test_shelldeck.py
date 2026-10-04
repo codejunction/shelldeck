@@ -1,3 +1,4 @@
+import json
 import asyncio
 import sys
 import time
@@ -1035,3 +1036,28 @@ def test_session_only_report_stores_native_session_without_claiming_state(client
     assert client.post("/api/agent-reports", json={"source": "integration:qwen", "agent": "qwen"},
                        headers={"X-Shelldeck-Report-Token": "tok-q"}).json()["error"] == "invalid_state"
     server.agent_status.pop(sid, None)
+
+
+def test_agent_explain(client, monkeypatch, tmp_path):
+    from shelldeck import agent_state as lifecycle
+    work = tmp_path / "x"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    assert "no agent process" in client.get(f"/api/agent-explain/{sid}").json()["why"]
+    monkeypatch.setitem(server.agent_kind, sid, ("claude", 2))
+    now = time.monotonic()
+    server.reports.put(sid, lifecycle.heuristic("approval", now))
+    server.burst[sid] = "secret token abc\r\n Do you want to proceed?"
+    out = client.get(f"/api/agent-explain/{sid}").json()
+    assert out["reports"][0]["decides"] and out["reports"][0]["source"] == "heuristic:screen"
+    assert "sd integration install claude" in out["why"] and out["integration"]["tier"] == "priority"
+    assert out["heuristic"]["question_rule"] == "do you want to proceed"
+    assert "secret" not in json.dumps(out)  # never screen text
+    r, _, _ = lifecycle.parse_report({"source": "integration:claude", "agent": "claude", "state": "working"}, "claude")
+    server.reports.put(sid, r)
+    out = client.get(f"/api/agent-explain/{sid}").json()
+    assert out["why"].startswith("integration:claude decides") and [x["decides"] for x in out["reports"]] == [True, False]
+    assert client.get("/api/agent-explain/nope").status_code == 404
+    server.reports.forget(sid)
+    server.burst.pop(sid, None)

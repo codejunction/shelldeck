@@ -1558,6 +1558,41 @@ async def agent_status_all(target: str = ""):
     return {"agents": rows}
 
 
+@app.get("/api/agent-explain/{session_id}")
+async def agent_explain(session_id: str):
+    """Why a terminal's agent has its state: process, every report and which one decides, the screen heuristic's
+    inputs, integration and stored session. Never raw screen text or native session ids."""
+    s = db.get_session(session_id)
+    if not s:
+        return err("session_not_found", 404)
+    key, gen = agent_kind.get(session_id, (None, None))
+    now = time.monotonic()
+    text = _plain(burst.get(session_id, ""))
+    rule = agents.question_rule(RELAYED.sub("", text)[-6000:])
+    stored = await asyncio.to_thread(db.get_agent_session, session_id)
+    integ = integrations.status(key) if key in integrations.INSTALLERS else {"status": "unsupported"}
+    rows = lifecycle.explain(reports.reports.get(session_id, {}), now)
+    status = agent_status.get(session_id)
+    if not key:
+        why = "no agent process detected in this terminal"
+    elif not rows or not any(r["decides"] for r in rows):
+        why = "no live report: state unknown"
+    else:
+        win = next(r for r in rows if r["decides"])
+        why = f"{win['source']} decides (highest live priority {win['priority']})"
+        if win["source"].startswith("heuristic") and integ["status"] != "installed" and key in integrations.INSTALLERS:
+            why += f"; install the {key} integration for exact state (sd integration install {key})"
+    return {
+        "session_id": session_id, "nick": s.get("nick"), "agent": key, "generation": gen, "status": status, "why": why,
+        "reports": rows,
+        "heuristic": {"quiet_s": round(now - out_at[session_id], 1) if session_id in out_at else None,
+                      "burst_s": round(now - busy_since[session_id], 1) if session_id in busy_since else None,
+                      "question_rule": rule, "legacy_state": agent_state.get(session_id)},
+        "integration": {"status": integ["status"], "tier": "priority" if key in integrations.PRIORITY else "later" if key else None},
+        "stored_session": {"source": stored["source"], "last_state": stored["last_state"]} if stored else None,
+    }
+
+
 WAIT_STATES = {"idle", "working", "blocked", "done", "exited"}
 
 

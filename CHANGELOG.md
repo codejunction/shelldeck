@@ -17,6 +17,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Integrations for Kimi Code (TOML block), MastraCode, Kilo Code (plugin), Grok, Antigravity CLI, Letta Code and Hermes Agent (session id), and extensions for Pi and OMP, following herdr's formats: 19 agents in all.
 - Priority integrations: Claude Code, Codex, Gemini CLI and Devin CLI (exact state + resume) are the supported set and the default install. Devin now reports its state from its hooks, and its session comes from `sessions.db` when a hook has no id. Gemini resumes with `gemini --resume <id>`. The other 15 integrations are marked preview.
 - Attention: project rollups in the sidebar (needs you > working > done), agents sorted by urgency with elapsed time, *Open next*, and done-until-seen. Tabs that open later get the current agent states over the alarm socket.
+- `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

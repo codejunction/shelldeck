@@ -32,6 +32,18 @@ sd agent wait TERMINAL --until idle [--until blocked] [--timeout 10m] [--json]  
 sd agent report working --source custom:mytool --agent codex [--reason R] [--title T] [--label L] [--ttl-ms 30000]
 ```
 
+## Diagnostics
+
+`sd agent explain TERMINAL` (`GET /api/agent-explain/{session_id}`) shows:
+
+- the detected agent and its process generation;
+- every report, highest authority first, with its age and time left, and which one decides;
+- the screen heuristic's inputs: how long the screen has been quiet, how long the current output burst has run, and which built-in question phrase matched;
+- the integration's install status and tier, and whether a native session is stored.
+
+It never returns screen text or native session ids. `sd agent explain --file screen.txt` checks saved screen text
+against the question rules locally.
+
 ## API
 
 - `GET /api/agent-status[?target=<sid>]` returns `{agents: [{session_id, agent, generation, state, source, reason, detail, meta?}]}`.

@@ -1023,6 +1023,40 @@ def agent_wait(
     raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
 
 
+@agent_app.command("explain")
+def agent_explain(
+    target: str = typer.Argument("", help="Terminal nick, id or name."),
+    file: Path = typer.Option(None, "--file", "-f", exists=True, dir_okay=False, help="Check saved screen text against the question rules instead."),
+    json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Why an agent has its state: which source decides, report ages, heuristic inputs. No screen text is shown."""
+    if file:
+        from . import agents as agents_mod
+
+        rule = agents_mod.question_rule(file.read_text(encoding="utf-8", errors="replace")[-6000:])
+        out = {"question_rule": rule, "state": "blocked (approval)" if rule else "no question found"}
+        typer.echo(json.dumps(out, indent=2) if json_ else f"{out['state']}" + (f": matched {rule!r}" if rule else ""))
+        return
+    if not target:
+        typer.echo("usage: sd agent explain TERMINAL  (or --file screen.txt)", err=True)
+        raise typer.Exit(1)
+    out = _api(f"/api/agent-explain/{_session(target)['id']}")
+    if json_:
+        typer.echo(json.dumps(out, indent=2))
+        return
+    st = out.get("status") or {}
+    typer.echo(f"{out['nick'] or out['session_id']}: {out['agent'] or 'no agent'}  state={st.get('state', 'unknown')}"
+               + (f" ({st['reason']})" if st.get("reason") else ""))
+    typer.echo(f"why: {out['why']}")
+    for r in out["reports"]:
+        mark = "->" if r["decides"] else ("x " if r["expired"] else "  ")
+        typer.echo(f" {mark} {r['source']:<22} {r['state']:<8} age {r['age_s']}s, {'expired' if r['expired'] else f'{r['expires_in_s']}s left'}")
+    h = out["heuristic"]
+    typer.echo(f"screen: quiet {h['quiet_s']}s, burst {h['burst_s']}s, question rule: {h['question_rule'] or 'none'}")
+    typer.echo(f"integration: {out['integration']['status'].replace('_', ' ')}" + (f" ({out['integration']['tier']})" if out["integration"]["tier"] else "")
+               + f"; stored session: {'yes (' + out['stored_session']['source'] + ')' if out['stored_session'] else 'no'}")
+
+
 @agent_app.command("resume")
 def agent_resume(target: str = typer.Argument("", help="Terminal nick, id or name (default: list resumable sessions).")):
     """Start a terminal's stored agent session again (e.g. `claude --resume <id>` after a restart)."""
