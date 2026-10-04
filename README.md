@@ -97,6 +97,8 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Agents that talk to each other.** From inside a terminal, `sd agents` lists the other agents in the project, `sd peek` reads another terminal's screen and `sd tell` types a message into it, tagged with the sender so it can reply. *Copy team prompt* on the AI agents page gives you text to paste into each agent so it knows how.
 - **Sub-agents and hand-offs.** `sd spawn "task" --model small|medium|large` opens a new terminal in the project with a sub-agent (Claude Code, Codex, Devin, Gemini, Qwen or opencode) already working on the task, picking a cheaper or stronger model by how hard the task is (`auto` guesses). It opens next to yours without taking the keyboard. `sd handoff Maya "task"` gives a task to an agent that is already running. The receiver runs `sd done <id> "summary"`, and the sender gets the summary typed in (when an agent runs there) plus a toast and chime. Every hand-off is written to the project's `.shelldeck/handoff.md` (git-ignored) and listed on the AI agents page. Sub-agents can't spawn more agents, and a terminal that closes mid-task marks its hand-off as exited.
 - **The parent is the control center.** A sub-agent never alerts you. When one stops on a question or permission prompt, shelldeck types the question into its parent agent's terminal; the parent decides and answers with `sd answer Maya 1` (keys for the menu) or `sd tell`. Only when the parent is a plain shell does the question come to you. Once a sub-agent's work is done, the parent asks you and closes it with `sd close Maya`, or use *Close* on the hand-off toast.
+- **One status, owned by the server.** Each agent terminal is `idle`, `working`, `blocked` (with a reason such as approval or question), `done` or `exited`. Every tab and the CLI see the same value, and the AI agents page shows where it came from: an integration report or screen/activity detection. `sd agent status` prints it. `sd agent wait Maya --until idle --timeout 10m` blocks until the agent gets there; it exits 2 on timeout and 3 if the agent exits or a different agent takes the terminal. Integrations report state with `sd agent report` (see [docs/agent-automation.md](docs/agent-automation.md)).
+- **Context that outlives the agent.** Each project keeps a task, its current state and next action, memory (facts and discoveries), decisions and recent events in a local database (`context.db` next to the shelldeck config). The same context is written as Markdown to `.shelldeck/STATE.md`, `TASK.md`, `MEMORY.md` and `DECISIONS.md`. A new agent runs `sd context` and continues where the last one stopped. `sd recall "auth architecture"` searches knowledge from every project, with its source project and files. Secrets are redacted before anything is stored, `.env`/key files are never referenced, and knowledge whose source files changed is marked stale. Hand-off files include a context snapshot. All of it stays on this machine.
 - **Agents know the commands.** On start, shelldeck installs a `shelldeck` skill for every agent CLI on PATH: a skill for Claude Code, Codex and Devin, and a marked block in the global instructions file of Gemini, opencode, Qwen, Amp, Droid, Copilot, Crush, Goose and Kiro. `sd install-skill --remove` takes it out and stops the reinstall; the AI agents page has an *Install skill* button per agent.
 
 <img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/agents.png" alt="AI agents page: four named agents with their tool, model and project, two finished hand-offs with their results, and the available agent CLIs" width="100%">
@@ -185,6 +187,18 @@ sd done ID ["SUMMARY"] [--failed]    close a hand-off you were given; the sender
 sd answer TERMINAL KEY...            press keys in another terminal, e.g. answer a sub-agent's prompt: 1, y enter, esc
 sd close TERMINAL [--force]          close a terminal; from an agent only its own sub-agents (after you agree)
 sd handoffs [--all]                  hand-offs in this project and their status
+sd agent status [TERMINAL] [--json]  lifecycle state (idle/working/blocked/done/exited) and its source
+sd agent wait TERMINAL --until STATE [--timeout 10m]   block until an agent reaches a state
+sd agent report STATE --source S --agent A   report state from an integration inside a terminal
+sd context [PROJECT] [-q QUERY]      task, state, next action, memory, decisions, hand-off, git, events
+sd resume                            this project's unfinished task and where to pick it up
+sd recall QUERY                      search knowledge and decisions across every project
+sd memory [search QUERY]             this project's memory and decisions
+sd remember FACT / sd discover FINDING [--type T] [--file F]   add to project memory
+sd decide TITLE [-r REASON]          record a settled decision (sd decisions lists them)
+sd task update [STATUS] [--task --step --next --tests --error]   update the active task and state
+sd knowledge verify ID [--status S]  mark knowledge VERIFIED, REVIEWED, STALE or INVALIDATED
+sd projects / sd project NAME / sd relate PROJECT   known projects, one project, link related projects
 sd install-skill [AGENT...] [--remove]   teach agent CLIs the sd team commands (automatic on server start)
 sd edit FILE / sd view FILE          open a file in shelldeck's editor / viewer
 sd search QUERY [--root DIR]         LLM-free code search with ranked, highlighted snippets
@@ -201,7 +215,7 @@ sd reset-password                    emergency: forget the password (host only)
 - **Startup banner.** `sd` prints the version and the Local and Network URLs. When you start it from Win+R, the Start menu or a shortcut, its window stays open until you press Enter.
 - **Port.** The default port is `5455`. Change it with `--port` or `SHELLDECK_PORT`.
 - **Browser.** `--app` opens a chromeless Edge/Chrome window instead of a browser tab.
-- **Inside terminals.** Inside a shelldeck terminal, `SHELLDECK_SESSION_ID`, `SHELLDECK_NICK` (its name) and `SHELLDECK_PORT` are set, and `SHELLDECK_PARENT` in a sub-agent's terminal.
+- **Inside terminals.** Inside a shelldeck terminal, `SHELLDECK_SESSION_ID`, `SHELLDECK_NICK` (its name) and `SHELLDECK_PORT` are set, plus `SHELLDECK_AGENT_REPORT_TOKEN` (a per-terminal secret for integration reports), and `SHELLDECK_PARENT` in a sub-agent's terminal.
 - **Agent permissions.** Claude Code asks before running `sd done` and friends. To let sub-agents report back on their own, allow `Bash(sd:*)` in your Claude Code permissions.
 - **Code search.** `sd search` builds a persistent index and returns ranked snippets with confidence scores. Useful options: `--ext py,ts`, `--glob "src/*"`, `--top N`, `--format text|json|paths` and `--reindex`.
 

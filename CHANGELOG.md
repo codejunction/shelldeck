@@ -2,6 +2,16 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Server-owned agent lifecycle: `idle`, `working`, `blocked` (with a reason), `done` and `exited`. An integration report outranks screen/activity detection, and when it expires the server falls back to detection again. The AI agents page shows each agent's state and its source. Needs-you push alerts fire only when an agent becomes blocked.
+- `POST /api/agent-reports`: integration reports tied to one terminal by its `SHELLDECK_AGENT_REPORT_TOKEN`, with validated state, TTL, display metadata and resume argv. Validated native agent sessions are stored in the new `agent_sessions` table.
+- `sd agent status`, `sd agent wait` (event-driven; a replacement agent process never satisfies an old wait) and `sd agent report`.
+- Persistent agent context (`context.db`): per-project task, state, memory, decisions, events and relationships, with FTS5 search across projects, secret redaction, stale-source detection, a context budget and Markdown projections in `.shelldeck/`. Commands: `sd context`, `resume`, `recall`, `memory`, `remember`, `discover`, `decide`, `decisions`, `task update`, `knowledge verify`, `projects`, `project` and `relate`.
+- Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
+
 ## [0.0.6] - 2026-10-01
 
 ### Added
@@ -105,6 +115,7 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.6...HEAD
 [0.0.6]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.6
 [0.0.5]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.5
 [0.0.4]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.4

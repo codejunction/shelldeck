@@ -36,6 +36,9 @@
   startup/during-work/pre-stop context workflow (`sd context`, `recall`,
   `remember`, `discover`, `decide`, `task update`, `agent status/wait`)
   without exposing the database.
+- **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
+  `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
+  lifecycle, report API, waits and context commands.
 
 The authoritative design is [AGENT_ENHANCEMENT.md](AGENT_ENHANCEMENT.md). This
 file is the execution checklist for breaking that design into reviewable,
@@ -414,7 +417,7 @@ temporary logging or exposing private terminal content.
 - [ ] Verify UI state text/icons with keyboard navigation and a screen reader.
 - [ ] Update `README.md`, `CLAUDE.md`, `CHANGELOG.md`, and the dedicated agent
   integration/automation/detection docs described in the design spec.
-- [ ] Document knowledge system, cross-project retrieval, and context CLI.
+- [x] Document knowledge system, cross-project retrieval, and context CLI.
 - [ ] Add release notes that list exact supported integrations and clearly state
   whether each supports detection, authoritative lifecycle state, and native
   restore.

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/codejunction/shelldeck/docs/agent-report.schema.json",
+  "title": "Shelldeck agent report v1",
+  "type": "object",
+  "required": ["source", "agent", "state"],
+  "properties": {
+    "session_id": {"type": "string", "description": "Optional; must equal the terminal bound to the report token."},
+    "source": {"type": "string", "pattern": "^(integration|custom|native|manifest):[a-z0-9_.-]{1,40}$"},
+    "agent": {"type": "string", "description": "Must match the agent process detected in the terminal."},
+    "state": {"enum": ["unknown", "idle", "working", "blocked", "done", "exited"]},
+    "blocked_reason": {"enum": [null, "approval", "question", "authentication", "tool_error", "external_wait", "unknown"]},
+    "detail": {"type": ["string", "null"], "maxLength": 120},
+    "agent_session_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "resume_argv": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"},
+                    "description": "argv[0] is the agent's bare executable name; no paths or control characters; 1024 bytes total."},
+    "metadata": {
+      "type": ["object", "null"],
+      "properties": {
+        "title": {"type": "string", "maxLength": 120},
+        "display_agent": {"type": "string", "maxLength": 120},
+        "state_label": {"type": "string", "maxLength": 120},
+        "tokens": {"type": "object", "maxProperties": 8, "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{0,31}$"},
+                   "additionalProperties": {"type": ["string", "number"]}}
+      }
+    },
+    "ttl_ms": {"type": "integer", "exclusiveMinimum": 0, "description": "Capped at 120000; default 30000."}
+  },
+  "dependentRequired": {"resume_argv": ["agent_session_id"]}
+}
