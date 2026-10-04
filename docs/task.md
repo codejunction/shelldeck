@@ -646,3 +646,6 @@ context store and database schema.
 
 ## AGENT_ENHANCEMENT.md restructured
 - [x] Raw plan + appended spec rewritten as one design doc: goals, status table, lifecycle, integrations, launch/commands/resume, events, attention UI, context, security, testing, open work.
+
+## v0.0.7 release PR
+- [x] pyproject 0.0.7, uv lock, CHANGELOG [0.0.7] section.
