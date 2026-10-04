@@ -118,7 +118,7 @@ def one_line(text: str, limit: int = 2000) -> str:
 
 SKILL = """---
 name: shelldeck
-description: Work with other AI agents in shelldeck terminals. Use when SHELLDECK_SESSION_ID is set and the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent or terminal.
+description: Work with other AI agents in shelldeck terminals and keep shared project context. Use when SHELLDECK_SESSION_ID is set: at the start of work (sd context), when the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent, and before stopping.
 ---
 
 # shelldeck agent team
@@ -147,6 +147,20 @@ question (`sd peek <name>` for the full screen), decide, and answer with `sd ans
 Ask the user only when the decision is really theirs.
 When a sub-agent's hand-off is done and you checked its work, ask the user whether to close it, and run
 `sd close <name>` only after they agree (or when they tell you to close it).
+
+## Shared context (it outlives you; the next agent continues from it)
+
+At startup run `sd context`: it shows the active task, current state and next action, project memory,
+decisions, your open hand-off and recent events. Continue from the next action instead of starting over.
+- `sd recall "query"` searches knowledge and decisions from every project (e.g. "auth like acme-web").
+  Treat results as reference: read the source files and adapt; never copy secrets or code blindly.
+- `sd remember "fact" [--type architecture|api|convention|gotcha|...] [--file path]` and
+  `sd discover "finding" --file path` store durable facts (not chat). `sd decide "decision" -r "reason"`
+  records a settled decision; check `sd memory` first so you don't duplicate one.
+- `sd task update [IN_PROGRESS|BLOCKED|DONE] --task "..." --step "..." --next "..." --tests "..." --error "..."`
+  updates the task and state. Run it when the plan or step changes, after tests, and before you stop.
+- `sd agent status [name]` shows agent states; `sd agent wait <name> --until idle --timeout 10m` waits for one.
+Never put passwords, tokens or keys into these commands.
 
 Rules:
 - A sub-agent (`SHELLDECK_PARENT` is set) cannot spawn more agents, and asks its parent (`sd tell`), not the user.

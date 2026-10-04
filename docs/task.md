@@ -32,6 +32,10 @@
   get a context snapshot. CLI: `sd context|resume|recall|memory|remember|
   discover|decide|decisions|projects|project|relate`, `sd task update`, and
   `sd knowledge verify`.
+- **2026-10-04 — Task 5.5 complete:** the installed skill teaches the
+  startup/during-work/pre-stop context workflow (`sd context`, `recall`,
+  `remember`, `discover`, `decide`, `task update`, `agent status/wait`)
+  without exposing the database.
 
 The authoritative design is [AGENT_ENHANCEMENT.md](AGENT_ENHANCEMENT.md). This
 file is the execution checklist for breaking that design into reviewable,
@@ -289,7 +293,7 @@ content includes full context; agent commands are lightweight and usable.
 
 ### Task 5.5: Automatic agent skill extension
 
-- [ ] Extend the installed Shelldeck skill to teach agents the startup/
+- [x] Extend the installed Shelldeck skill to teach agents the startup/
   during-work/pre-stop workflow (section 35):
   - Startup: read context, check active task, check STATE, check MEMORY,
     check handoff, continue from next action.
@@ -297,7 +301,7 @@ content includes full context; agent commands are lightweight and usable.
     use `sd recall` when context missing.
   - Pre-stop: update STATE, summarize remaining work, record discoveries,
     create/update handoff.
-- [ ] Ensure skill does not require agents to understand internal database.
+- [x] Ensure skill does not require agents to understand internal database.
 
 **Primary files:** skill template in `shelldeck/team.py`, tests.
 
