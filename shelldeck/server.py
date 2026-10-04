@@ -1449,7 +1449,11 @@ def _resume_plan(sid: str, auto: bool = False) -> tuple[str | None, str | None]:
         return None, "cwd_missing"
     if auto and db.list_handoffs(to_sid=sid, status="open"):
         return None, "open_handoff"  # a hand-off is reviewed by a person, never resumed silently
-    return " ".join(argv), None
+    try:  # per-run hooks as the agent's own flag (Claude's --settings), placed before the resume args
+        extra = integrations.run_flags(rec["agent"])
+        return team.launch_line(rec["agent"], extra=extra) + " " + " ".join(argv[1:]), None
+    except (ValueError, OSError):
+        return " ".join(argv), None
 
 
 def _auto_resume(sid: str) -> None:
@@ -2040,7 +2044,8 @@ async def spawn_agent(payload: dict):
     h = db.add_handoff(project_id=project["id"], from_sid=parent["id"], from_nick=parent.get("nick"), to_sid=session["id"],
                        to_nick=session["nick"], agent=key, model=model, task=task)
     await asyncio.to_thread(_handoff_files, h)
-    line = team.spawn_line(key, model, team.kickoff(session["nick"], parent.get("nick") or "the user", h["id"]))
+    line = team.spawn_line(key, model, team.kickoff(session["nick"], parent.get("nick") or "the user", h["id"]),
+                           await asyncio.to_thread(integrations.run_flags, key))
     try:
         _attach(session, 30, 120)
     except Exception:  # noqa: BLE001 - spawn failures come from winpty/OS
@@ -2051,6 +2056,49 @@ async def spawn_agent(payload: dict):
     starter.add_done_callback(background.discard)
     await _broadcast({"type": "spawned", "session_id": session["id"], "parent": parent["id"]})
     return {"session": session, "handoff": h, "agent": key, "model": model, "command": line}
+
+
+@app.post("/api/agent-start")
+async def start_agent(payload: dict):
+    """A new terminal in a project running an agent, launched with its own command-line flags: model, per-run hooks
+    (Claude's --settings) and the initial prompt (team.SPAWN). A prompt that isn't plain words goes to a file."""
+    key = str(payload.get("agent") or "")
+    if key not in agents.AGENTS or not agents.AGENTS[key][1]:
+        return err("unknown_agent", 404)
+    project = db.get_project(str(payload.get("project_id") or ""))
+    if not project:
+        cwd = str(payload.get("cwd") or "")
+        sd = next((p for p in db.list_projects() if cwd and (Path(cwd).resolve() == Path(p["path"]).resolve()
+                                                          or Path(p["path"]).resolve() in Path(cwd).resolve().parents)), None)
+        project = sd
+    if not project or not Path(project["path"]).is_dir():
+        return err("project_not_found", 404)
+    prompt = " ".join(str(payload.get("prompt") or "").split())[:20000]
+    if prompt and key not in team.SPAWN:
+        return err("no_prompt_flag")
+    if prompt and (not team.SAFE_PROMPT.match(prompt) or len(prompt) > 400):
+        folder = Path(project["path"]) / ".shelldeck" / "prompts"
+        folder.mkdir(parents=True, exist_ok=True)
+        if not (folder.parent / ".gitignore").exists():
+            (folder.parent / ".gitignore").write_text("*\n", encoding="utf-8")
+        name = f"{db.short_id()}.md"
+        (folder / name).write_text(str(payload.get("prompt")).strip() + "\n", encoding="utf-8")
+        prompt = f"Read and do the task in .shelldeck/prompts/{name}"
+    model = str(payload.get("model") or "") or None
+    try:
+        line = team.launch_line(key, model, prompt or None, await asyncio.to_thread(integrations.run_flags, key))
+    except ValueError as e:
+        return err(str(e))
+    session = db.add_session(project["id"], cwd=project["path"], shell="", name=agents.AGENTS[key][0])
+    try:
+        _attach(session, 30, 120)
+    except Exception:  # noqa: BLE001
+        log.exception("agent start failed for session %s", session["id"])
+        return err("spawn_failed", 500)
+    starter = asyncio.create_task(_start_agent(session["id"], line))
+    background.add(starter)
+    starter.add_done_callback(background.discard)
+    return {"session": session, "agent": key, "command": line}
 
 
 async def _start_agent(session_id: str, line: str) -> None:

@@ -118,6 +118,7 @@ def test_agents(client, tmp_path, monkeypatch):
 def test_team(client, tmp_path, monkeypatch):
     """Terminal nicks, sd spawn (without really starting a shell), hand-off files, done and orphaned hand-offs."""
     from shelldeck import team
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
 
     team._selfcheck()  # tiers, model picks, spawn line, skill install
     started = []
@@ -135,7 +136,9 @@ def test_team(client, tmp_path, monkeypatch):
     r = client.post("/api/spawn", json={"parent": a["id"], "task": "fix a typo in the readme", "agent": "claude", "model": "large"}).json()
     kid, h = r["session"], r["handoff"]
     assert kid["parent"] == a["id"] and r["model"] == "opus" and started == [r["command"]]
-    assert r["command"].startswith(f'claude --model opus "You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.')
+    # per-run hooks ride on Claude's own --settings flag (no global hook installed in this test home)
+    assert r["command"].startswith("claude --model opus --settings ") and "claude-settings.json" in r["command"]
+    assert f'"You are {kid["nick"]}, a shelldeck sub-agent working for {a["nick"]}.' in r["command"]
     task_file = tmp_path / ".shelldeck" / "handoffs" / f"{h['id']}.md"
     assert "fix a typo in the readme" in task_file.read_text(encoding="utf-8")
     assert (tmp_path / ".shelldeck" / ".gitignore").read_text() == "*\n"
@@ -957,6 +960,7 @@ def test_resume_plan_is_safe(client, tmp_path, monkeypatch):
     pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
     sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
     monkeypatch.setattr(server.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    monkeypatch.setattr(server.integrations, "run_flags", lambda agent: [])
     assert server._resume_plan(sid) == (None, "no_resume")
     db.save_agent_session(sid, "claude", "native:claude", "abc-123", ["claude", "--resume", "abc-123"], "working")
     assert server._resume_plan(sid) == ("claude --resume abc-123", None)
@@ -1096,3 +1100,48 @@ def test_events_and_prompt_wait(monkeypatch):
     assert blocked.status_code == 409 and b"agent_blocked" in blocked.body
     assert types == ["agent.state", "agent.state", "agent.state"]
     assert all("text" not in e["data"] for e in server.events_log)
+
+
+
+def test_launch_lines_use_native_flags(tmp_path, monkeypatch):
+    from shelldeck import integrations, team
+    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path / "sd"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    flags = integrations.run_flags("claude")
+    settings = json.loads(open(flags[1]).read())
+    assert flags[0] == "--settings" and "PermissionRequest" in settings["hooks"]
+    assert integrations.run_flags("codex") == integrations.run_flags("gemini") == integrations.run_flags("devin") == []
+    (tmp_path / "claude").mkdir()
+    integrations.install("claude")
+    assert integrations.run_flags("claude") == []  # the global hook is installed: no duplicate per-run hook
+    assert team.launch_line("claude", "opus", "fix the tests", ["--settings", "/a b/c.json"]) == 'claude --model opus --settings "/a b/c.json" "fix the tests"'
+    assert team.launch_line("codex", None, "fix it") == 'codex "fix it"'
+    assert team.launch_line("gemini", "gemini-2.5-pro", "fix it") == 'gemini -m gemini-2.5-pro -i "fix it"'
+    assert team.launch_line("devin", None, "fix it") == 'devin -- "fix it"'
+    assert team.launch_line("amp", None) == "amp"
+    with pytest.raises(ValueError):
+        team.launch_line("amp", None, "x")
+    with pytest.raises(ValueError):
+        team.launch_line("claude", None, None, ["--settings", 'evil"$(x)'])
+
+
+def test_agent_start(client, tmp_path, monkeypatch):
+    started = []
+
+    async def fake_start(sid, line):
+        started.append(line)
+
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+    monkeypatch.setattr(server, "_attach", lambda s, r, c: None)
+    monkeypatch.setattr(server.integrations, "run_flags", lambda agent: [])
+    work = tmp_path / "p"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    r = client.post("/api/agent-start", json={"agent": "gemini", "project_id": pid, "prompt": "add a test"}).json()
+    assert r["command"] == 'gemini -i "add a test"'
+    r = client.post("/api/agent-start", json={"agent": "claude", "cwd": str(work), "prompt": 'use "quotes" & $vars'}).json()
+    assert r["command"].startswith('claude "Read and do the task in .shelldeck/prompts/')
+    name = r["command"].split("prompts/")[1].rstrip('"')
+    assert (work / ".shelldeck" / "prompts" / name).read_text().startswith('use "quotes"')
+    assert client.post("/api/agent-start", json={"agent": "amp", "project_id": pid, "prompt": "x"}).json()["error"] == "no_prompt_flag"
+    assert client.post("/api/agent-start", json={"agent": "nope", "project_id": pid}).status_code == 404

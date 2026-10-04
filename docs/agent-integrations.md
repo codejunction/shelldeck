@@ -52,6 +52,24 @@ picked up by screen detection again. An integration report outranks native, whic
 
 Installing needs the agent's config folder (install and run the agent once first). Amp, Kiro, Maki, Cline, Aider, Goose, Crush and the rest keep using screen detection for now (see `sd integration list`).
 
+## Native command-line flags
+
+When shelldeck starts an agent (spawn, *Launch*, `sd agent start`, resume), it builds the command with that agent's own
+flags (`team.launch_line`):
+
+| Agent | Model | Initial prompt | Per-run hooks | Resume |
+| --- | --- | --- | --- | --- |
+| Claude Code | `--model` | positional `"prompt"` | `--settings <file>`: shelldeck's hook file in its config folder; nothing in `~/.claude` changes. Skipped when the global hook is installed | `claude --resume <id>` |
+| Codex | `-m` | positional `"prompt"` | none: Codex reads hooks only from `hooks.json` (install), plus its own logs | `codex resume <id>` |
+| Gemini CLI | `-m` | `-i "prompt"` | none: hooks only from `settings.json` (install) | `gemini --resume <id>` |
+| Devin CLI | `--model` | `-- "prompt"` | none: hooks only from `config.json` (install), plus `sessions.db` | `devin --resume <id>` |
+
+A prompt that is longer, or isn't plain words, is written to `.shelldeck/prompts/<id>.md`. The agent is then asked to
+read that file, so no shell ever sees quotes or `$`.
+
+Claude Code 2.1.289's `--help` confirms `--settings <file-or-json>`, the positional prompt and `--resume`. For the other
+three, the flags come from their docs as used by dotpals and herdr.
+
 ## Commands
 
 ```sh

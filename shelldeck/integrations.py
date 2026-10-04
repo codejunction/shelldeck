@@ -710,6 +710,22 @@ def _root(inst) -> Path:
     return f.parent.parent if f.parent.name in ("hooks", "plugins", "plugin", "extensions") else f.parent
 
 
+def run_flags(agent: str) -> list[str]:
+    """Per-run hooks as the agent's own command-line flags, so nothing global changes. Only Claude Code has such a
+    flag (`--settings <file>`, merged over its own settings). Codex, Gemini and Devin read hooks only from their
+    config files, so they need `sd integration install`. Skipped when the global hook is installed (no duplicates)."""
+    if agent != "claude" or INSTALLERS["claude"].state()[0]:
+        return []
+    from . import db  # noqa: PLC0415 - integrations stays importable without the database
+
+    inst = INSTALLERS["claude"]
+    file = db.config_dir() / "agent-hooks" / "claude-settings.json"
+    text = json.dumps({"hooks": {e: [inst.entry(e)] for e in inst.events()}}, indent=2) + "\n"
+    if not file.exists() or file.read_text(encoding="utf-8") != text:
+        _write(file, text)
+    return ["--settings", str(file)]
+
+
 def status(agent: str, available: bool = False) -> dict:
     """installed | outdated (re-install to fix: moved interpreter, changed events) | not_installed | unsupported | error."""
     inst = INSTALLERS.get(agent)

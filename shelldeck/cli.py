@@ -1023,6 +1023,28 @@ def agent_wait(
     raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
 
 
+@agent_app.command("start")
+def agent_start(
+    agent: str = typer.Argument(..., help="claude, codex, gemini, devin, ..."),
+    prompt: str = typer.Argument("", help="Initial task, passed with the agent's own prompt flag."),
+    model: str = typer.Option("", "--model", "-m"),
+    project: str = typer.Option("", "--project", "-p", help="Project name (default: this folder's project)."),
+):
+    """Open a new terminal running an agent, launched with its native flags: model, per-run hooks (Claude's
+    --settings) and the prompt (claude/codex positional, gemini -i, devin --)."""
+    body: dict = {"agent": agent, "prompt": prompt, "model": model}
+    if project:
+        p = next((x for x in _api("/api/projects")["projects"] if x["name"].casefold() == project.casefold()), None)
+        if not p:
+            typer.echo(f"error: no project named {project!r}", err=True)
+            raise typer.Exit(1)
+        body["project_id"] = p["id"]
+    else:
+        body["cwd"] = os.getcwd()
+    r = _api("/api/agent-start", "POST", body)
+    typer.echo(f"started {r['session']['nick']} ({r['session']['id']}): {r['command'].split(' \"')[0]}")
+
+
 @agent_app.command("prompt")
 def agent_prompt(
     target: str = typer.Argument(..., help="Terminal nick, id or name running an agent."),

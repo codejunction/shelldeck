@@ -50,16 +50,38 @@ SAFE_PROMPT = re.compile(r"^[\w .,:/-]+$")  # needs no quoting rules in pwsh, cm
 SAFE_MODEL = re.compile(r"^[\w.:/\[\]-]+$")
 
 
-def spawn_line(key: str, model: str | None, prompt: str) -> str:
-    """The command typed into the new terminal's shell."""
-    flag, before = SPAWN[key]
-    assert SAFE_PROMPT.match(prompt), prompt
+SAFE_PATH = re.compile(r'^[^"`$%!\n\r]+$')  # quoted in double quotes, nothing a shell expands inside them
+
+
+def _arg(a: str) -> str:
+    if re.fullmatch(r"[\w.:/=@+-]+", a):
+        return a
+    if not SAFE_PATH.match(a):
+        raise ValueError("unsafe_argument")
+    return f'"{a}"'
+
+
+def launch_line(key: str, model: str | None = None, prompt: str | None = None, extra: list[str] | tuple = ()) -> str:
+    """An agent's command line with its own flags: model, per-run settings (`extra`, e.g. Claude's --settings) and the
+    initial prompt the way that CLI takes it (SPAWN: claude/codex positional, gemini/qwen -i, devin after --,
+    opencode --prompt). The prompt must be SAFE_PROMPT so one double-quoted string works in every shell."""
     parts = [agents.AGENTS[key][1][0]]
     if model:
         if not SAFE_MODEL.match(model):
             raise ValueError("invalid_model")
-        parts += [flag, model]
-    return " ".join([*parts, *before, f'"{prompt}"'])
+        parts += [SPAWN[key][0] if key in SPAWN else "--model", model]
+    parts += [_arg(a) for a in extra]
+    if prompt:
+        if key not in SPAWN:
+            raise ValueError("no_prompt_flag")
+        assert SAFE_PROMPT.match(prompt), prompt
+        parts += [*SPAWN[key][1], f'"{prompt}"']
+    return " ".join(parts)
+
+
+def spawn_line(key: str, model: str | None, prompt: str, extra: list[str] | tuple = ()) -> str:
+    """The command typed into the new terminal's shell."""
+    return launch_line(key, model, prompt, extra)
 
 
 def kickoff(nick: str, parent_nick: str, handoff_id: str) -> str:

@@ -1,5 +1,5 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
-import { ATTENTION, S, attentionOf, newTerminal, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
+import { ATTENTION, S, attentionOf, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
 import { api, esc, icon, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
@@ -214,15 +214,16 @@ async function onClick(e, el) {
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
   if (!key) return;
-  const agent = data.agents.find((a) => a.key === key);
   const model = e.target.closest(".ag-card").querySelector("[data-model]")?.value;
-  // every listed CLI takes --model; quote it for cmd/pwsh/bash alike only when needed
-  const command = agent.command + (model ? ` --model ${/^[\w.:/@-]+$/.test(model) ? model : `"${model}"`}` : "");
-  const term = await newTerminal(el.querySelector("[data-project]")?.value);
-  if (!term) return;
-  await term.ready();
-  term.send({ type: "input", data: `${command}\r` });
-  term.focus();
+  // the server builds the line with the agent's own flags (model, per-run hooks such as Claude's --settings)
+  try {
+    const r = await api("/api/agent-start", { method: "POST", body: { agent: key, project_id: el.querySelector("[data-project]")?.value, model } });
+    await refreshProjects();
+    const term = await showSession(r.session.id);
+    term?.focus();
+  } catch (err) {
+    toastError(err);
+  }
 }
 
 /** Open a terminal in the session's folder (added as a project if new) and run `devin -r <id>`. */

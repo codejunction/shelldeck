@@ -109,6 +109,14 @@
   after the prompt), `sd agent rename`, an in-memory event log and SSE
   `GET /api/events` with `Last-Event-ID`, and `sd events subscribe`. Checked live
   (detected -> idle -> session_updated -> blocked streamed).
+- **2026-10-04 — Native CLI flags for the priority agents (user request):** a
+  single `team.launch_line` passes model, initial prompt (claude/codex positional,
+  gemini `-i`, devin `--`) and per-run hooks. Claude uses `--settings <file>`,
+  verified in Claude Code 2.1.289's `--help`; the real CLI launched with it but
+  stopped at login, so live hook delivery from it is still unverified. Codex,
+  Gemini and Devin have no per-run hook flag, so they keep the installed hooks.
+  New `POST /api/agent-start`, `sd agent start`; the page's Launch is now
+  server-side; resume adds Claude's `--settings`.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
