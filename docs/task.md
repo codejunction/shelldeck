@@ -643,3 +643,6 @@ context store and database schema.
 ## README screenshots refreshed
 - [x] New screenshot.png, agents.png, context.png, task-manager.png, git-graph.png from a seeded demo (four projects, hook-driven states).
 - [x] AI agents page: Extract facts, Message and the native commands merged into one *Actions* menu per row (the old buttons overflowed the table).
+
+## AGENT_ENHANCEMENT.md restructured
+- [x] Raw plan + appended spec rewritten as one design doc: goals, status table, lifecycle, integrations, launch/commands/resume, events, attention UI, context, security, testing, open work.
