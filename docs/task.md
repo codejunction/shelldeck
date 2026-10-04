@@ -159,6 +159,11 @@
   blocked report could outlive the next `heuristic:activity` verdict when both
   had the same timestamp (Windows' ~16ms monotonic clock). `Registry.put_heuristic`
   now replaces the previous heuristic verdict.
+- **2026-10-04 — 0.0.7rc1 published to PyPI** from `feature/agent-integrations`
+  (release.yml manual run 37226585667; CI green on Windows and Ubuntu, py3.12–3.14).
+  Checked by installing `shelldeck==0.0.7rc1` with `--prerelease allow`: the
+  version, the `sd agent` commands and the bundled detection rules are present.
+  No tag or GitHub release, as release candidates get none.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
