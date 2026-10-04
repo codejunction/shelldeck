@@ -2,13 +2,16 @@
 
 ## Status
 
-**Implementation in progress. Milestone 1, Task 1.1 complete.**
+**Implementation in progress. Milestone 1, Task 1.1 complete. AGENT_ENHANCEMENT.md expanded with knowledge/context system.**
 
 ### Progress log
 
 - **2026-10-03 — Task 1.1 complete:** added the isolated lifecycle domain
   module and authority resolver with focused tests. Existing runtime behavior
   remains unchanged; Task 1.2 will adopt this contract in the server.
+- **2026-10-04 — AGENT_ENHANCEMENT.md updated:** Added comprehensive knowledge
+  system, cross-project retrieval, CLI commands, database design, and
+  context persistence layers (sections 27-63).
 
 The authoritative design is [AGENT_ENHANCEMENT.md](AGENT_ENHANCEMENT.md). This
 file is the execution checklist for breaking that design into reviewable,
@@ -187,9 +190,149 @@ invalid/missing resume data cannot be launched.
 **Done when:** restart recovery is explicit, safe, and recoverable for both
 supported agent sessions and ordinary terminals.
 
-## Milestone 5 — Automation and operator experience
+## Milestone 5 — Knowledge and context persistence
 
-### Task 5.1: Event-driven agent commands
+### Task 5.1: Database schema and context store
+
+- [ ] Add additive database migrations for `projects`, `sessions`, `tasks`,
+  `handoffs`, `knowledge`, `decions`, `events`, `relationships`, and
+  `source_references` tables (see design spec section 41).
+- [ ] Implement `shelldeck/context_store.py` with SQLite FTS5 for full-text
+  search over knowledge, decisions, and handoff content.
+- [ ] Add project registry with path, repository, and git metadata.
+- [ ] Ensure all writes are idempotent and migration-safe.
+
+**Primary files:** `shelldeck/db.py`, new `shelldeck/context_store.py`,
+migration scripts, tests.
+
+**Done when:** schema applies cleanly; FTS search returns ranked results;
+project registry tracks paths and git state.
+
+### Task 5.2: Context manager and projection
+
+- [ ] Implement `shelldeck/context_manager.py` with:
+  `load_context()`, `save_state()`, `create_checkpoint()`, `create_handoff()`,
+  `resume_session()`, `record_event()`, `record_memory()`, `record_decision()`,
+  `search_context()`, `project_context()`, `related_projects()`.
+- [ ] Add `ContextPackage` dataclass aggregating project, task, state, memory,
+  decisions, handoff, related projects, relevant knowledge, git state, and
+  recent events (section 47).
+- [ ] Implement Markdown projection: generate `STATE.md`, `TASK.md`,
+  `MEMORY.md`, `DECISIONS.md`, `handoff.md` from SQLite on demand (section 43).
+- [ ] Add context budget enforcement with configurable allocation (section 48).
+- [ ] Implement deduplication and conflict detection for cross-project knowledge
+  (sections 49, 51).
+
+**Primary files:** new `shelldeck/context_manager.py`, `shelldeck/context_store.py`,
+projection templates, tests.
+
+**Done when:** an agent can receive a complete ContextPackage; Markdown
+projections are accurate; budget prevents overflow; cross-project conflicts
+are surfaced not merged.
+
+### Task 5.3: Cross-project retrieval (sd recall)
+
+- [ ] Implement `sd recall "<query>"` with SQLite FTS5 ranking and project
+  scoping.
+- [ ] Return structured results with project, relevance, source files, and
+  knowledge snippet.
+- [ ] Add knowledge verification lifecycle: `NEW` → `VERIFIED` → `STALE`
+  → `REVIEWED` with `INVALIDATED` option (section 32).
+- [ ] Implement source file hash tracking to auto-mark knowledge `STALE`
+  when source files change (section 31).
+- [ ] Add `sd knowledge verify <id>` CLI command.
+
+**Primary files:** `shelldeck/cli.py`, `shelldeck/context_store.py`,
+`shelldeck/context_manager.py`, tests.
+
+**Done when:** a query returns ranked cross-project results with source
+attribution; stale detection works on file changes; verification CLI works.
+
+### Task 5.4: Context CLI commands
+
+- [ ] Add `sd context [PROJECT]` — show current or named project context.
+- [ ] Add `sd memory [search <query>]` — show/search project memory.
+- [ ] Add `sd projects` and `sd project <name>` — list/show projects.
+- [ ] Add `sd handoff` / `sd handoffs` / `sd done <id>` — enhanced with
+  full context snapshots (task, state, memory, decisions, git, tests, files,
+  events, next action, related projects — section 44).
+- [ ] Add `sd resume` — resume most recent incomplete task.
+- [ ] Add `sd switch <agent>` — create handoff and switch active agent.
+- [ ] Add agent-accessible commands: `sd context`, `sd recall`, `sd memory`,
+  `sd handoff`, `sd done`, `sd tell <agent>`, plus optional `sd remember`,
+  `sd decide`, `sd discover`, `sd task update` (section 34).
+
+**Primary files:** `shelldeck/cli.py`, `shelldeck/context_manager.py`, tests.
+
+**Done when:** all CLI commands work and return structured output; handoff
+content includes full context; agent commands are lightweight and usable.
+
+### Task 5.5: Automatic agent skill extension
+
+- [ ] Extend the installed Shelldeck skill to teach agents the startup/
+  during-work/pre-stop workflow (section 35):
+  - Startup: read context, check active task, check STATE, check MEMORY,
+    check handoff, continue from next action.
+  - During work: update task progress, record discoveries/decisions,
+    use `sd recall` when context missing.
+  - Pre-stop: update STATE, summarize remaining work, record discoveries,
+    create/update handoff.
+- [ ] Ensure skill does not require agents to understand internal database.
+
+**Primary files:** skill template in `shelldeck/team.py`, tests.
+
+**Done when:** a fresh agent following the skill can load context and
+continue work without manual instruction.
+
+### Task 5.6: Secret protection and git integration
+
+- [ ] Implement secret detection/redaction before indexing command output
+  or files (section 39): API keys, passwords, tokens, private keys, cookies,
+  credentials, `.env` values.
+- [ ] Exclude sensitive files by default (`.env*`, `*.pem`, `*.key`,
+  `credentials.*`, `secrets.*`).
+- [ ] Add optional git metadata to context checkpoints: repository, branch,
+  commit, dirty state, changed files (section 40).
+
+**Primary files:** `shelldeck/context_store.py`, secret scanning module,
+git module, tests.
+
+**Done when:** secrets are never stored in knowledge; git state is captured
+at checkpoints; sensitive files are excluded.
+
+### Task 5.7: Background processing and performance
+
+- [ ] Add background worker infrastructure for knowledge extraction,
+  embedding generation, Markdown projection, event compaction, stale
+  detection, and indexing (section 56).
+- [ ] Ensure agent terminal interaction never blocks on context processing
+  (section 55): startup <100ms, recall <100ms, SQLite search <50ms.
+- [ ] Implement failure handling: context system failure logs warning but
+  agent execution continues (section 57).
+
+**Primary files:** new `shelldeck/workers.py`, `shelldeck/context_store.py`,
+performance tests.
+
+**Done when:** background tasks run without blocking PTY; performance
+targets met; context failures don't crash agents.
+
+### Task 5.8: Human-control UI and privacy
+
+- [ ] Add UI sections for Projects, Sessions, Tasks, Memory, Knowledge,
+  Decisions, Relationships, Handoffs (section 52).
+- [ ] Ensure cross-project context never leaves machine unless explicitly
+  configured (section 58).
+- [ ] Default all storage to local SQLite/files; optional future PostgreSQL,
+  Qdrant, Chroma, Redis are opt-in (section 54).
+
+**Primary files:** `shelldeck/static/agents.js`, new context UI components,
+settings.
+
+**Done when:** UI exposes all context dimensions; privacy defaults are local-only.
+
+## Milestone 6 — Automation and operator experience
+
+### Task 6.1: Event-driven agent commands
 
 - [ ] Add `sd agent status` with stable human and JSON forms.
 - [ ] Add server-owned `sd agent wait` with timeout, closure, and replacement
@@ -202,7 +345,7 @@ supported agent sessions and ordinary terminals.
 **Done when:** supervisors can wait for an agent state transition without
 polling screen text, and a new agent process cannot satisfy an old wait.
 
-### Task 5.2: Attention queue and project rollups
+### Task 6.2: Attention queue and project rollups
 
 - [ ] Add a prioritized attention section to `static/agents.js`.
 - [ ] Display semantic state, source, reason, elapsed time, model/context,
@@ -216,9 +359,9 @@ polling screen text, and a new agent process cannot satisfy an old wait.
 **Done when:** a user can identify and open the next agent needing a decision in
 one click, including across projects.
 
-## Milestone 6 — Maintainable fallback detection
+## Milestone 7 — Maintainable fallback detection
 
-### Task 6.1: Versioned detection manifests
+### Task 7.1: Versioned detection manifests
 
 - [ ] Create bundled `shelldeck/agent_detection/` manifests for known agent
   screen states.
@@ -227,7 +370,7 @@ one click, including across projects.
 - [ ] Migrate existing approval/question regex behavior into a manifest or a
   clearly named compatibility rule.
 
-### Task 6.2: Explain diagnostics
+### Task 7.2: Explain diagnostics
 
 - [ ] Add `sd agent explain TARGET` and JSON/file variants.
 - [ ] Show process identity, active authority, report age, manifest source and
@@ -247,6 +390,7 @@ temporary logging or exposing private terminal content.
 - [ ] Verify UI state text/icons with keyboard navigation and a screen reader.
 - [ ] Update `README.md`, `CLAUDE.md`, `CHANGELOG.md`, and the dedicated agent
   integration/automation/detection docs described in the design spec.
+- [ ] Document knowledge system, cross-project retrieval, and context CLI.
 - [ ] Add release notes that list exact supported integrations and clearly state
   whether each supports detection, authoritative lifecycle state, and native
   restore.
@@ -260,6 +404,7 @@ Lifecycle domain model
   -> integration manager
   -> Codex / Claude / OpenCode integrations
   -> persistence and safe restore
+  -> knowledge and context persistence
   -> event-driven automation
   -> attention UI and project rollups
   -> detection manifests and explain diagnostics
@@ -268,4 +413,5 @@ Lifecycle domain model
 Do not begin native restore before report validation and the integration manager
 exist. Do not make an integration authoritative before its lifecycle events are
 covered by tests. The attention UI can be prototyped earlier, but its final
-behavior must use server-owned semantic status.
+behavior must use server-owned semantic status. Knowledge system depends on
+context store and database schema.

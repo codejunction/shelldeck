@@ -603,3 +603,2519 @@ The enhancement is complete only when:
 6. all new behavior is covered by automated tests on the supported platforms;
    and
 7. the user-facing documentation clearly states capability and privacy limits.
+
+
+specification for  enhancement more to whats already above
+
+# ShellDeck — Agent Continuity & Shared Context Specification
+
+**Status:** Proposed  
+**Project:** ShellDeck  
+**Feature:** Agent Continuity, Handoff & Cross-Project Shared Context  
+**Version:** 1.0
+
+---
+
+## 1. Overview
+
+ShellDeck should evolve from an agent terminal/session manager into a **persistent context layer for AI agents**.
+
+The goal is to allow agents to:
+
+1. Continue work across agent switches without losing context.
+2. Resume work after a terminal/session restart.
+3. Hand work from one agent to another.
+4. Maintain durable project-level state and memory.
+5. Share useful knowledge between different repositories/projects.
+6. Allow an agent working on one project to retrieve relevant knowledge from another project.
+7. Preserve the reasoning, decisions, discoveries, tasks, and current state of previous agents without dumping entire historical conversations into the model context.
+
+### Core principle
+
+> **Agents are replaceable. Context is persistent.**
+
+Claude can start a task, Codex can continue it, Gemini can review it, and another Claude session can resume it later — without requiring the user to manually reconstruct the context.
+
+The same principle should work across projects.
+
+For example:
+
+```text
+acme-web
+    ↓
+authentication architecture discovered
+    ↓
+stored as reusable knowledge
+    ↓
+john-web
+    ↓
+agent asks:
+"Implement authentication similar to acme-web"
+    ↓
+ShellDeck retrieves relevant knowledge
+    ↓
+agent adapts it to john-web
+```
+
+---
+
+# 2. Problem
+
+The current handoff system primarily handles **task transfer between agents**.
+
+This is useful, but insufficient for long-running multi-agent development.
+
+An agent may know:
+
+- what it was doing
+- what files it changed
+- what commands it ran
+- what errors occurred
+- what decisions were made
+- what remains unfinished
+
+But that information can disappear when:
+
+- the agent exits
+- another agent takes over
+- the terminal is restarted
+- the project changes
+- another repository needs the same knowledge
+- the user starts a new ShellDeck session
+
+Simply storing the entire conversation is also not a good solution.
+
+It creates:
+
+- huge context windows
+- unnecessary token consumption
+- irrelevant historical information
+- poor retrieval
+- duplicated information
+- stale information
+
+ShellDeck therefore needs a **structured persistent context system**.
+
+---
+
+# 3. Goals
+
+## 3.1 Primary goals
+
+ShellDeck must provide:
+
+### Agent continuity
+
+An agent can stop and another agent can continue from exactly where the previous agent stopped.
+
+### Persistent project state
+
+The current state of a project survives sessions and agent changes.
+
+### Persistent task plans
+
+Tasks and plans survive agent restarts.
+
+### Persistent memory
+
+Important project knowledge survives individual sessions.
+
+### Cross-project knowledge
+
+Useful knowledge from one repository can be discovered and reused by another repository.
+
+### Context-aware retrieval
+
+Agents retrieve only the relevant context instead of loading the entire history.
+
+### Agent-independent context
+
+Context belongs to the **workspace/project**, not to Claude/Codex/Gemini/etc.
+
+### Human-readable state
+
+Important context must remain inspectable as Markdown.
+
+### Machine-readable state
+
+ShellDeck must maintain structured state in SQLite for efficient querying.
+
+---
+
+# 4. Non-Goals
+
+The system should NOT initially attempt to:
+
+- store every token of every agent conversation forever
+- automatically share every piece of information between every project
+- blindly copy architecture from one repository to another
+- replace Git
+- replace project documentation
+- become a general-purpose vector database
+- require an external cloud service
+- require an LLM for basic state tracking
+- put global context inside individual repositories
+
+---
+
+# 5. Core Concepts
+
+The system should distinguish between:
+
+```text
+TASK
+STATE
+MEMORY
+DECISION
+SESSION
+HANDOFF
+KNOWLEDGE
+RELATIONSHIP
+EVENT
+```
+
+These are related but should not be conflated.
+
+---
+
+# 6. Context Architecture
+
+ShellDeck should use a **two-layer architecture**.
+
+```text
+                         ShellDeck
+                             │
+                 ┌───────────┴───────────┐
+                 │                       │
+          Global Context DB        Project Projection
+                 │                       │
+        ~/.shelldeck/context.db    <repo>/.shelldeck/
+                 │                       │
+        ┌────────┼────────┐       ┌──────┼──────┐
+        │        │        │       │      │      │
+     Projects Knowledge Events   STATE  TASK  MEMORY
+        │        │        │
+        ├────────┼────────┤
+        │        │        │
+    acme-web  john-web  billing
+```
+
+## 6.1 Global ShellDeck state
+
+Global context belongs under:
+
+```text
+~/.shelldeck/
+```
+
+Example:
+
+```text
+~/.shelldeck/
+├── context.db
+├── projects/
+├── knowledge/
+├── events/
+└── embeddings/
+```
+
+This information must NOT be dependent on any individual Git repository.
+
+---
+
+# 7. Project-Level Context
+
+Each project receives a local ShellDeck projection:
+
+```text
+<project>/
+└── .shelldeck/
+    ├── STATE.md
+    ├── TASK.md
+    ├── MEMORY.md
+    ├── DECISIONS.md
+    ├── AGENTS.md
+    ├── sessions/
+    ├── handoffs/
+    └── index.md
+```
+
+These files are human-readable projections of the canonical state.
+
+SQLite remains the source of truth.
+
+---
+
+# 8. STATE.md
+
+`STATE.md` represents **what is happening right now**.
+
+Example:
+
+```markdown
+# Current State
+
+## Objective
+
+Implement authentication for john-web.
+
+## Current Step
+
+Integrating OAuth callback handling.
+
+## Current Branch
+
+feature/authentication
+
+## Last Commit
+
+abc1234
+
+## Working Tree
+
+Modified:
+- src/auth/login.ts
+- src/auth/callback.ts
+
+## Tests
+
+Passing:
+- auth/login.test.ts
+
+Failing:
+- auth/callback.test.ts
+
+## Last Error
+
+OAuth callback returns HTTP 401 when refresh token is missing.
+
+## Next Action
+
+Investigate refresh-token handling.
+
+## Last Updated
+
+2026-10-04T05:00:00Z
+
+## Active Agent
+
+claude
+
+## Session
+
+session_123
+```
+
+`STATE.md` should be updated automatically.
+
+---
+
+# 9. TASK.md
+
+`TASK.md` represents the durable objective.
+
+Example:
+
+```markdown
+# Task
+
+## Objective
+
+Implement authentication for john-web.
+
+## Requirements
+
+- OAuth login
+- JWT authentication
+- Refresh tokens
+- Multi-tenant support
+
+## Plan
+
+1. Inspect existing authentication architecture.
+2. Compare with acme-web.
+3. Design john-web authentication layer.
+4. Implement backend authentication.
+5. Implement frontend session handling.
+6. Add tests.
+7. Run integration tests.
+
+## Acceptance Criteria
+
+- Users can log in.
+- Sessions survive page reload.
+- Refresh tokens work.
+- Tenant information is preserved.
+- Tests pass.
+
+## Constraints
+
+- Reuse existing john-web infrastructure.
+- Do not copy acme-web implementation blindly.
+
+## Status
+
+IN_PROGRESS
+```
+
+The plan should be automatically maintained as work progresses.
+
+---
+
+# 10. MEMORY.md
+
+`MEMORY.md` contains durable project knowledge.
+
+Examples:
+
+```markdown
+# Project Memory
+
+## Authentication
+
+The application uses OAuth through auth-service.
+
+JWT contains:
+
+- user_id
+- tenant_id
+- roles
+
+Refresh tokens are stored in Redis.
+
+## Frontend
+
+Authentication state is exposed through:
+
+src/auth/session.ts
+
+## Backend
+
+Authentication middleware:
+
+src/auth/middleware.ts
+
+## Infrastructure
+
+Redis is shared between API instances.
+
+## Important Gotcha
+
+The auth-service requires the tenant header to be present
+before validating the JWT.
+```
+
+Memory should contain **facts and discoveries**, not transient conversation.
+
+---
+
+# 11. DECISIONS.md
+
+`DECISIONS.md` stores architectural and implementation decisions.
+
+Example:
+
+```markdown
+# Decisions
+
+## 2026-10-04 — Use Redis for refresh tokens
+
+### Decision
+
+Refresh tokens will remain in Redis.
+
+### Reason
+
+Redis already exists in the infrastructure and provides
+appropriate TTL support.
+
+### Alternatives Considered
+
+- PostgreSQL
+- In-memory storage
+
+### Consequence
+
+Authentication depends on Redis availability.
+```
+
+This prevents future agents from repeatedly reconsidering already-settled decisions.
+
+---
+
+# 12. AGENTS.md
+
+`AGENTS.md` contains ShellDeck-specific operating instructions for agents.
+
+It can include:
+
+- how to retrieve context
+- how to update state
+- how to create handoffs
+- how to record decisions
+- how to record discoveries
+- how to ask another agent for information
+- how to mark tasks complete
+
+ShellDeck should automatically install/update the appropriate agent skill.
+
+---
+
+# 13. Sessions
+
+Every agent execution should have a persistent session record.
+
+Example:
+
+```text
+.shelldeck/sessions/
+├── session_001.md
+├── session_002.md
+└── session_003.md
+```
+
+Each session contains:
+
+```markdown
+# Session
+
+ID: session_003
+Agent: claude
+Project: john-web
+Started: 2026-10-04T04:00:00Z
+Ended: 2026-10-04T05:30:00Z
+
+## Objective
+
+Implement authentication.
+
+## Work Performed
+
+- inspected auth architecture
+- modified middleware
+- added tests
+- fixed JWT validation
+
+## Files Changed
+
+- src/auth/middleware.ts
+- tests/auth.test.ts
+
+## Commands
+
+- uv run pytest
+- git diff
+
+## Results
+
+Tests: 42 passed
+
+## Remaining Work
+
+Frontend session handling.
+
+## Handoff
+
+handoff_004
+```
+
+---
+
+# 14. Handoff
+
+Handoff should become a **context snapshot**, not merely a task message.
+
+A handoff must contain:
+
+```text
+TASK
+STATE
+MEMORY
+DECISIONS
+FILES
+GIT STATE
+TEST STATE
+ERRORS
+NEXT ACTION
+RISKS
+RECENT EVENTS
+```
+
+Example:
+
+```markdown
+# Handoff
+
+## From
+
+claude / session_003
+
+## To
+
+codex
+
+## Objective
+
+Complete authentication implementation.
+
+## Completed
+
+- backend OAuth flow
+- JWT middleware
+- refresh-token storage
+
+## Current State
+
+Backend implementation is complete.
+
+Frontend session persistence remains.
+
+## Files Changed
+
+- src/auth/middleware.ts
+- src/auth/oauth.ts
+- src/auth/token.ts
+
+## Tests
+
+42 passed.
+
+## Known Issues
+
+Frontend session expires after browser refresh.
+
+## Next Action
+
+Inspect frontend session hydration.
+
+## Relevant Memory
+
+Authentication architecture follows the auth-service pattern
+documented in project memory.
+
+## Related Projects
+
+acme-web
+
+## Related Knowledge
+
+authentication architecture
+
+## Git
+
+Branch: feature/authentication
+Commit: abc1234
+Dirty: true
+```
+
+---
+
+# 15. Automatic Handoff Creation
+
+Every agent should maintain a handoff-ready state automatically.
+
+The agent should NOT need to manually write a handoff from scratch.
+
+ShellDeck should periodically update:
+
+```text
+TASK
+STATE
+MEMORY
+DECISIONS
+SESSION
+```
+
+When the agent exits or switches:
+
+```text
+SESSION_STOP
+      ↓
+capture state
+      ↓
+generate handoff snapshot
+      ↓
+persist to SQLite
+      ↓
+write Markdown projection
+```
+
+---
+
+# 16. Agent Startup
+
+When a new agent starts in a project:
+
+```text
+Agent starts
+     ↓
+ShellDeck detects project
+     ↓
+load project identity
+     ↓
+load active task
+     ↓
+load current state
+     ↓
+retrieve relevant memory
+     ↓
+retrieve relevant previous handoff
+     ↓
+retrieve relevant cross-project knowledge
+     ↓
+generate compact context
+     ↓
+inject into agent
+```
+
+The agent should receive a concise context package rather than the entire history.
+
+Example:
+
+```text
+SHELLDECK CONTEXT
+
+Project: john-web
+
+Task:
+Implement authentication.
+
+Current state:
+Backend complete. Frontend session persistence remains.
+
+Previous agent:
+Claude / session_003
+
+Next action:
+Inspect frontend session hydration.
+
+Relevant knowledge:
+- acme-web authentication architecture
+- Redis refresh-token pattern
+
+Known decisions:
+- Redis used for refresh tokens
+
+Related project:
+acme-web
+```
+
+---
+
+# 17. Agent Switching
+
+Switching agents should be transparent.
+
+Example:
+
+```text
+Claude
+   ↓
+handoff
+   ↓
+Codex
+   ↓
+continue
+   ↓
+Gemini
+   ↓
+review
+   ↓
+Claude
+   ↓
+finish
+```
+
+No agent should need to reconstruct the project manually.
+
+---
+
+# 18. Cross-Project Context
+
+The major extension is **shared knowledge between repositories**.
+
+Example:
+
+```text
+acme-web
+    │
+    │ discovers
+    ▼
+Authentication Architecture
+    │
+    ▼
+Global ShellDeck Knowledge
+    │
+    │ relevant to
+    ▼
+john-web
+```
+
+An agent in `john-web` should be able to retrieve:
+
+```text
+"How does authentication work in acme-web?"
+```
+
+without switching projects.
+
+---
+
+# 19. Knowledge Objects
+
+Shared knowledge should be stored as structured objects.
+
+Example:
+
+```json
+{
+  "id": "knowledge_auth_001",
+  "type": "architecture",
+  "topic": "authentication",
+  "project": "acme-web",
+  "title": "Authentication Architecture",
+  "content": "OAuth is handled by auth-service...",
+  "source_files": [
+    "src/auth/middleware.ts",
+    "src/auth/session.ts"
+  ],
+  "created_by": "claude",
+  "created_at": "2026-10-04T05:00:00Z",
+  "confidence": 0.94
+}
+```
+
+Knowledge should preserve its source.
+
+Agents should know:
+
+```text
+This information came from:
+
+Project: acme-web
+Files:
+  src/auth/middleware.ts
+  src/auth/session.ts
+
+Last verified:
+2026-10-04
+```
+
+---
+
+# 20. Knowledge Types
+
+Initial knowledge types:
+
+```text
+architecture
+api
+database
+authentication
+deployment
+infrastructure
+configuration
+testing
+convention
+pattern
+bug
+gotcha
+decision
+dependency
+security
+performance
+domain
+workflow
+```
+
+Additional types can be added later.
+
+---
+
+# 21. Context Scopes
+
+Context should have explicit scopes.
+
+```text
+GLOBAL
+  ↓
+COMPANY
+  ↓
+TEAM
+  ↓
+PRODUCT
+  ↓
+PROJECT
+  ↓
+SESSION
+```
+
+Example:
+
+```text
+GLOBAL
+  Python conventions
+
+COMPANY
+  Authentication policy
+
+PRODUCT
+  Shared API architecture
+
+PROJECT
+  acme-web implementation
+
+SESSION
+  Current OAuth bug
+```
+
+Retrieval should respect scope.
+
+---
+
+# 22. Project Relationships
+
+Projects should be able to reference each other.
+
+Example:
+
+```text
+john-web
+    ├── depends-on → auth-service
+    ├── related-to → acme-web
+    └── uses-pattern → acme-web/authentication
+```
+
+Another example:
+
+```text
+billing-api
+    └── shares-database-with → reporting-api
+```
+
+This forms a **project/context graph**.
+
+---
+
+# 23. Context Graph
+
+ShellDeck should maintain relationships between:
+
+```text
+Projects
+Repositories
+Agents
+Sessions
+Tasks
+Files
+Knowledge
+Decisions
+Handoffs
+Events
+```
+
+Example:
+
+```text
+                 Authentication
+                       │
+            ┌──────────┴──────────┐
+            │                     │
+         acme-web              john-web
+            │                     │
+     auth middleware       auth implementation
+            │                     │
+            └────── pattern ─────┘
+```
+
+This graph allows ShellDeck to answer questions such as:
+
+```text
+Which projects use this authentication pattern?
+
+Where was this decision made?
+
+Which agent discovered this?
+
+Which files support this knowledge?
+
+What projects are related to john-web?
+
+What did the previous agent discover?
+```
+
+---
+
+# 24. Retrieval
+
+Context retrieval should be **relevance-based**.
+
+Never inject the entire global database.
+
+Recommended retrieval order:
+
+```text
+1. Current session
+2. Current task
+3. Current project state
+4. Current project memory
+5. Project decisions
+6. Related project knowledge
+7. Global knowledge
+```
+
+For:
+
+```text
+"Implement authentication similar to acme-web"
+```
+
+retrieve:
+
+```text
+john-web authentication context
++
+acme-web authentication knowledge
++
+related architecture decisions
++
+relevant source files
+```
+
+Do NOT retrieve unrelated information.
+
+---
+
+# 25. Search Architecture
+
+Phase 1:
+
+```text
+SQLite
++
+FTS5
++
+metadata filtering
+```
+
+Phase 2:
+
+```text
+SQLite
++
+FTS5
++
+embeddings
+```
+
+Phase 3, if necessary:
+
+```text
+knowledge graph
++
+vector search
++
+semantic reranking
+```
+
+Do not introduce a vector database prematurely.
+
+ShellDeck should remain lightweight and local-first.
+
+---
+
+# 26. Event System
+
+Every meaningful agent action can produce an event.
+
+Example:
+
+```json
+{
+  "id": "event_001",
+  "session_id": "session_003",
+  "project_id": "john-web",
+  "type": "FILE_EDIT",
+  "timestamp": "2026-10-04T05:01:00Z",
+  "payload": {
+    "file": "src/auth/middleware.ts"
+  }
+}
+```
+
+Initial event types:
+
+```text
+SESSION_START
+SESSION_STOP
+
+PROMPT
+
+PLAN
+PLAN_UPDATE
+
+FILE_READ
+FILE_EDIT
+FILE_CREATE
+FILE_DELETE
+
+COMMAND
+COMMAND_RESULT
+
+TEST
+TEST_RESULT
+
+ERROR
+
+DISCOVERY
+DECISION
+NOTE
+
+AGENT_MESSAGE
+
+HANDOFF
+HANDOFF_RECEIVED
+
+TASK_START
+TASK_UPDATE
+TASK_COMPLETE
+```
+
+---
+
+# 27. Event Storage
+
+Events should be stored in SQLite.
+
+Example:
+
+```text
+events
+--------------------------------
+id
+project_id
+session_id
+agent
+type
+timestamp
+payload
+importance
+```
+
+Not every raw terminal byte needs to become a permanent event.
+
+ShellDeck should capture **meaningful events**, not blindly store everything.
+
+---
+
+# 28. Deterministic vs LLM Extraction
+
+The system should use a hybrid approach.
+
+## Deterministic extraction
+
+Use ShellDeck itself for:
+
+```text
+files changed
+commands
+exit codes
+test results
+git branch
+git commit
+git status
+timestamps
+session ID
+agent
+project
+working directory
+```
+
+No LLM required.
+
+## LLM-derived extraction
+
+Use an LLM only for:
+
+```text
+objective
+summary
+discoveries
+decisions
+reasoning
+important context
+risks
+remaining work
+knowledge extraction
+```
+
+This reduces cost and improves reliability.
+
+---
+
+# 29. Checkpointing
+
+ShellDeck should periodically create context checkpoints.
+
+Possible triggers:
+
+```text
+Every N tool calls
+Every N minutes
+After important file changes
+After tests
+After errors
+After decisions
+After plan changes
+Before agent shutdown
+Before handoff
+```
+
+Example:
+
+```text
+Tool calls:
+25
+50
+75
+100
+```
+
+But checkpoints should also happen immediately for important events.
+
+---
+
+# 30. Context Compaction
+
+Raw events should not remain in the agent context indefinitely.
+
+Example:
+
+```text
+100 raw events
+       ↓
+summarization
+       ↓
+10 important events
+       ↓
+STATE + MEMORY + DECISIONS
+```
+
+The database retains history.
+
+The model receives only the relevant compact representation.
+
+This is critical for reducing token usage.
+
+---
+
+# 31. Stale Context Detection
+
+Context can become stale.
+
+For example:
+
+```text
+Memory says:
+
+Redis stores refresh tokens.
+
+But the implementation has changed.
+```
+
+ShellDeck should track source files.
+
+Example:
+
+```json
+{
+  "knowledge_id": "auth_001",
+  "source_files": [
+    {
+      "path": "src/auth/token.py",
+      "hash": "abc123"
+    }
+  ]
+}
+```
+
+When the file changes:
+
+```text
+hash changed
+    ↓
+knowledge potentially stale
+    ↓
+mark:
+STALE
+```
+
+The agent should see:
+
+```text
+⚠ Authentication knowledge may be stale.
+
+Source changed:
+src/auth/token.py
+```
+
+---
+
+# 32. Knowledge Verification
+
+Knowledge should have a lifecycle:
+
+```text
+NEW
+  ↓
+VERIFIED
+  ↓
+STALE
+  ↓
+REVIEWED
+```
+
+Optional:
+
+```text
+INVALIDATED
+```
+
+Agents can explicitly verify knowledge.
+
+Example:
+
+```bash
+sd knowledge verify auth_001
+```
+
+---
+
+# 33. CLI
+
+ShellDeck should expose a simple CLI.
+
+## Context
+
+```bash
+sd context
+```
+
+Show current context.
+
+```bash
+sd context acme-web
+```
+
+Show another project's context.
+
+---
+
+## Memory
+
+```bash
+sd memory
+```
+
+Show project memory.
+
+```bash
+sd memory search authentication
+```
+
+Search shared knowledge.
+
+---
+
+## Recall
+
+```bash
+sd recall "authentication architecture"
+```
+
+Search all relevant context.
+
+Example:
+
+```text
+1. acme-web
+   Authentication Architecture
+   relevance: 0.94
+
+2. john-web
+   OAuth integration
+   relevance: 0.88
+
+3. auth-service
+   JWT conventions
+   relevance: 0.82
+```
+
+---
+
+## Projects
+
+```bash
+sd projects
+```
+
+Show known projects.
+
+```bash
+sd project acme-web
+```
+
+Show project information.
+
+---
+
+## Handoffs
+
+Existing commands should remain:
+
+```bash
+sd handoff
+sd handoffs
+sd done ID
+```
+
+But handoffs should now include the full context snapshot.
+
+---
+
+## Resume
+
+```bash
+sd resume
+```
+
+Resume the most recent incomplete task.
+
+---
+
+## Switch
+
+```bash
+sd switch codex
+```
+
+Create a handoff and switch the active agent.
+
+---
+
+# 34. Agent Commands
+
+Agents should have access to:
+
+```bash
+sd context
+sd recall "<query>"
+sd memory
+sd handoff
+sd done
+sd tell <agent>
+```
+
+Optional:
+
+```bash
+sd remember "<fact>"
+sd decide "<decision>"
+sd discover "<finding>"
+sd task update "<status>"
+```
+
+These commands should be lightweight and easy for agents to use.
+
+---
+
+# 35. Automatic Agent Skill
+
+ShellDeck already installs agent skills.
+
+The skill should be extended to teach agents:
+
+```text
+At startup:
+1. Read ShellDeck context.
+2. Check active task.
+3. Check STATE.
+4. Check relevant MEMORY.
+5. Check latest handoff.
+6. Continue from next action.
+
+During work:
+- update task progress
+- record important discoveries
+- record decisions
+- do not duplicate existing knowledge
+- use sd recall when context is missing
+
+Before stopping:
+- update STATE
+- summarize remaining work
+- record important discoveries
+- create/update handoff
+```
+
+The agent should not need to understand ShellDeck's internal database.
+
+---
+
+# 36. Example: Cross-Project Reuse
+
+Suppose `acme-web` contains:
+
+```text
+OAuth
+JWT
+Redis refresh tokens
+tenant_id
+auth middleware
+```
+
+An agent working on `acme-web` discovers this.
+
+ShellDeck stores:
+
+```text
+Knowledge:
+Authentication Architecture
+
+Project:
+acme-web
+
+Topics:
+authentication
+oauth
+jwt
+redis
+multi-tenancy
+```
+
+Later:
+
+```bash
+cd john-web
+sd recall "authentication architecture"
+```
+
+ShellDeck returns:
+
+```text
+ACME-WEB
+
+Authentication uses auth-service.
+
+JWT contains:
+- user_id
+- tenant_id
+- roles
+
+Refresh tokens are stored in Redis.
+
+Frontend session:
+src/auth/session.ts
+
+Middleware:
+src/auth/middleware.ts
+
+Source:
+acme-web
+```
+
+The agent can then inspect the source files and adapt the pattern.
+
+---
+
+# 37. Example: Natural-Language Workflow
+
+User:
+
+```text
+Implement authentication similar to acme-web.
+```
+
+ShellDeck agent workflow:
+
+```text
+User request
+    ↓
+Understand task
+    ↓
+sd recall "authentication acme-web"
+    ↓
+retrieve knowledge
+    ↓
+inspect source references
+    ↓
+compare john-web architecture
+    ↓
+create implementation plan
+    ↓
+implement
+    ↓
+test
+    ↓
+record decisions
+    ↓
+update STATE
+    ↓
+update MEMORY
+    ↓
+create handoff if necessary
+```
+
+The user should not have to manually explain how `acme-web` works.
+
+---
+
+# 38. Important Safety Rule
+
+Cross-project knowledge must be treated as **reference material**, not truth.
+
+An agent must not blindly copy:
+
+```text
+code
+credentials
+secrets
+environment variables
+private keys
+tokens
+personal information
+```
+
+Knowledge extraction must exclude secrets and sensitive values.
+
+When adapting knowledge:
+
+```text
+Source Project
+      ↓
+Reference Architecture
+      ↓
+Target Project Analysis
+      ↓
+Adaptation
+```
+
+Not:
+
+```text
+Source Project
+      ↓
+COPY
+      ↓
+Target Project
+```
+
+---
+
+# 39. Secret Protection
+
+Never store:
+
+```text
+API keys
+passwords
+tokens
+private keys
+cookies
+credentials
+.env values
+secrets
+```
+
+in persistent shared knowledge.
+
+Before indexing command output or files:
+
+```text
+secret detection
+      ↓
+redaction
+      ↓
+store
+```
+
+Sensitive files should be excluded by default.
+
+Examples:
+
+```text
+.env
+.env.*
+*.pem
+*.key
+credentials.*
+secrets.*
+```
+
+---
+
+# 40. Git Integration
+
+Every context checkpoint should optionally record:
+
+```text
+repository
+branch
+commit
+dirty state
+changed files
+```
+
+Example:
+
+```text
+Project: john-web
+
+Branch:
+feature/auth
+
+Commit:
+abc1234
+
+Working tree:
+DIRTY
+
+Changed:
+src/auth/middleware.ts
+src/auth/session.ts
+```
+
+This provides agents with reliable state.
+
+---
+
+# 41. Database Design
+
+Initial SQLite schema should include:
+
+```text
+projects
+sessions
+tasks
+handoffs
+knowledge
+decisions
+events
+relationships
+source_references
+```
+
+Conceptual schema:
+
+```text
+projects
+---------
+id
+name
+path
+repository
+created_at
+updated_at
+
+
+sessions
+--------
+id
+project_id
+agent
+started_at
+ended_at
+status
+
+
+tasks
+-----
+id
+project_id
+session_id
+title
+objective
+plan
+status
+created_at
+updated_at
+
+
+handoffs
+--------
+id
+project_id
+session_id
+from_agent
+to_agent
+task_id
+snapshot
+status
+created_at
+
+
+knowledge
+---------
+id
+scope
+project_id
+type
+topic
+title
+content
+confidence
+status
+created_by
+created_at
+updated_at
+
+
+decisions
+---------
+id
+project_id
+title
+decision
+reason
+alternatives
+created_at
+
+
+events
+------
+id
+project_id
+session_id
+type
+timestamp
+payload
+importance
+
+
+relationships
+-------------
+id
+source_type
+source_id
+relation
+target_type
+target_id
+
+
+source_references
+-----------------
+id
+knowledge_id
+project_id
+file_path
+file_hash
+line_start
+line_end
+```
+
+---
+
+# 42. Source Attribution
+
+Every important knowledge item should have provenance.
+
+Example:
+
+```text
+Knowledge:
+Authentication Architecture
+
+Source:
+acme-web
+
+Files:
+src/auth/middleware.ts
+src/auth/session.ts
+
+Discovered by:
+Claude
+
+Session:
+session_003
+
+Last verified:
+2026-10-04
+```
+
+This allows agents and humans to validate information.
+
+---
+
+# 43. Markdown Projection
+
+SQLite is canonical.
+
+Markdown is generated from SQLite.
+
+Example:
+
+```text
+SQLite
+  ↓
+context projection
+  ↓
+STATE.md
+TASK.md
+MEMORY.md
+DECISIONS.md
+handoff.md
+```
+
+Agents and users can therefore inspect the context without requiring a database tool.
+
+---
+
+# 44. Existing Handoff Compatibility
+
+The existing ShellDeck handoff system should remain backward compatible.
+
+Existing:
+
+```text
+.shelldeck/handoffs/<id>.md
+```
+
+continues to work.
+
+However, the handoff content should be enhanced to include:
+
+```text
+task
+state
+memory
+decisions
+git
+tests
+files
+events
+next action
+related projects
+```
+
+Existing:
+
+```bash
+sd handoffs
+sd done
+```
+
+should continue working.
+
+---
+
+# 45. Architecture
+
+Recommended internal architecture:
+
+```text
+                     ┌──────────────────┐
+                     │   ShellDeck CLI  │
+                     └────────┬─────────┘
+                              │
+                     ┌────────▼─────────┐
+                     │ Context Manager  │
+                     └────────┬─────────┘
+                              │
+              ┌───────────────┼────────────────┐
+              │               │                │
+       ┌──────▼──────┐ ┌─────▼─────┐ ┌────────▼────────┐
+       │ Task Manager│ │ State Mgr │ │ Knowledge Manager│
+       └──────┬──────┘ └─────┬─────┘ └────────┬────────┘
+              │              │                │
+              └──────────────┼────────────────┘
+                             │
+                     ┌───────▼────────┐
+                     │ Context Store  │
+                     │    SQLite      │
+                     └───────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+          FTS Search      Events       Relationships
+              │              │              │
+              └──────────────┼──────────────┘
+                             │
+                     ┌───────▼────────┐
+                     │ Agent Adapter  │
+                     └────────────────┘
+```
+
+---
+
+# 46. Context Manager
+
+Introduce a central component:
+
+```text
+ContextManager
+```
+
+Responsibilities:
+
+```text
+load_context()
+save_state()
+create_checkpoint()
+create_handoff()
+resume_session()
+record_event()
+record_memory()
+record_decision()
+search_context()
+project_context()
+related_projects()
+```
+
+All agents should use this abstraction instead of directly manipulating files.
+
+---
+
+# 47. Context Package
+
+The agent should receive a structured context package.
+
+Conceptually:
+
+```python
+ContextPackage(
+    project=...,
+    task=...,
+    state=...,
+    memory=...,
+    decisions=...,
+    handoff=...,
+    related_projects=...,
+    relevant_knowledge=...,
+    git_state=...,
+    recent_events=...,
+)
+```
+
+This package can then be rendered into the agent-specific prompt/skill format.
+
+---
+
+# 48. Context Budget
+
+ShellDeck should enforce a context budget.
+
+For example:
+
+```text
+Task                10%
+Current State       20%
+Relevant Memory     20%
+Handoff             20%
+Knowledge           20%
+Recent Events       10%
+```
+
+The exact allocation should be configurable.
+
+If too much information is available:
+
+```text
+relevance ranking
+      ↓
+deduplication
+      ↓
+summarization
+      ↓
+context budget
+```
+
+---
+
+# 49. Deduplication
+
+Avoid storing duplicate knowledge.
+
+Example:
+
+Agent A:
+
+```text
+JWT contains tenant_id.
+```
+
+Agent B later discovers:
+
+```text
+JWT includes tenant_id.
+```
+
+ShellDeck should detect that this is likely the same knowledge.
+
+Instead of:
+
+```text
+Knowledge 1
+Knowledge 2
+Knowledge 3
+Knowledge 4
+```
+
+maintain:
+
+```text
+Knowledge:
+JWT contains tenant_id.
+
+Sources:
+acme-web
+john-web
+auth-service
+```
+
+---
+
+# 50. Knowledge Confidence
+
+Knowledge should have confidence.
+
+Example:
+
+```text
+0.95 — verified from source code
+0.80 — agent discovery
+0.60 — inferred
+0.30 — speculative
+```
+
+Agents should prefer high-confidence information.
+
+---
+
+# 51. Conflict Detection
+
+Different projects may contain conflicting patterns.
+
+Example:
+
+```text
+acme-web:
+JWT expiry = 15 minutes
+
+john-web:
+JWT expiry = 60 minutes
+```
+
+ShellDeck should NOT merge these into a single global fact.
+
+Instead:
+
+```text
+acme-web:
+JWT expiry = 15m
+
+john-web:
+JWT expiry = 60m
+```
+
+Knowledge remains scoped to its source.
+
+---
+
+# 52. Human Control
+
+Users should be able to inspect and modify context.
+
+Commands:
+
+```bash
+sd context
+sd memory
+sd memory search <query>
+sd projects
+sd project <name>
+sd decisions
+sd handoffs
+```
+
+Future UI should expose:
+
+```text
+Projects
+Sessions
+Tasks
+Memory
+Knowledge
+Decisions
+Relationships
+Handoffs
+```
+
+---
+
+# 53. UI Concept
+
+ShellDeck UI could eventually show:
+
+```text
+┌──────────────────────────────────────────────┐
+│ ShellDeck                                    │
+├───────────────┬──────────────────────────────┤
+│ Projects      │ john-web                     │
+│               │                              │
+│ ● john-web    │ Task                         │
+│ ○ acme-web    │ Implement authentication     │
+│ ○ billing     │                              │
+│               │ State                        │
+│               │ Backend complete             │
+│               │ Frontend pending              │
+│               │                              │
+│               │ Related Projects             │
+│               │ → acme-web                    │
+│               │ → auth-service               │
+│               │                              │
+│               │ Shared Knowledge             │
+│               │ → OAuth architecture         │
+│               │ → JWT conventions             │
+│               │ → Redis token pattern        │
+└───────────────┴──────────────────────────────┘
+```
+
+---
+
+# 54. Local-First
+
+The entire system should work locally.
+
+Default:
+
+```text
+SQLite
+local files
+local FTS
+local embeddings
+```
+
+No cloud dependency.
+
+Optional future integrations can support:
+
+```text
+PostgreSQL
+Qdrant
+Chroma
+Redis
+remote ShellDeck context
+```
+
+But they should not be required.
+
+---
+
+# 55. Performance Requirements
+
+The context system should be lightweight.
+
+Target:
+
+```text
+Startup context load: <100ms
+Simple recall: <100ms
+SQLite search: <50ms typical
+Checkpoint: asynchronous
+Markdown projection: asynchronous
+Embedding generation: asynchronous
+```
+
+Agent terminal interaction must never block on expensive context processing.
+
+---
+
+# 56. Background Processing
+
+Use background workers for:
+
+```text
+knowledge extraction
+embedding generation
+Markdown projection
+event compaction
+stale detection
+indexing
+```
+
+The agent interaction path should remain responsive.
+
+---
+
+# 57. Failure Handling
+
+If the context system fails:
+
+```text
+agent execution MUST continue
+```
+
+Context should be treated as an enhancement, not a single point of failure.
+
+Example:
+
+```text
+SQLite unavailable
+      ↓
+log warning
+      ↓
+agent continues
+```
+
+---
+
+# 58. Privacy
+
+Default behavior:
+
+```text
+local only
+```
+
+Cross-project context should never leave the machine unless explicitly configured.
+
+---
+
+# 59. Migration Strategy
+
+Implement incrementally.
+
+## Phase 1 — Refactor existing handoff
+
+Extend current handoff system with:
+
+```text
+STATE
+TASK
+MEMORY
+DECISIONS
+GIT
+TESTS
+```
+
+Maintain backwards compatibility.
+
+---
+
+## Phase 2 — Session persistence
+
+Add:
+
+```text
+sessions
+events
+checkpoints
+```
+
+Automatically maintain session state.
+
+---
+
+## Phase 3 — Project memory
+
+Add:
+
+```text
+MEMORY.md
+DECISIONS.md
+TASK.md
+STATE.md
+```
+
+with SQLite backing.
+
+---
+
+## Phase 4 — Shared context
+
+Introduce:
+
+```text
+~/.shelldeck/context.db
+```
+
+and global project registry.
+
+---
+
+## Phase 5 — Cross-project retrieval
+
+Implement:
+
+```bash
+sd recall
+```
+
+with SQLite FTS5.
+
+---
+
+## Phase 6 — Project relationships
+
+Add:
+
+```text
+relationships
+```
+
+and cross-project references.
+
+---
+
+## Phase 7 — Semantic retrieval
+
+Add optional embeddings.
+
+---
+
+## Phase 8 — Context graph
+
+Connect:
+
+```text
+Projects
+Agents
+Sessions
+Tasks
+Files
+Knowledge
+Decisions
+Handoffs
+```
+
+---
+
+# 60. Backward Compatibility
+
+Existing ShellDeck functionality must continue working:
+
+```text
+agent spawning
+PTY
+scrollback
+handoffs
+agent skills
+sd done
+sd tell
+team management
+search
+session management
+```
+
+The new context layer should be additive.
+
+---
+
+# 61. Success Criteria
+
+The feature is successful when the following workflow works reliably:
+
+### Scenario 1 — Agent switch
+
+```text
+Claude starts task
+      ↓
+works for 30 minutes
+      ↓
+Claude exits
+      ↓
+Codex starts
+      ↓
+Codex immediately understands current state
+      ↓
+continues work
+```
+
+### Scenario 2 — Restart
+
+```text
+Agent works
+      ↓
+ShellDeck closes
+      ↓
+ShellDeck restarts
+      ↓
+Agent resumes
+      ↓
+context is preserved
+```
+
+### Scenario 3 — Cross-project reuse
+
+```text
+Agent works on acme-web
+      ↓
+discovers authentication architecture
+      ↓
+knowledge stored
+      ↓
+switch to john-web
+      ↓
+ask:
+"Implement authentication similar to acme-web"
+      ↓
+ShellDeck retrieves relevant knowledge
+      ↓
+agent adapts it
+```
+
+### Scenario 4 — Multiple agents
+
+```text
+Claude → implementation
+Codex → debugging
+Gemini → review
+Claude → finalization
+```
+
+All agents share the same persistent context.
+
+---
+
+# 62. Final Product Definition
+
+ShellDeck should ultimately become:
+
+> **A persistent, local-first workspace for AI coding agents where tasks, state, memory, decisions, handoffs, and project knowledge survive across agents, sessions, and repositories.**
+
+The fundamental model is:
+
+```text
+                    SHELLDECK
+                        │
+        ┌───────────────┼────────────────┐
+        │               │                │
+     AGENTS          PROJECTS         KNOWLEDGE
+        │               │                │
+   Claude/Codex     acme-web         architecture
+   Gemini/etc       john-web         decisions
+        │            billing          patterns
+        │               │                │
+        └───────────────┼────────────────┘
+                        │
+                 CONTEXT GRAPH
+                        │
+                ┌───────┴───────┐
+                │               │
+             HANDOFF         RECALL
+                │               │
+          Agent Continuity   Cross-Project
+                              Context
+```
+
+The key architectural principle is:
+
+> **Do not make the agent's conversation the source of truth. Make ShellDeck's persistent context the source of truth.**
+
+Agents become interchangeable workers operating on a persistent shared workspace.
+
+---
+
+# 63. One-Line Vision
+
+**ShellDeck: Run any agent, switch any agent, switch any project — your context follows you.**
