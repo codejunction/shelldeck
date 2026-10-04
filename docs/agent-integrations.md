@@ -21,6 +21,11 @@ approve, deny or block a tool.
 | Qoder CLI | `SessionStart` (`matcher: "*"`): session id only | `~/.qoder/settings.json` (`QODER_CONFIG_DIR`) | yes: `qodercli --resume <id>` |
 | Factory Droid | `SessionStart`: session id only | `~/.factory/settings.json` | yes: `droid --resume <id>` |
 | Devin CLI | `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest`, `Stop`: session id only | `config.json` in `$XDG_CONFIG_HOME/devin`, `%APPDATA%\devin` or `~/.config/devin` | yes: `devin --resume <id>` |
+| Kimi Code CLI (0.14+) | A marked `[[hooks]]` block (`# >>> shelldeck kimi integration`) appended to `config.toml`: prompts, tools, `AskUserQuestion` (blocked: question), permission request/result, stop, interrupt | `~/.kimi-code/` (`KIMI_CODE_HOME`) | yes: `kimi --session <id>` |
+| MastraCode | Flat entries keyed by event at the top of `hooks.json` (agent start/end, tools, permissions, sub-agents, interrupt) | `~/.mastracode/hooks.json` | yes: `mastracode --thread <id>` |
+| Antigravity CLI | One `shelldeck` block (`PreInvocation`) in `hooks.json`, which is keyed by hook name: session id only | `~/.gemini/config/` (`ANTIGRAVITY_CLI_CONFIG_DIR`) | yes: `agy --conversation <id>` |
+| Grok CLI | Its own `hooks/shelldeck.json` (`SessionStart`): session id only | `~/.grok/` (`GROK_HOME`) | yes: `grok --resume <id>` |
+| Kilo Code CLI | The OpenCode plugin, pointed at Kilo (`plugin/shelldeck.js`) | `~/.config/kilo/` (`XDG_CONFIG_HOME`) | yes: `kilo --session <id>` |
 | OpenCode | A plugin, `plugins/shelldeck.js`, that posts `chat.message`, `tool.execute.before`, `session.*` and `permission.*` | `~/.config/opencode/` (`XDG_CONFIG_HOME`) | yes: `opencode --session <id>` |
 
 **Without installing anything**, shelldeck also reads two agents' own logs (source `native`):
@@ -33,9 +38,9 @@ approve, deny or block a tool.
 A native "working" holds only 15 s past the last log event, so a prompt waiting for approval (the log goes quiet) is
 picked up by screen detection again. An integration report outranks native, which outranks the screen.
 
-**Session id only** (Qwen, Qoder, Droid, Devin): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
+**Session id only** (Qwen, Qoder, Droid, Devin, Grok, Antigravity): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
 
-Installing needs the agent's config folder (install and run the agent once first). Kimi, Kilo, Pi, OMP, Hermes, Letta, MastraCode, Grok, Antigravity and the rest keep using screen detection for now (see `sd integration list`).
+Installing needs the agent's config folder (install and run the agent once first). Pi, OMP (TypeScript extensions), Hermes (Python plugin), Letta and the rest keep using screen detection for now (see `sd integration list`).
 
 ## Commands
 

@@ -68,6 +68,12 @@
   Qwen and Qoder. Session-only reports keep lifecycle with screen detection.
   Installing needs the agent's config folder. 10 agents are installable (6 with
   exact lifecycle); the rest stay on screen detection.
+- **2026-10-04 — Herdr's remaining hook agents:** Kimi Code (marked TOML
+  `[[hooks]]` block, AskUserQuestion is reported as blocked: question), MastraCode
+  (flat top-level hooks), Kilo Code (the OpenCode plugin pointed at Kilo), Grok
+  (own hook file, session) and Antigravity CLI (named block, session). 15 agents
+  are installable, 9 with exact lifecycle. Pi, OMP and Hermes (TS/Python plugin
+  APIs) and Letta remain on screen detection.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -222,8 +228,8 @@ conversation without affecting unrelated Codex hooks.
 - [x] Session-id hooks for Qwen Code, Qoder CLI, Factory Droid and Devin CLI (herdr formats).
 - [x] Install/uninstall round-trip tests with unrelated config preserved.
 - [ ] Manual check against installed binaries.
-- [ ] Remaining herdr agents: Kimi (TOML hooks), Kilo/Pi/OMP (plugins/extensions),
-  Hermes (Python plugin), Letta, MastraCode, Grok, Antigravity.
+- [x] Kimi (TOML hooks), Kilo (plugin), MastraCode, Grok, Antigravity.
+- [ ] Pi/OMP (TypeScript extensions), Hermes (Python plugin), Letta.
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.

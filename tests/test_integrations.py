@@ -170,3 +170,58 @@ def test_cursor_resume_uses_cursor_agent():
     body = hook.report("cursor", {"hook_event_name": "stop", "conversation_id": "c1"})
     _, _, ref = agent_state.parse_report(body, "cursor")
     assert ref.resume_argv == ("cursor-agent", "--resume", "c1")
+
+
+def test_kimi_toml_block_round_trip(homes, monkeypatch):
+    monkeypatch.setenv("KIMI_CODE_HOME", str(homes / "kimi"))
+    (homes / "kimi").mkdir()
+    cfg = homes / "kimi" / "config.toml"
+    cfg.write_text('model = "k2"\n\n[[hooks]]\nevent = "Stop"\ncommand = "theirs"\n')
+    integrations.install("kimi")
+    integrations.install("kimi")
+    text = cfg.read_text()
+    assert text.count(integrations.KIMI_BEGIN) == 1 and 'command = "theirs"' in text
+    assert '"^AskUserQuestion$"' in text and "-m shelldeck.hook kimi blocked" in text
+    assert integrations.status("kimi")["status"] == "installed"
+    integrations.uninstall("kimi")
+    assert cfg.read_text() == 'model = "k2"\n\n[[hooks]]\nevent = "Stop"\ncommand = "theirs"\n'
+
+
+def test_mastracode_flat_hooks(homes):
+    d = homes / "home" / ".mastracode"
+    d.mkdir(parents=True)
+    (d / "hooks.json").write_text(json.dumps({"Stop": [{"type": "command", "command": "theirs"}]}))
+    integrations.install("mastracode")
+    cfg = json.loads((d / "hooks.json").read_text())
+    assert "hooks" not in cfg and cfg["PermissionRequest"][0]["command"].endswith("-m shelldeck.hook mastracode")
+    assert integrations.status("mastracode")["status"] == "installed"
+    integrations.uninstall("mastracode")
+    assert json.loads((d / "hooks.json").read_text()) == {"Stop": [{"type": "command", "command": "theirs"}]}
+
+
+def test_antigravity_named_block_grok_and_kilo(homes, monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_CLI_CONFIG_DIR", str(homes / "agy"))
+    monkeypatch.setenv("GROK_HOME", str(homes / "grok"))
+    for d in ("agy", "grok", "xdg/kilo"):
+        (homes / d).mkdir(parents=True)
+    (homes / "agy" / "hooks.json").write_text(json.dumps({"mine": {"PreInvocation": []}}))
+    for agent in ("antigravity", "grok", "kilo"):
+        integrations.install(agent)
+        assert integrations.status(agent)["status"] == "installed", agent
+    assert set(json.loads((homes / "agy" / "hooks.json").read_text())) == {"mine", "shelldeck"}
+    plugin = (homes / "xdg" / "kilo" / "plugin" / "shelldeck.js").read_text()
+    assert '"integration:kilo"' in plugin and '["kilo", "--session", sessionID]' in plugin
+    for agent in ("antigravity", "grok", "kilo"):
+        integrations.uninstall(agent)
+        assert integrations.status(agent)["status"] == "not_installed"
+    assert json.loads((homes / "agy" / "hooks.json").read_text()) == {"mine": {"PreInvocation": []}}
+    assert hook.report("antigravity", {"hook_event_name": "PreInvocation", "conversationId": "cv"})["resume_argv"] == ["agy", "--conversation", "cv"]
+
+
+def test_forced_state_from_installed_command(monkeypatch):
+    sent = []
+    monkeypatch.setenv("SHELLDECK_AGENT_REPORT_TOKEN", "t")
+    monkeypatch.setattr(hook, "send", lambda body, token: sent.append(body))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "session_id": "k"})))
+    hook.main(["kimi", "blocked"])
+    assert sent[0]["state"] == "blocked" and sent[0]["blocked_reason"] == "question" and sent[0]["resume_argv"] == ["kimi", "--session", "k"]

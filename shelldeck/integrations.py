@@ -35,11 +35,11 @@ INTEGRATIONS: tuple[Integration, ...] = (
     Integration("opencode", "plugin", True, True), Integration("pi", "plugin", True, True),
     Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True, "session id only; state from the screen"),
     Integration("droid", "hook", False, True, "session id only; state from the screen"),
-    Integration("kimi", "hook", True, True), Integration("kilo", "plugin", True, True),
+    Integration("kimi", "hook", True, True, "needs Kimi Code 0.14+"), Integration("kilo", "plugin", True, True),
     Integration("hermes", "plugin", False, True), Integration("qodercli", "hook", False, True, "session id only; state from the screen"),
     Integration("qwen", "hook", False, True, "session id only; state from the screen"), Integration("letta", "hook", False, True, "experimental upstream integration"),
-    Integration("mastracode", "hook", True, True), Integration("grok", "hook", False, True),
-    Integration("antigravity", "hook", False, True), Integration("amp", "screen", False, False),
+    Integration("mastracode", "hook", True, True), Integration("grok", "hook", False, True, "session id only; state from the screen"),
+    Integration("antigravity", "hook", False, True, "session id only; state from the screen"), Integration("amp", "screen", False, False),
     Integration("kiro", "screen", False, False), Integration("maki", "screen", False, False),
     Integration("gemini", "hook", True, False), Integration("cline", "screen", False, False),
     Integration("command", "native", True, False), Integration("crush", "native", True, False),
@@ -122,8 +122,17 @@ def _home(env: str, *default: str) -> Path:
 class JsonHooks:
     """Hooks in a shared JSON config: {"hooks": {Event: [entry, ...]}}."""
 
-    def __init__(self, agent: str, file, entry, top: dict | None = None):
-        self.agent, self._file, self.entry, self.top = agent, file, entry, top or {}
+    def __init__(self, agent: str, file, entry, top: dict | None = None, key: str | None = "hooks"):
+        # key=None: events at the top level of the file (MastraCode's hooks.json)
+        self.agent, self._file, self.entry, self.top, self.key = agent, file, entry, top or {}, key
+
+    def _box(self, cfg: dict, create: bool = False):
+        if self.key is None:
+            return cfg
+        if create:
+            return cfg.setdefault(self.key, {})
+        box = cfg.get(self.key)
+        return box if isinstance(box, dict) else None
 
     @property
     def file(self) -> Path:
@@ -140,8 +149,8 @@ class JsonHooks:
 
     def _strip(self, cfg: dict) -> bool:
         changed = False
-        hooks = cfg.get("hooks")
-        if not isinstance(hooks, dict):
+        hooks = self._box(cfg)
+        if hooks is None:
             return False
         for event, items in list(hooks.items()):
             if not isinstance(items, list):
@@ -152,13 +161,13 @@ class JsonHooks:
                 hooks[event] = kept
             else:
                 del hooks[event]
-        if changed and not hooks:
-            del cfg["hooks"]
+        if changed and not hooks and self.key:
+            del cfg[self.key]
         return changed
 
     def installed_commands(self) -> list[str]:
         try:
-            hooks = _read_json(self.file, {}).get("hooks") or {}
+            hooks = self._box(_read_json(self.file, {})) or {}
         except ValueError:
             return []
         out = []
@@ -172,13 +181,13 @@ class JsonHooks:
         if not self.file.parent.is_dir():
             raise ValueError(f"{self.agent} config folder not found at {self.file.parent}; install {self.agent} first")
         cfg = _read_json(self.file, self.top)
-        if cfg.get("hooks") is not None and not isinstance(cfg["hooks"], dict):
-            raise ValueError(f"{self.file} has an unexpected \"hooks\" value, so it wasn't changed")
+        if self.key and cfg.get(self.key) is not None and not isinstance(cfg[self.key], dict):
+            raise ValueError(f"{self.file} has an unexpected \"{self.key}\" value, so it wasn't changed")
         _backup(self.file)
         self._strip(cfg)
         for k, v in self.top.items():
             cfg.setdefault(k, v)
-        hooks = cfg.setdefault("hooks", {})
+        hooks = self._box(cfg, create=True)
         for event in self.events():
             hooks.setdefault(event, []).append(self.entry(event))
         _write(self.file, json.dumps(cfg, indent=2) + "\n")
@@ -198,7 +207,7 @@ class JsonHooks:
         if not found:
             return False, False
         try:
-            cmds = [c for items in (_read_json(self.file, {}).get("hooks") or {}).values() for i in items if self._is_ours(i)
+            cmds = [c for items in (self._box(_read_json(self.file, {})) or {}).values() if isinstance(items, list) for i in items if self._is_ours(i)
                     for c in [i.get("command")] + [h.get("command") for h in i.get("hooks", []) if isinstance(h, dict)] if _ours(c, self.agent)]
         except (ValueError, AttributeError):
             cmds = []
@@ -217,7 +226,7 @@ class OwnFile:
         return self._file()
 
     def install(self) -> dict:
-        root = self.file.parent.parent if self.file.parent.name in ("hooks", "plugins") else self.file.parent
+        root = self.file.parent.parent if self.file.parent.name in ("hooks", "plugins", "plugin") else self.file.parent
         if not root.is_dir():
             raise ValueError(f"{self.agent} config folder not found at {root}; install {self.agent} first")
         if self.file.exists() and self.marker not in self.file.read_text(encoding="utf-8", errors="replace"):
@@ -305,15 +314,111 @@ def _cmd_entry(agent: str, timeout: int, matcher: str | None = None):
     return entry
 
 
+class NamedBlock:
+    """One shelldeck-owned key in a JSON file keyed by hook name (Antigravity CLI's hooks.json)."""
+
+    def __init__(self, agent: str, file, render):
+        self.agent, self._file, self.render = agent, file, render
+
+    @property
+    def file(self) -> Path:
+        return self._file()
+
+    def install(self) -> dict:
+        if not self.file.parent.is_dir():
+            raise ValueError(f"{self.agent} config folder not found at {self.file.parent}; install {self.agent} first")
+        cfg = _read_json(self.file, {})
+        _backup(self.file)
+        cfg["shelldeck"] = self.render()
+        _write(self.file, json.dumps(cfg, indent=2) + "\n")
+        return {"file": str(self.file)}
+
+    def uninstall(self) -> dict:
+        if self.file.exists():
+            cfg = _read_json(self.file, {})
+            if cfg.pop("shelldeck", None) is not None:
+                _write(self.file, json.dumps(cfg, indent=2) + "\n")
+        return {"file": str(self.file)}
+
+    def state(self) -> tuple[bool, bool]:
+        try:
+            block = _read_json(self.file, {}).get("shelldeck")
+        except ValueError:
+            return False, False
+        return block is not None, block == self.render()
+
+
+KIMI_BEGIN, KIMI_END = "# >>> shelldeck kimi integration", "# <<< shelldeck kimi integration"
+# (event, matcher, state) as herdr installs them: AskUserQuestion is the agent asking you
+KIMI_HOOKS = [("SessionStart", None, "session"), ("UserPromptSubmit", None, "working"),
+              ("PreToolUse", "^(?!AskUserQuestion$).*$", "working"), ("PreToolUse", "^AskUserQuestion$", "blocked"),
+              ("PostToolUse", "^AskUserQuestion$", "working"), ("PostToolUseFailure", "^AskUserQuestion$", "working"),
+              ("SubagentStart", None, "working"), ("PreCompact", None, "working"), ("PermissionRequest", None, "blocked"),
+              ("PermissionResult", None, "working"), ("Stop", None, "done"), ("Interrupt", None, "idle")]
+
+
+def strip_kimi_block(text: str) -> str:
+    out, inside = [], False
+    for line in text.splitlines():
+        if line.strip() == KIMI_BEGIN:
+            inside = True
+        elif line.strip() == KIMI_END and inside:
+            inside = False
+        elif not inside:
+            out.append(line)
+    body = "\n".join(out).rstrip("\n")
+    return body + "\n" if body else ""
+
+
+def kimi_block() -> str:
+    tables = "".join(f"[[hooks]]\nevent = {json.dumps(e)}\n" + (f"matcher = {json.dumps(m)}\n" if m else "")
+                     + f"command = {json.dumps(hook_command('kimi', st))}\ntimeout = 10\n\n" for e, m, st in KIMI_HOOKS)
+    return f"{KIMI_BEGIN}\n{tables}{KIMI_END}\n"
+
+
+class KimiToml:
+    """A marked `[[hooks]]` block at the end of Kimi Code's config.toml (needs Kimi 0.14+, as herdr notes)."""
+
+    agent = "kimi"
+
+    @property
+    def file(self) -> Path:
+        return _home("KIMI_CODE_HOME", ".kimi-code") / "config.toml"
+
+    def install(self) -> dict:
+        if not self.file.parent.is_dir():
+            raise ValueError(f"kimi config folder not found at {self.file.parent}; install kimi first")
+        text = self.file.read_text(encoding="utf-8") if self.file.exists() else ""
+        rest = strip_kimi_block(text)
+        new = (rest + "\n" if rest else "") + kimi_block()
+        if new != text:
+            _backup(self.file)
+            _write(self.file, new)
+        return {"file": str(self.file)}
+
+    def uninstall(self) -> dict:
+        if self.file.exists():
+            text = self.file.read_text(encoding="utf-8")
+            if KIMI_BEGIN in text:
+                _write(self.file, strip_kimi_block(text))
+        return {"file": str(self.file)}
+
+    def state(self) -> tuple[bool, bool]:
+        text = self.file.read_text(encoding="utf-8") if self.file.exists() else ""
+        if KIMI_BEGIN not in text:
+            return False, False
+        return True, text.endswith(kimi_block())
+
+
 def _copilot_file() -> str:
     hooks = {e: [{"type": "command", "command": hook_command("copilot", e), "timeoutSec": 5}] for e in hook.EVENTS["copilot"]}
     return json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n"
 
 
 OPENCODE_PLUGIN = """// {marker} v{version}
-// Reports OpenCode's lifecycle (working / needs approval / done) to the shelldeck terminal it runs in.
-// Installed by `sd integration install opencode`; `sd integration uninstall opencode` removes it.
-// Outside a shelldeck terminal it does nothing, and nothing here changes what OpenCode does.
+// Reports {agent}'s lifecycle (working / needs approval / done) to the shelldeck terminal it runs in.
+// Installed by `sd integration install {agent}`; `sd integration uninstall {agent}` removes it.
+// Outside a shelldeck terminal it does nothing, and nothing here changes what {agent} does.
 export const ShelldeckPlugin = async () => {{
   const env = (globalThis.process && process.env) || {{}}
   const token = env.SHELLDECK_AGENT_REPORT_TOKEN
@@ -321,11 +426,11 @@ export const ShelldeckPlugin = async () => {{
   const send = (state, sessionID, reason) => {{
     if (!token) return
     try {{
-      const body = {{ source: "integration:opencode", agent: "opencode", state, blocked_reason: reason || null,
+      const body = {{ source: "integration:{agent}", agent: "{agent}", state, blocked_reason: reason || null,
         ttl_ms: state === "working" ? 60000 : 120000 }}
       if (typeof sessionID === "string" && sessionID) {{
         body.agent_session_id = sessionID
-        body.resume_argv = ["opencode", "--session", sessionID]
+        body.resume_argv = ["{agent}", "--session", sessionID]
       }}
       fetch(url, {{ method: "POST", headers: {{ "content-type": "application/json", "x-shelldeck-report-token": token }},
         body: JSON.stringify(body), signal: AbortSignal.timeout(1500) }}).catch(() => {{}})
@@ -349,8 +454,25 @@ export const ShelldeckPlugin = async () => {{
 """
 
 
-def _opencode_plugin() -> str:
-    return OPENCODE_PLUGIN.format(marker=OPENCODE_MARKER, version=PLUGIN_VERSION)
+def _opencode_plugin(agent: str = "opencode") -> str:
+    """OpenCode's plugin; Kilo Code is an OpenCode fork with the same plugin events (herdr ships one asset shape for both)."""
+    return OPENCODE_PLUGIN.format(marker=OPENCODE_MARKER if agent == "opencode" else f"shelldeck-{agent}-plugin", version=PLUGIN_VERSION, agent=agent)
+
+
+def _xdg() -> Path:
+    return Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config"
+
+
+def _flat_entry(agent: str, timeout: int):
+    return lambda e: {"type": "command", "command": hook_command(agent), "timeout": timeout, "description": "Report agent state to shelldeck"}
+
+
+def _grok_file() -> str:
+    return json.dumps({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": hook_command("grok"), "timeout": 10}]}]}}, indent=2) + "\n"
+
+
+def _antigravity_block() -> dict:
+    return {e: [{"type": "command", "command": hook_command("antigravity"), "timeout": 10}] for e in hook.EVENTS["antigravity"]}
 
 
 INSTALLERS = {
@@ -366,16 +488,20 @@ INSTALLERS = {
     "qodercli": JsonHooks("qodercli", lambda: _home("QODER_CONFIG_DIR", ".qoder") / "settings.json", _cmd_entry("qodercli", 10, "*")),
     "droid": JsonHooks("droid", lambda: Path.home() / ".factory" / "settings.json", _cmd_entry("droid", 10)),
     "devin": JsonHooks("devin", lambda: _devin_dir() / "config.json", _cmd_entry("devin", 10)),
+    "mastracode": JsonHooks("mastracode", lambda: Path.home() / ".mastracode" / "hooks.json", _flat_entry("mastracode", 10_000), key=None),
+    "kimi": KimiToml(),
+    "antigravity": NamedBlock("antigravity", lambda: _home("ANTIGRAVITY_CLI_CONFIG_DIR", ".gemini", "config") / "hooks.json", _antigravity_block),
+    "grok": OwnFile("grok", lambda: _home("GROK_HOME", ".grok") / "hooks" / "shelldeck.json", _grok_file, "-m shelldeck.hook grok"),
+    "kilo": OwnFile("kilo", lambda: _xdg() / "kilo" / "plugin" / "shelldeck.js", lambda: _opencode_plugin("kilo"), "shelldeck-kilo-plugin"),
     "copilot": OwnFile("copilot", lambda: _home("COPILOT_HOME", ".copilot") / "hooks" / "shelldeck.json", _copilot_file, "-m shelldeck.hook copilot"),
-    "opencode": OwnFile("opencode", lambda: (Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config")
-                        / "opencode" / "plugins" / "shelldeck.js", _opencode_plugin, OPENCODE_MARKER),
+    "opencode": OwnFile("opencode", lambda: _xdg() / "opencode" / "plugins" / "shelldeck.js", _opencode_plugin, OPENCODE_MARKER),
 }
 
 
 def _root(inst) -> Path:
     """The agent's own config folder (installing needs it to exist)."""
     f = inst.file
-    return f.parent.parent if f.parent.name in ("hooks", "plugins") else f.parent
+    return f.parent.parent if f.parent.name in ("hooks", "plugins", "plugin") else f.parent
 
 
 def status(agent: str, available: bool = False) -> dict:

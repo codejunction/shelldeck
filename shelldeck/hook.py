@@ -39,6 +39,14 @@ EVENTS: dict[str, dict[str, str | None]] = {
     "droid": {"SessionStart": SESSION},
     "devin": {"SessionStart": SESSION, "UserPromptSubmit": SESSION, "PreToolUse": SESSION, "PostToolUse": SESSION,
               "PermissionRequest": SESSION, "Stop": SESSION},
+    "kimi": {"SessionStart": SESSION, "UserPromptSubmit": WORKING, "PreToolUse": WORKING, "PostToolUse": WORKING,
+             "PostToolUseFailure": WORKING, "SubagentStart": WORKING, "PreCompact": WORKING, "PermissionRequest": BLOCKED,
+             "PermissionResult": WORKING, "Stop": DONE, "Interrupt": IDLE},
+    "mastracode": {"SessionStart": SESSION, "UserPromptSubmit": WORKING, "AgentStart": WORKING, "PreToolUse": WORKING,
+                   "PermissionRequest": BLOCKED, "PermissionResult": WORKING, "SubagentStart": WORKING, "SubagentEnd": WORKING,
+                   "Interrupt": IDLE, "AgentEnd": DONE, "Stop": DONE},
+    "grok": {"SessionStart": SESSION},
+    "antigravity": {"PreInvocation": SESSION},
     "copilot": {"sessionStart": IDLE, "userPromptSubmitted": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING,
                 "notification": None, "errorOccurred": IDLE, "agentStop": DONE, "sessionEnd": None},
 }
@@ -51,12 +59,18 @@ RESUME = {
     "copilot": lambda i: ["copilot", f"--resume={i}"], "devin": lambda i: ["devin", "--resume", i],
     "droid": lambda i: ["droid", "--resume", i], "qwen": lambda i: ["qwen", "--resume", i],
     "qodercli": lambda i: ["qodercli", "--resume", i], "cursor": lambda i: ["cursor-agent", "--resume", i],
+    "kimi": lambda i: ["kimi", "--session", i], "mastracode": lambda i: ["mastracode", "--thread", i],
+    "grok": lambda i: ["grok", "--resume", i], "antigravity": lambda i: ["agy", "--conversation", i],
 }
+STATES = {WORKING, IDLE, DONE, BLOCKED, SESSION}  # an explicit state in the installed command (matcher-specific hooks)
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 
 
-def state_for(agent: str, event: dict) -> tuple[str | None, str | None]:
+def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str | None, str | None]:
     """(state, blocked_reason) for one hook event, or (None, None) to ignore it."""
+    if forced in STATES:
+        asks = event.get("tool_name") == "AskUserQuestion"  # the agent asking you, not a permission prompt
+        return forced, (("question" if asks else "approval") if forced == BLOCKED else None)
     name = event.get("hook_event_name") or ""
     state = EVENTS.get(agent, {}).get(name)
     if agent == "claude" and name == "Notification":
@@ -73,9 +87,9 @@ def state_for(agent: str, event: dict) -> tuple[str | None, str | None]:
     return state, ("approval" if state == BLOCKED else None)
 
 
-def report(agent: str, event: dict) -> dict | None:
+def report(agent: str, event: dict, forced: str | None = None) -> dict | None:
     """The report body for an event, with the native session for agents whose resume command is known."""
-    state, reason = state_for(agent, event)
+    state, reason = state_for(agent, event, forced)
     if not state:
         return None
     body: dict = {"source": f"integration:{agent}", "agent": agent}
@@ -122,12 +136,13 @@ def main(argv: list[str] | None = None) -> int:
             event = {}
     except ValueError:
         event = {}
-    if len(argv) > 1:  # Copilot's payloads don't name their event; the installed command does
+    forced = argv[1] if len(argv) > 1 and argv[1] in STATES else None
+    if len(argv) > 1 and not forced:  # Copilot's payloads don't name their event; the installed command does
         event.setdefault("hook_event_name", argv[1])
     token = os.environ.get("SHELLDECK_AGENT_REPORT_TOKEN")
     if token and agent in EVENTS:
         try:
-            if body := report(agent, event):
+            if body := report(agent, event, forced):
                 send(body, token)
         except Exception:  # noqa: BLE001 - never break the agent
             pass
