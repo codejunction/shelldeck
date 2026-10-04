@@ -205,6 +205,9 @@
   and model that widen the query (`recall?agent=&model=`, `recall-agents`,
   `sd recall --agent --model`; the default is the cheapest model). Checked in a
   browser with real Claude haiku.
+- **2026-10-04 — 0.0.7rc3 published to PyPI** (release run 37229022371, CI green):
+  the decluttered sidebar, the redesigned Context page and the agent/model choice
+  for search. Installed from PyPI and checked.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
