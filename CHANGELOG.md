@@ -21,6 +21,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Native slash commands behind one set of actions (`sd agent cmd`, *Command…* menu): compact, clear, new, model, status, resume, review, init and more, mapped per agent (Claude, Codex and Gemini verified from their sources; Devin unverified). Codex hooks also report tool use and approval requests.
 - `sd agent prompt [--wait]`, `sd agent rename`, and `sd events subscribe` (SSE `/api/events`).
 - `sd agent explain` (and `--file`): why an agent has its state, without showing screen text.
+- Context page: task and state editor, memory with verify/invalidate, decisions, related projects, and cross-project search.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

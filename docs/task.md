@@ -129,6 +129,11 @@
   - [ ] Devin CLI: install and verify its commands, flags and hooks. The
     environment blocks devin.ai (needs devin.ai / *.devin.ai allowed in the
     cloud environment's network settings).
+- **2026-10-04 — Task 5.8 (UI) complete:** a *Context* view (sidebar and
+  palette) with a project picker, an editable task/state, memory with status
+  badges and Verify/Invalidate, decisions, related projects, recent events and
+  cross-project search. Local-only storage is stated on the page. Checked in a
+  browser (save, redaction, verify, search).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -458,11 +463,11 @@ targets met; context failures don't crash agents.
 
 ### Task 5.8: Human-control UI and privacy
 
-- [ ] Add UI sections for Projects, Sessions, Tasks, Memory, Knowledge,
+- [x] Add UI sections for Projects, Sessions, Tasks, Memory, Knowledge,
   Decisions, Relationships, Handoffs (section 52).
-- [ ] Ensure cross-project context never leaves machine unless explicitly
+- [x] Ensure cross-project context never leaves machine unless explicitly
   configured (section 58).
-- [ ] Default all storage to local SQLite/files; optional future PostgreSQL,
+- [x] Default all storage to local SQLite/files; optional future PostgreSQL,
   Qdrant, Chroma, Redis are opt-in (section 54).
 
 **Primary files:** `shelldeck/static/agents.js`, new context UI components,

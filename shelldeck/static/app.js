@@ -1598,12 +1598,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", agents: "AI agents", scratch: "Scratchpad" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", agents: "AI agents", scratch: "Scratchpad", context: "Context" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents", "scratch"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   $("#term-actions").hidden = view !== "terminals";
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
@@ -1753,6 +1753,7 @@ function commandPalette() {
     ...(canShare() ? [["Share…", "share", () => shareDialog()]] : []),
     ["AI agents", "sparkle", () => switchView("agents")],
     ["Scratchpad", "note", () => switchView("scratch")],
+    ["Context", "sparkle", () => switchView("context")],
     ["Open file…", "note", () => openFileDialog()],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
