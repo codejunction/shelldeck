@@ -30,6 +30,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Fixed: a redacted value could corrupt a stored context event (secrets are now redacted per value before serializing).
 - Devin CLI: commands and flags cross-checked from web sources (slash commands `/compact /clear /new /model /context /resume /plan /revert /exit`, shell tool `exec` captured); its hooks are limited to the events Devin accepts.
 - Smart recall without embeddings: `sd recall --smart`, a Context page toggle and the `recall_agent` setting expand the query with an installed agent's smallest model (claude haiku, gemini flash-lite, codex/devin small tier) in its non-interactive mode. Only the query is sent; results are cached; it falls back to keywords.
+- Tidier sidebar: Terminals, AI agents and Context stay visible; Bookmarks, Scheduler, Tasks, History, Task manager, Devices and Scratchpad fold under *More* (remembered); Settings gets its own line; Context has its own icon.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

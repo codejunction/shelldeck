@@ -116,7 +116,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 - `shelldeck/static/`:
   - `index.html` (boot overlay, shell).
   - `app.css`.
-  - `app.js`: state, `Term` class, layout tree and free canvas, sidebar, palette, shortcuts, boot.
+  - `app.js`: state, `Term` class, layout tree and free canvas, sidebar, palette, shortcuts, boot. Sidebar footer: Terminals, AI agents and Context always shown; the other views sit in the `#sb-more` *More* fold (open state in localStorage `sbMore`, auto-opens on one of its views); Settings + `#conn` on their own line.
   - `views.js`: bookmarks, scheduler, tasks, settings, add-project, alarms.
   - `devices.js`: Devices view (signed-in browsers, in use / idle, revoke).
   - `editor.js`: `openFile(path, {sid, mode, line})` dialog: textarea + line-number gutter, markdown preview, image view, Ctrl+S, dirty guard through `dialog().canClose`. Used by `sd edit/view`, the palette's *Open file…* and clickable paths when the `editor` setting is `shelldeck`.

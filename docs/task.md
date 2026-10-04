@@ -195,6 +195,10 @@
 - **2026-10-04 — 0.0.7rc2 published to PyPI** (release run 37227723591, CI green
   on Windows and Ubuntu, py3.12–3.14). Installed from PyPI and checked (version,
   `sd recall --smart`).
+- **2026-10-04 — Sidebar decluttered (user feedback):** primary links
+  (Terminals, AI agents, Context) stay visible; seven tools fold under a
+  remembered *More* (auto-opens when one is active); Settings has its own line;
+  Context got a layers icon. Checked in a browser, closed and open.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.

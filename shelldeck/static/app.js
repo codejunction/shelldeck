@@ -1605,6 +1605,7 @@ export function switchView(view) {
   S.view = view;
   for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
+  if ($("#sb-more .sb-link.active")) $("#sb-more").open = true; // a view inside "More" keeps it open
   $("#term-actions").hidden = view !== "terminals";
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
   if (view === "terminals") {
@@ -2105,3 +2106,12 @@ async function init() {
 }
 
 init();
+
+// sidebar "More" group: remember open/closed per browser
+{
+  const more = document.getElementById("sb-more");
+  if (more) {
+    more.open = store.get("sbMore", false) || !!more.querySelector(".sb-link.active");
+    more.addEventListener("toggle", () => store.set("sbMore", more.open));
+  }
+}

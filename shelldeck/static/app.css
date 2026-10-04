@@ -430,13 +430,44 @@ i[data-icon] svg {
   border-top: 1px solid var(--border);
   padding-top: 6px;
   margin-top: 6px;
+  display: grid;
+  gap: 1px;
 }
 
-.sb-row {
+/* "More": the less-used views, folded away so the projects list keeps the room */
+.sb-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.sb-more > summary::-webkit-details-marker { display: none; }
+.sb-more > summary .chev {
+  margin-left: auto;
+  display: inline-flex;
+  color: var(--faint);
+  transform: rotate(-90deg);
+  transition: transform 0.15s ease;
+}
+.sb-more[open] > summary .chev { transform: none; }
+.sb-more-items {
+  display: grid;
+  gap: 1px;
+  padding-left: 10px;
+  margin-left: 15px;
+  border-left: 1px solid var(--border);
+}
+.sb-more-items .sb-link { padding-top: 5px; padding-bottom: 5px; }
+
+/* Settings: its own line at the very bottom, with the connection dot */
+.sb-settings {
   display: flex;
   align-items: center;
   gap: 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 5px;
+  padding-top: 5px;
 }
+@media (prefers-reduced-motion: reduce) { .sb-more > summary .chev { transition: none; } }
+
 
 .conn {
   width: 8px;
