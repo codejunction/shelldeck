@@ -1537,11 +1537,13 @@ async def agent_report(request: Request, payload: dict):
     except lifecycle.ReportError as e:
         log.info("agent report rejected: session=%s agent=%s error=%s", sid, key, e)
         return err(str(e), 422)
-    reports.put(sid, report, meta)
+    source = str(payload["source"])
+    if report:
+        reports.put(sid, report, meta)
     if ref:
-        db.save_agent_session(sid, key, report.source, ref.session_id, list(ref.resume_argv), str(report.status.state))
+        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), agent_status.get(sid, {}).get("state", "unknown"))
     status = _status_of(sid)
-    log.info("agent report: session=%s source=%s agent=%s state=%s", sid, report.source, key, status["state"])
+    log.info("agent report: session=%s source=%s agent=%s state=%s", sid, source, key, status["state"] if report else "(session only)")
     await _publish(sid, status, key)
     return {"status": status}
 

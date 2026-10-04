@@ -13,6 +13,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - Agent integrations, following the hook formats dotpals uses: lifecycle hooks for Claude Code, Gemini CLI, Cursor and Copilot CLI, and an OpenCode plugin (`sd integration install|uninstall|status|detect`, and an **Integrations** section on the AI agents page). Config edits are merged, backed up and atomic. Claude Code and OpenCode also report their native session for a later resume.
 - Codex and Claude Code state and session ids are also read from their own logs (rollouts, `sessions/<pid>.json`) with no install. A quiet log expires quickly, so approval prompts still come from the screen.
 - Resume agent sessions after a restart: *Resumable sessions* on the AI agents page, `sd agent resume`, and the `agent_resume` setting (`ask` by default, `auto` or `never`). Only validated argv of plain words is run. Auto never resumes into an open hand-off, a missing folder or a missing CLI.
+- More integrations, following herdr's formats: Codex hooks (`~/.codex/hooks.json` + `[features] hooks = true`), and session-id hooks for Qwen Code, Qoder CLI, Factory Droid and Devin CLI. Resume commands for Codex, Copilot, Cursor, Devin, Droid, Qwen and Qoder. Session-only reports (no `state`) store a resumable session without claiming lifecycle state.
 - Hand-off files include a context snapshot, and the installed agent skill teaches the context workflow.
 
 ## [0.0.6] - 2026-10-01

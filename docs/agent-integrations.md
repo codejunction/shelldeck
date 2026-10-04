@@ -7,16 +7,20 @@ the skill only teaches an agent the `sd` commands.
 Without an integration, shelldeck still detects the agent and reads its state from the screen. With one, the AI agents
 page shows the state as coming from `integration`.
 
-The formats below follow each agent's hook documentation; they are the same mechanisms
-[dotpals](https://github.com/Rikinshah787/dotpals) connects to. Only watching events are used: an integration can never
+The formats below follow each agent's hook documentation, as connected by [dotpals](https://github.com/Rikinshah787/dotpals) (Claude, Gemini, Cursor, Copilot, OpenCode) and [herdr](https://github.com/herdrdev/herdr) (Codex, Qwen Code, Qoder, Droid, Devin and the resume commands). Only watching events are used: an integration can never
 approve, deny or block a tool.
 
 | Agent | What is installed | Where (env override) | Session/resume |
 | --- | --- | --- | --- |
 | Claude Code | Hook entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `PreCompact`, `Stop`, `StopFailure` (all `async`) | `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR`) | yes: `claude --resume <id>` |
 | Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` | `~/.gemini/settings.json` (`GEMINI_DIR`) | no |
-| Cursor (editor and CLI) | `hooks.json` entries for the watching hooks (`sessionStart`, `beforeSubmitPrompt`, `after*`, `postToolUse*`, `subagentStop`, `preCompact`, `stop`) | `~/.cursor/hooks.json` (`CURSOR_DIR`) | no |
-| GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | no |
+| Cursor (editor and CLI) | `hooks.json` entries for the watching hooks (`sessionStart`, `beforeSubmitPrompt`, `after*`, `postToolUse*`, `subagentStop`, `preCompact`, `stop`) | `~/.cursor/hooks.json` (`CURSOR_DIR`) | yes: `cursor-agent --resume <id>` |
+| GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | yes: `copilot --resume=<id>` |
+| Codex | `hooks.json` entries for `SessionStart`, `UserPromptSubmit`, `Stop`, `Interrupt`, plus `hooks = true` under `[features]` in `config.toml` (left in place on uninstall) | `~/.codex/` (`CODEX_HOME`) | yes: `codex resume <id>` |
+| Qwen Code | `SessionStart` (`matcher: "*"`): session id only | `~/.qwen/settings.json` (`QWEN_HOME`) | yes: `qwen --resume <id>` |
+| Qoder CLI | `SessionStart` (`matcher: "*"`): session id only | `~/.qoder/settings.json` (`QODER_CONFIG_DIR`) | yes: `qodercli --resume <id>` |
+| Factory Droid | `SessionStart`: session id only | `~/.factory/settings.json` | yes: `droid --resume <id>` |
+| Devin CLI | `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest`, `Stop`: session id only | `config.json` in `$XDG_CONFIG_HOME/devin`, `%APPDATA%\devin` or `~/.config/devin` | yes: `devin --resume <id>` |
 | OpenCode | A plugin, `plugins/shelldeck.js`, that posts `chat.message`, `tool.execute.before`, `session.*` and `permission.*` | `~/.config/opencode/` (`XDG_CONFIG_HOME`) | yes: `opencode --session <id>` |
 
 **Without installing anything**, shelldeck also reads two agents' own logs (source `native`):
@@ -29,8 +33,9 @@ approve, deny or block a tool.
 A native "working" holds only 15 s past the last log event, so a prompt waiting for approval (the log goes quiet) is
 picked up by screen detection again. An integration report outranks native, which outranks the screen.
 
-Devin, Qwen, Amp and the rest keep using screen detection until their hook format has been checked (see
-`sd integration list`).
+**Session id only** (Qwen, Qoder, Droid, Devin): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
+
+Installing needs the agent's config folder (install and run the agent once first). Kimi, Kilo, Pi, OMP, Hermes, Letta, MastraCode, Grok, Antigravity and the rest keep using screen detection for now (see `sd integration list`).
 
 ## Commands
 

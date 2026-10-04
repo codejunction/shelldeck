@@ -24,8 +24,10 @@ from shelldeck import hook  # noqa: E402
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    for env, sub in (("CLAUDE_CONFIG_DIR", "claude"), ("GEMINI_DIR", "gemini"), ("CURSOR_DIR", "cursor"), ("COPILOT_HOME", "copilot"), ("XDG_CONFIG_HOME", "xdg")):
+    for env, sub in (("CLAUDE_CONFIG_DIR", "claude"), ("GEMINI_DIR", "gemini"), ("CURSOR_DIR", "cursor"), ("COPILOT_HOME", "copilot"),
+                     ("XDG_CONFIG_HOME", "xdg"), ("CODEX_HOME", "codex"), ("QWEN_HOME", "qwen"), ("QODER_CONFIG_DIR", "qoder")):
         monkeypatch.setenv(env, str(tmp_path / sub))
+    monkeypatch.setattr(integrations.Path, "home", lambda: tmp_path / "home")
     return tmp_path
 
 
@@ -65,6 +67,7 @@ def test_unreadable_config_is_never_touched(homes):
 
 
 def test_outdated_when_interpreter_moved(homes):
+    (homes / "gemini").mkdir()
     integrations.install("gemini")
     file = homes / "gemini" / "settings.json"
     file.write_text(file.read_text().replace(integrations.sys.executable.replace("\\", "/"), "/gone/python"))
@@ -119,3 +122,51 @@ def test_hook_main_never_fails_and_replies(monkeypatch, capsys):
     monkeypatch.delenv("SHELLDECK_AGENT_REPORT_TOKEN")
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert hook.main(["claude"]) == 0 and len(sent) == 2  # outside shelldeck: nothing sent
+
+
+def test_install_needs_the_agent_installed(homes):
+    with pytest.raises(ValueError, match="install qwen first"):
+        integrations.install("qwen")
+    with pytest.raises(ValueError, match="install copilot first"):
+        integrations.install("copilot")
+
+
+@pytest.mark.parametrize("agent,rel,matcher", [("qwen", "qwen/settings.json", "*"), ("qodercli", "qoder/settings.json", "*"),
+                                               ("droid", "home/.factory/settings.json", None), ("devin", "xdg/devin/config.json", None)])
+def test_session_only_agents(homes, agent, rel, matcher):
+    file = homes / rel
+    file.parent.mkdir(parents=True)
+    file.write_text(json.dumps({"keep": 1}))
+    integrations.install(agent)
+    cfg = json.loads(file.read_text())
+    group = cfg["hooks"]["SessionStart"][0]
+    assert group.get("matcher") == matcher and group["hooks"][0]["command"].endswith(f"-m shelldeck.hook {agent}")
+    integrations.uninstall(agent)
+    assert json.loads(file.read_text()) == {"keep": 1}
+    body = hook.report(agent, {"hook_event_name": "SessionStart", "session_id": "s-9"})
+    assert "state" not in body and body["agent_session_id"] == "s-9" and body["resume_argv"][-1].endswith("s-9")
+    assert hook.report(agent, {"hook_event_name": "SessionStart"}) is None  # nothing to say without an id
+
+
+def test_codex_hooks_and_feature_flag(homes):
+    d = homes / "codex"
+    d.mkdir()
+    (d / "config.toml").write_text('model = "gpt-5"\n\n[features]\ncodex_hooks = true  # old name\nweb = true\n')
+    integrations.install("codex")
+    toml = (d / "config.toml").read_text()
+    assert "hooks = true" in toml and "codex_hooks" not in toml and 'model = "gpt-5"' in toml and "web = true" in toml
+    assert set(json.loads((d / "hooks.json").read_text())["hooks"]) == {"SessionStart", "UserPromptSubmit", "Stop", "Interrupt"}
+    assert integrations.status("codex")["status"] == "installed"
+    assert integrations.enable_codex_hooks("") == "[features]\nhooks = true\n"
+    assert integrations.enable_codex_hooks("[features]\nhooks = false\n") == "[features]\nhooks = true\n"
+    assert integrations.enable_codex_hooks("[tui]\nx = 1\n").endswith("\n\n[features]\nhooks = true\n")
+    integrations.uninstall("codex")
+    assert "hooks" not in json.loads((d / "hooks.json").read_text())
+    assert hook.report("codex", {"hook_event_name": "Stop", "session_id": "t1"})["resume_argv"] == ["codex", "resume", "t1"]
+
+
+def test_cursor_resume_uses_cursor_agent():
+    from shelldeck import agent_state
+    body = hook.report("cursor", {"hook_event_name": "stop", "conversation_id": "c1"})
+    _, _, ref = agent_state.parse_report(body, "cursor")
+    assert ref.resume_argv == ("cursor-agent", "--resume", "c1")

@@ -248,9 +248,9 @@ function integrationSection() {
       const on = i.status === "installed" || i.status === "outdated";
       const btn = on
         ? `${i.status === "outdated" ? `<button class="btn sm" data-integration="${i.agent}" data-op="install">Reinstall</button>` : ""}<button class="btn sm" data-integration="${i.agent}" data-op="remove">Remove</button>`
-        : `<button class="btn sm" data-integration="${i.agent}" data-op="install"${i.available ? "" : ' title="The CLI was not found; installs anyway"'}>Install</button>`;
+        : `<button class="btn sm" data-integration="${i.agent}" data-op="install"${i.config_found ? "" : ' disabled title="Install the agent first (its config folder was not found)"'}>Install</button>`;
       return `<div class="card ag-card"><div class="ag-title"><b>${esc(i.agent)}</b><code class="faint">${esc(i.kind)}</code></div>
-        <p class="faint">${esc(label[i.status] || i.status)}${i.session_restore ? " · reports its session" : ""}${i.available ? "" : " · CLI not found"}</p><div class="row">${btn}</div></div>`;
+        <p class="faint">${esc(label[i.status] || i.status)}${i.lifecycle ? " · exact state" : " · session id only"}${i.session_restore ? " · resumable" : ""}${i.available ? "" : " · CLI not found"}</p><div class="row">${btn}</div></div>`;
     })
     .join("");
   return `<div class="ag-head"><h2>Integrations</h2><span class="faint">Hooks that report working / needs you / done exactly, instead of reading the screen. The skill only teaches commands.</span></div>

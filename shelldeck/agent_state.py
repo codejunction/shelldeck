@@ -107,6 +107,7 @@ _KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,31}$")
 _EXE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$")
 _SOURCE = re.compile(r"^[a-z]+:[a-z0-9_.-]{1,40}$")
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
+RESUME_EXE = {"cursor": "cursor-agent", "antigravity": "agy"}  # agents whose command isn't their kind
 
 
 class ReportError(ValueError):
@@ -144,13 +145,14 @@ def parse_resume_argv(raw, agent: str) -> tuple[str, ...]:
         raise ReportError("invalid_resume_argv")
     if not _EXE.match(raw[0]) or any(_CTRL.search(a) for a in raw) or sum(len(a.encode()) for a in raw) > MAX_ARGV_BYTES:
         raise ReportError("invalid_resume_argv")
-    if raw[0].lower().removesuffix(".exe").removesuffix(".cmd") != agent:
+    if raw[0].lower().removesuffix(".exe").removesuffix(".cmd") not in (agent, RESUME_EXE.get(agent)):
         raise ReportError("resume_agent_mismatch")
     return tuple(raw)
 
 
-def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[Report, DisplayMetadata, AgentSessionReference | None]:
-    """Validate one report for a terminal whose running agent is `agent` (from process detection)."""
+def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[Report | None, DisplayMetadata, AgentSessionReference | None]:
+    """Validate one report for a terminal whose running agent is `agent` (from process detection).
+    With no `state` it is a session-only report (native session id, no lifecycle claim): Report is None."""
     if not isinstance(payload, dict):
         raise ReportError("invalid_payload")
     source = payload.get("source")
@@ -161,8 +163,11 @@ def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[R
         raise ReportError("invalid_source")
     if payload.get("agent") != agent:
         raise ReportError("agent_mismatch")
+    session_only = payload.get("state") is None
+    if session_only and payload.get("agent_session_id") is None:
+        raise ReportError("invalid_state")
     try:
-        state = State(payload.get("state"))
+        state = State(payload.get("state") or "unknown")
     except ValueError:
         raise ReportError("invalid_state") from None
     reason = payload.get("blocked_reason")
@@ -183,7 +188,8 @@ def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[R
         if category not in ("integration", "native"):
             raise ReportError("resume_not_allowed")  # only built-in integrations/log readers may issue resume commands
         ref = AgentSessionReference(agent, native, parse_resume_argv(payload.get("resume_argv"), agent))
-    return Report(source, status, t + ttl / 1000, t), parse_metadata(payload.get("metadata")), ref
+    report = None if session_only else Report(source, status, t + ttl / 1000, t)
+    return report, parse_metadata(payload.get("metadata")), ref
 
 
 class Registry:

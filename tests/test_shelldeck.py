@@ -1005,3 +1005,33 @@ def test_auto_resume_respects_setting(client, monkeypatch, tmp_path):
     asyncio.run(go("never"))
     assert len(started) == 1
     assert client.put("/api/settings", json={"agent_resume": "bogus"}).status_code == 400
+
+
+def test_session_only_report_stores_native_session_without_claiming_state(client, monkeypatch, tmp_path):
+    async def quiet(msg, host_only=False):
+        pass
+
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    work = tmp_path / "q"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setitem(server.manager.procs, sid, Live())
+    monkeypatch.setitem(server.report_tokens, sid, "tok-q")
+    monkeypatch.setitem(server.agent_kind, sid, ("qwen", 4))
+    body = {"source": "integration:qwen", "agent": "qwen", "agent_session_id": "q-1", "resume_argv": ["qwen", "--resume", "q-1"]}
+    r = client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-q"}).json()
+    assert r["status"]["state"] == "unknown" and not server.reports.reports.get(sid)
+    assert db.get_agent_session(sid)["native_session_id"] == "q-1"
+    assert client.post("/api/agent-reports", json={"source": "integration:qwen", "agent": "qwen"},
+                       headers={"X-Shelldeck-Report-Token": "tok-q"}).json()["error"] == "invalid_state"
+    server.agent_status.pop(sid, None)

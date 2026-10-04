@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 WORKING, IDLE, DONE, BLOCKED = "working", "idle", "done", "blocked"
+SESSION = "session"  # report only the agent's session id (for resume); state stays with screen detection
 
 # agent -> event -> state; None = ignore. Blocked carries "approval".
 EVENTS: dict[str, dict[str, str | None]] = {
@@ -31,12 +32,27 @@ EVENTS: dict[str, dict[str, str | None]] = {
     "cursor": {"sessionStart": IDLE, "beforeSubmitPrompt": WORKING, "afterShellExecution": WORKING, "afterFileEdit": WORKING,
                "afterMCPExecution": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING, "subagentStop": WORKING,
                "afterAgentResponse": WORKING, "preCompact": WORKING, "stop": DONE, "sessionEnd": None},
+    # formats and events as herdr installs them (github.com/herdrdev/herdr, src/integration)
+    "codex": {"SessionStart": IDLE, "UserPromptSubmit": WORKING, "Stop": DONE, "Interrupt": IDLE},
+    "qwen": {"SessionStart": SESSION},
+    "qodercli": {"SessionStart": SESSION},
+    "droid": {"SessionStart": SESSION},
+    "devin": {"SessionStart": SESSION, "UserPromptSubmit": SESSION, "PreToolUse": SESSION, "PostToolUse": SESSION,
+              "PermissionRequest": SESSION, "Stop": SESSION},
     "copilot": {"sessionStart": IDLE, "userPromptSubmitted": WORKING, "postToolUse": WORKING, "postToolUseFailure": WORKING,
                 "notification": None, "errorOccurred": IDLE, "agentStop": DONE, "sessionEnd": None},
 }
 # what each agent wants on stdout so it carries on as if there were no hook
 REPLY = {"cursor": lambda event: '{"continue":true}' if event == "beforeSubmitPrompt" else "{}", "gemini": lambda event: "{}"}
 TTL_MS = {WORKING: 60_000, BLOCKED: 120_000, DONE: 120_000, IDLE: 120_000}
+# agent -> resume argv for its session id (herdr's agent_resume.rs); None: no known resume command
+RESUME = {
+    "claude": lambda i: ["claude", "--resume", i], "codex": lambda i: ["codex", "resume", i],
+    "copilot": lambda i: ["copilot", f"--resume={i}"], "devin": lambda i: ["devin", "--resume", i],
+    "droid": lambda i: ["droid", "--resume", i], "qwen": lambda i: ["qwen", "--resume", i],
+    "qodercli": lambda i: ["qodercli", "--resume", i], "cursor": lambda i: ["cursor-agent", "--resume", i],
+}
+SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 
 
 def state_for(agent: str, event: dict) -> tuple[str | None, str | None]:
@@ -62,10 +78,14 @@ def report(agent: str, event: dict) -> dict | None:
     state, reason = state_for(agent, event)
     if not state:
         return None
-    body = {"source": f"integration:{agent}", "agent": agent, "state": state, "blocked_reason": reason, "ttl_ms": TTL_MS[state]}
-    sid = event.get("session_id")
-    if agent == "claude" and isinstance(sid, str) and sid:
-        body["agent_session_id"], body["resume_argv"] = sid, ["claude", "--resume", sid]
+    body: dict = {"source": f"integration:{agent}", "agent": agent}
+    if state != SESSION:
+        body |= {"state": state, "blocked_reason": reason, "ttl_ms": TTL_MS[state]}
+    sid = next((v for k in SESSION_KEYS if isinstance(v := event.get(k), str) and v and not v.startswith("-")), None)
+    if sid and agent in RESUME:
+        body["agent_session_id"], body["resume_argv"] = sid, RESUME[agent](sid)
+    elif state == SESSION:
+        return None
     return body
 
 

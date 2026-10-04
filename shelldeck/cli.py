@@ -67,7 +67,8 @@ def _api(path: str, method: str = "GET", payload: dict | None = None, timeout: f
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
-            code = json.loads(e.read().decode()).get("error", e.reason)
+            body = json.loads(e.read().decode())
+            code = body.get("error", e.reason) + (f": {body['detail']}" if body.get("detail") else "")
         except ValueError:
             code = e.reason
         if code in ("locked", "setup_required"):
@@ -578,13 +579,20 @@ def integration_status(agent: str = typer.Argument("", help="One agent (default:
 @integration_app.command("install")
 def integration_install(agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents (default: every one found).")):
     """Add shelldeck's lifecycle hook/plugin to agents' configs (merged; other hooks stay; a backup is kept)."""
-    targets = agents_ or [r["agent"] for r in _integration_rows() if r["available"]]
+    targets = agents_ or [r["agent"] for r in _integration_rows() if r["config_found"]]
     if not targets:
         typer.echo("no supported agent CLI found; name one: sd integration install claude")
+    failed = False
     for a in targets:
-        _integration_rows(a)
-        r = _api(f"/api/integrations/{a}", "POST")
+        try:
+            _integration_rows(a)
+            r = _api(f"/api/integrations/{a}", "POST")
+        except typer.Exit:  # the error is printed; carry on with the rest
+            failed = True
+            continue
         typer.echo(f"{a}: {r['status'].replace('_', ' ')} ({r['file']})" + ("; restart OpenCode to load it" if a == "opencode" else ""))
+    if failed:
+        raise typer.Exit(1)
 
 
 @integration_app.command("uninstall")

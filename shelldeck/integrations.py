@@ -30,14 +30,14 @@ class Integration:
 # Hook/plugin installation is added only after its upstream format is verified;
 # until then `screen` accurately communicates the available integration level.
 INTEGRATIONS: tuple[Integration, ...] = (
-    Integration("claude", "hook", True, True), Integration("codex", "native", True, True, "reads its session logs; approval prompts from the screen"),
-    Integration("copilot", "hook", True, False), Integration("cursor", "hook", True, False),
+    Integration("claude", "hook", True, True), Integration("codex", "hook", True, True, "hooks, plus its session logs without them; approval prompts from the screen"),
+    Integration("copilot", "hook", True, True), Integration("cursor", "hook", True, True),
     Integration("opencode", "plugin", True, True), Integration("pi", "plugin", True, True),
-    Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True),
-    Integration("droid", "hook", False, True),
+    Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True, "session id only; state from the screen"),
+    Integration("droid", "hook", False, True, "session id only; state from the screen"),
     Integration("kimi", "hook", True, True), Integration("kilo", "plugin", True, True),
-    Integration("hermes", "plugin", False, True), Integration("qodercli", "hook", False, True),
-    Integration("qwen", "hook", False, True), Integration("letta", "hook", False, True, "experimental upstream integration"),
+    Integration("hermes", "plugin", False, True), Integration("qodercli", "hook", False, True, "session id only; state from the screen"),
+    Integration("qwen", "hook", False, True, "session id only; state from the screen"), Integration("letta", "hook", False, True, "experimental upstream integration"),
     Integration("mastracode", "hook", True, True), Integration("grok", "hook", False, True),
     Integration("antigravity", "hook", False, True), Integration("amp", "screen", False, False),
     Integration("kiro", "screen", False, False), Integration("maki", "screen", False, False),
@@ -52,8 +52,12 @@ BY_AGENT = {item.agent: item for item in INTEGRATIONS}
 def catalog(installed: set[str] | None = None) -> list[dict]:
     """Serializable integration capabilities, optionally marked by installed CLI."""
     installed = installed or set()
-    return [{**asdict(item), "available": item.agent in installed, "installable": item.agent in INSTALLERS,
-             **({"status": status(item.agent)["status"]} if item.agent in INSTALLERS else {"status": "unsupported"})} for item in INTEGRATIONS]
+    out = []
+    for item in INTEGRATIONS:
+        st = status(item.agent, item.agent in installed) if item.agent in INSTALLERS else {"status": "unsupported"}
+        out.append({**asdict(item), "available": item.agent in installed or st.get("available", False), "installable": item.agent in INSTALLERS,
+                    "config_found": bool(st.get("available")), "status": st["status"]})
+    return out
 
 
 # ------------------------------------------------------------------ installers
@@ -165,6 +169,8 @@ class JsonHooks:
         return out
 
     def install(self) -> dict:
+        if not self.file.parent.is_dir():
+            raise ValueError(f"{self.agent} config folder not found at {self.file.parent}; install {self.agent} first")
         cfg = _read_json(self.file, self.top)
         if cfg.get("hooks") is not None and not isinstance(cfg["hooks"], dict):
             raise ValueError(f"{self.file} has an unexpected \"hooks\" value, so it wasn't changed")
@@ -211,6 +217,9 @@ class OwnFile:
         return self._file()
 
     def install(self) -> dict:
+        root = self.file.parent.parent if self.file.parent.name in ("hooks", "plugins") else self.file.parent
+        if not root.is_dir():
+            raise ValueError(f"{self.agent} config folder not found at {root}; install {self.agent} first")
         if self.file.exists() and self.marker not in self.file.read_text(encoding="utf-8", errors="replace"):
             _backup(self.file)
         _write(self.file, self.render())
@@ -231,6 +240,69 @@ class OwnFile:
         if self.marker not in text:
             return False, False
         return True, text == self.render()
+
+
+class CodexHooks(JsonHooks):
+    """~/.codex/hooks.json plus `[features] hooks = true` in config.toml, which Codex needs to run hooks (as herdr
+    installs it). Uninstall leaves the feature flag: with no hooks it does nothing, and the user may rely on it."""
+
+    @property
+    def config(self) -> Path:
+        return self.file.with_name("config.toml")
+
+    def install(self) -> dict:
+        out = super().install()
+        text = self.config.read_text(encoding="utf-8") if self.config.exists() else ""
+        new = enable_codex_hooks(text)
+        if new != text:
+            _backup(self.config)
+            _write(self.config, new)
+        return out
+
+    def state(self) -> tuple[bool, bool]:
+        on, current = super().state()
+        text = self.config.read_text(encoding="utf-8") if self.config.exists() else ""
+        return on, current and enable_codex_hooks(text) == text
+
+
+def enable_codex_hooks(text: str) -> str:
+    """Set `hooks = true` in the top-level [features] table (line edit: comments and order are kept)."""
+    lines = text.splitlines()
+    in_features, header, hooks_at = False, None, None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("["):
+            in_features = s.split("#", 1)[0].strip() == "[features]"
+            if in_features and header is None:
+                header = i
+            continue
+        if in_features and re.match(r"(hooks|codex_hooks)\s*=", s):
+            hooks_at = hooks_at if hooks_at is not None else i
+            if s.startswith("codex_hooks"):
+                lines[i] = "hooks = true"
+    if hooks_at is not None:
+        lines[hooks_at] = "hooks = true"
+    elif header is not None:
+        lines.insert(header + 1, "hooks = true")
+    else:
+        lines += ([""] if lines and lines[-1].strip() else []) + ["[features]", "hooks = true"]
+    return "\n".join(lines) + "\n"
+
+
+def _devin_dir() -> Path:
+    if os.environ.get("XDG_CONFIG_HOME"):
+        return Path(os.environ["XDG_CONFIG_HOME"]) / "devin"
+    if sys.platform == "win32" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "devin"
+    return Path.home() / ".config" / "devin"
+
+
+def _cmd_entry(agent: str, timeout: int, matcher: str | None = None):
+    """A Claude-shaped hook group: {matcher?, hooks: [{type: command, command, timeout}]}."""
+    def entry(event: str) -> dict:
+        group = {"hooks": [{"type": "command", "command": hook_command(agent), "timeout": timeout}]}
+        return {"matcher": matcher, **group} if matcher else group
+    return entry
 
 
 def _copilot_file() -> str:
@@ -288,10 +360,22 @@ INSTALLERS = {
                         lambda e: {"matcher": "*", "hooks": [{"name": "shelldeck", "type": "command", "command": hook_command("gemini"), "timeout": 5000}]}),
     "cursor": JsonHooks("cursor", lambda: _home("CURSOR_DIR", ".cursor") / "hooks.json",
                         lambda e: {"command": hook_command("cursor"), "timeout": 5}, top={"version": 1}),
+    # herdr's formats (src/integration/targets.rs); Qwen/Qoder/Droid/Devin report the session id only
+    "codex": CodexHooks("codex", lambda: _home("CODEX_HOME", ".codex") / "hooks.json", _cmd_entry("codex", 10)),
+    "qwen": JsonHooks("qwen", lambda: _home("QWEN_HOME", ".qwen") / "settings.json", _cmd_entry("qwen", 10_000, "*")),
+    "qodercli": JsonHooks("qodercli", lambda: _home("QODER_CONFIG_DIR", ".qoder") / "settings.json", _cmd_entry("qodercli", 10, "*")),
+    "droid": JsonHooks("droid", lambda: Path.home() / ".factory" / "settings.json", _cmd_entry("droid", 10)),
+    "devin": JsonHooks("devin", lambda: _devin_dir() / "config.json", _cmd_entry("devin", 10)),
     "copilot": OwnFile("copilot", lambda: _home("COPILOT_HOME", ".copilot") / "hooks" / "shelldeck.json", _copilot_file, "-m shelldeck.hook copilot"),
     "opencode": OwnFile("opencode", lambda: (Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config")
                         / "opencode" / "plugins" / "shelldeck.js", _opencode_plugin, OPENCODE_MARKER),
 }
+
+
+def _root(inst) -> Path:
+    """The agent's own config folder (installing needs it to exist)."""
+    f = inst.file
+    return f.parent.parent if f.parent.name in ("hooks", "plugins") else f.parent
 
 
 def status(agent: str, available: bool = False) -> dict:
@@ -304,7 +388,7 @@ def status(agent: str, available: bool = False) -> dict:
     except (OSError, ValueError) as e:
         return {"agent": agent, "status": "error", "file": str(inst.file), "detail": str(e)}
     return {"agent": agent, "status": "installed" if on and current else "outdated" if on else "not_installed",
-            "file": str(inst.file), "available": available or inst.file.parent.exists()}
+            "file": str(inst.file), "available": _root(inst).is_dir()}
 
 
 def install(agent: str) -> dict:

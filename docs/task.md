@@ -62,6 +62,12 @@
   plain-word args only), the executable and the cwd. Auto-resume runs once per
   terminal after its shell starts and never into an open hand-off; failures are
   logged and the terminal stays a normal shell.
+- **2026-10-04 — More agents (herdr formats):** Codex hooks (`hooks.json` +
+  `[features] hooks = true`), session-id hooks for Qwen Code, Qoder CLI, Factory
+  Droid and Devin CLI, and resume argv for Codex, Copilot, Cursor, Devin, Droid,
+  Qwen and Qoder. Session-only reports keep lifecycle with screen detection.
+  Installing needs the agent's config folder. 10 agents are installable (6 with
+  exact lifecycle); the rest stay on screen detection.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -180,8 +186,8 @@ leaves unrelated configuration untouched.
 
 ### Task 3.2: Codex integration
 
-- [ ] Verify the current supported Codex hook format against official docs and a
-  real install before writing it.
+- [x] Codex hook format taken from herdr's installer (`~/.codex/hooks.json` +
+  `[features] hooks = true`); a real-install check is still pending (release checklist).
 - [x] Report the native session identity (from Codex's own rollout log, as dotpals does; no hook needed).
 - [x] Support validated Codex resume argv.
 - [x] Keep current screen/activity detection as lifecycle fallback.
@@ -209,12 +215,15 @@ conversation without affecting unrelated Codex hooks.
 - [ ] Test permissions/questions, completion, interruptions, and multiple
   terminal sessions.
 
-### Task 3.5: Gemini CLI, Cursor and Copilot CLI integrations
+### Task 3.5: Gemini CLI, Cursor, Copilot CLI, Qwen, Qoder, Droid, Devin integrations
 
 - [x] Hooks for Gemini CLI (`~/.gemini/settings.json`), Cursor (`~/.cursor/hooks.json`)
   and Copilot CLI (`~/.copilot/hooks/shelldeck.json`), in the formats dotpals uses.
+- [x] Session-id hooks for Qwen Code, Qoder CLI, Factory Droid and Devin CLI (herdr formats).
 - [x] Install/uninstall round-trip tests with unrelated config preserved.
 - [ ] Manual check against installed binaries.
+- [ ] Remaining herdr agents: Kimi (TOML hooks), Kilo/Pi/OMP (plugins/extensions),
+  Hermes (Python plugin), Letta, MastraCode, Grok, Antigravity.
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.
