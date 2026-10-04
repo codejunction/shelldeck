@@ -10,6 +10,33 @@ resume. These four are installed by `sd integration install` and shown first on 
 Every other row below is a **preview, to be finished later**. It installs with `sd integration install <agent>`
 or `--all`, and it is tested against config files only, not against the running agent.
 
+## Support matrix
+
+"Verified against" says where each format was checked. None of them has been run against a signed-in agent yet: that
+manual check is still on the release checklist.
+
+| Agent | Tier | How | Exact state | Session id / resume | Verified against |
+| --- | --- | --- | --- | --- | --- |
+| claude | priority | hook | yes | yes | Claude Code 2.1.289 (bundle + `--help`) |
+| codex | priority | hook | yes | yes | openai/codex source (hooks, slash commands) |
+| gemini | priority | hook | yes | yes | gemini-cli docs (hooks, commands, sessions) |
+| devin | priority | hook | yes | yes | herdr installer only; Devin CLI not checked (devin.ai blocked) |
+| copilot | later | hook | yes | yes | dotpals/herdr formats; config files only |
+| cursor | later | hook | yes | yes | dotpals/herdr formats; config files only |
+| opencode | later | plugin | yes | yes | dotpals/herdr formats; config files only |
+| pi | later | plugin | yes | yes | dotpals/herdr formats; config files only |
+| omp | later | plugin | yes | yes | dotpals/herdr formats; config files only |
+| droid | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+| kimi | later | hook | yes | yes | dotpals/herdr formats; config files only |
+| kilo | later | plugin | yes | yes | dotpals/herdr formats; config files only |
+| hermes | later | plugin | no (screen) | yes | dotpals/herdr formats; config files only |
+| qodercli | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+| qwen | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+| letta | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+| mastracode | later | hook | yes | yes | dotpals/herdr formats; config files only |
+| grok | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+| antigravity | later | hook | no (screen) | yes | dotpals/herdr formats; config files only |
+
 Without an integration, shelldeck still detects the agent and reads its state from the screen. With one, the AI agents
 page shows the state as coming from `integration`.
 

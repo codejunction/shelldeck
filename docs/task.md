@@ -152,6 +152,9 @@
   that dedup and redaction happen server-side, so it doesn't read memory first;
   `sd remember` takes several facts per call. Checked live (multi-fact save,
   near-duplicate merged).
+- **2026-10-04 — Support matrix:** docs/agent-integrations.md lists each
+  installable agent's tier, method, exact-state and resume support, and what
+  its format was verified against; the CHANGELOG links to it.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -554,7 +557,7 @@ temporary logging or exposing private terminal content.
 - [ ] Update `README.md`, `CLAUDE.md`, `CHANGELOG.md`, and the dedicated agent
   integration/automation/detection docs described in the design spec.
 - [x] Document knowledge system, cross-project retrieval, and context CLI.
-- [ ] Add release notes that list exact supported integrations and clearly state
+- [x] Add release notes that list exact supported integrations and clearly state
   whether each supports detection, authoritative lifecycle state, and native
   restore.
 
