@@ -1061,3 +1061,38 @@ def test_agent_explain(client, monkeypatch, tmp_path):
     assert client.get("/api/agent-explain/nope").status_code == 404
     server.reports.forget(sid)
     server.burst.pop(sid, None)
+
+
+def test_events_and_prompt_wait(monkeypatch):
+    sent = []
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    async def fake_type(sid, text, enter=True):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setattr(server, "_type", fake_type)
+    monkeypatch.setitem(server.agent_kind, "tp", ("claude", 9))
+    monkeypatch.setitem(server.agent_status, "tp", {"state": "done", "source": "integration", "reason": None, "detail": None, "since": 1.0})
+
+    async def go():
+        start = server._event_seq[0]
+        waiter = asyncio.create_task(server.agent_prompt({"session_id": "tp", "text": "fix it", "wait": True, "timeout": 5}))
+        await asyncio.sleep(0.05)
+        assert not waiter.done()  # the old "done" (before the prompt) doesn't count
+        await server._publish("tp", {"state": "working", "source": "integration", "reason": None, "detail": None}, "claude")
+        await server._publish("tp", {"state": "done", "source": "integration", "reason": None, "detail": None}, "claude")
+        r = await waiter
+        await server._publish("tp", {"state": "blocked", "source": "integration", "reason": "approval", "detail": None}, None)
+        blocked = await server.agent_prompt({"session_id": "tp", "text": "y"})
+        types = [e["type"] for e in server.events_log if e["id"] > start]
+        return r, blocked, types
+
+    r, blocked, types = asyncio.run(go())
+    assert r["result"] == "reached" and sent == ["fix it"]
+    assert blocked.status_code == 409 and b"agent_blocked" in blocked.body
+    assert types == ["agent.state", "agent.state", "agent.state"]
+    assert all("text" not in e["data"] for e in server.events_log)

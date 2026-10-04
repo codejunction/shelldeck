@@ -193,6 +193,9 @@ sd handoffs [--all]                  hand-offs in this project and their status
 sd integration list|detect|status|install|uninstall [AGENT] [--all]   hooks for claude, codex, gemini, devin (+ 15 previews with --all)
 sd agent status [TERMINAL] [--json]  lifecycle state (idle/working/blocked/done/exited) and its source
 sd agent wait TERMINAL --until STATE [--timeout 10m]   block until an agent reaches a state
+sd agent prompt TERMINAL "TEXT" [--wait] [--until done] [--timeout 10m]   send a prompt; refused while it's blocked
+sd agent rename TERMINAL NAME        rename an agent's terminal
+sd events subscribe [--types agent,handoff] [--since ID]   JSON lines: agent.*, handoff.*, integration.changed
 sd agent explain TERMINAL [--json]   why an agent has its state: deciding source, report ages, screen inputs (no screen text)
 sd agent explain --file SCREEN.txt   check saved screen text against the question rules
 sd agent resume [TERMINAL]           list stored agent sessions, or start one again (claude --resume, codex resume, opencode --session)

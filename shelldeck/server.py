@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import functools
 import hashlib
 import hmac
@@ -25,7 +26,7 @@ import psutil
 import segno
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import agent_state as lifecycle
@@ -90,6 +91,12 @@ agent_kind: dict[str, tuple[str, int]] = {}
 _generation = [0]
 report_tokens: dict[str, str] = {}  # terminal -> SHELLDECK_AGENT_REPORT_TOKEN of its current process
 REPORT_HEADER = "X-Shelldeck-Report-Token"
+# server events for `sd events subscribe` / GET /api/events (SSE): a bounded in-memory log; ids only grow
+EVENT_TYPES = ("agent.detected", "agent.state", "agent.exited", "agent.session_updated", "handoff.created", "handoff.completed",
+               "integration.changed")
+events_log: "collections.deque[dict]" = collections.deque(maxlen=500)
+_event_seq = [0]
+_event_waiters: list[asyncio.Event] = []
 _state_changed: list[asyncio.Event] = []  # set and replaced on every status change; `sd agent wait` awaits it
 AGENT_BUSY_S = 5  # output for at least this long counts as working (not a redraw or echo)
 # a sub-agent's question relayed to its parent (_forward_question): on the parent's screen, not asking you
@@ -839,7 +846,9 @@ async def install_integration(request: Request, agent: str):
     if not _host(request):
         return err("host_only", 403)
     try:
-        return await asyncio.to_thread(integrations.install, agent)
+        out = await asyncio.to_thread(integrations.install, agent)
+        _emit("integration.changed", {"agent": agent, "status": out["status"]})
+        return out
     except KeyError:
         return err("unsupported_agent", 404)
     except (OSError, ValueError) as e:
@@ -851,7 +860,9 @@ async def uninstall_integration(request: Request, agent: str):
     if not _host(request):
         return err("host_only", 403)
     try:
-        return await asyncio.to_thread(integrations.uninstall, agent)
+        out = await asyncio.to_thread(integrations.uninstall, agent)
+        _emit("integration.changed", {"agent": agent, "status": out["status"]})
+        return out
     except KeyError:
         return err("unsupported_agent", 404)
     except (OSError, ValueError) as e:
@@ -1369,6 +1380,15 @@ def _legacy(status: dict) -> str:
     return {"blocked": "approval", "working": "working"}.get(status["state"], "idle")
 
 
+def _emit(type_: str, data: dict) -> None:
+    """Record an event and wake subscribers. Compact snapshots only: never screen text or native session ids."""
+    _event_seq[0] += 1
+    events_log.append({"id": _event_seq[0], "type": type_, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "data": data})
+    for ev in _event_waiters:
+        ev.set()
+    _event_waiters.clear()
+
+
 def _changed() -> None:
     for ev in _state_changed:
         ev.set()
@@ -1384,6 +1404,10 @@ async def _publish(sid: str, status: dict, key: str | None) -> None:
     status = {**status, "since": was["since"] if was and was.get("state") == status["state"] and was.get("since") else time.time()}
     agent_status[sid] = status
     _changed()
+    if not was or was.get("state") != status["state"]:
+        _emit("agent.exited" if status["state"] == "exited" else "agent.state",
+              {"session_id": sid, "agent": key or agent_kind.get(sid, ("",))[0], "state": status["state"], "reason": status.get("reason"),
+               "source": status.get("source")})
     await _broadcast({"type": "agent_state", "session_id": sid, "state": _legacy(status), "status": status})
     if status["state"] != "blocked" or (was and was["state"] == "blocked") or not key:
         return
@@ -1506,6 +1530,7 @@ async def _check_agents() -> None:
         if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
             _generation[0] += 1
             agent_kind[sid] = (key, _generation[0])
+            _emit("agent.detected", {"session_id": sid, "agent": key, "generation": _generation[0]})
             reports.forget(sid)
         was = agent_state.get(sid, "idle")
         agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
@@ -1544,6 +1569,7 @@ async def agent_report(request: Request, payload: dict):
         reports.put(sid, report, meta)
     if ref:
         db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), agent_status.get(sid, {}).get("state", "unknown"))
+        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
     status = _status_of(sid)
     log.info("agent report: session=%s source=%s agent=%s state=%s", sid, source, key, status["state"] if report else "(session only)")
     await _publish(sid, status, key)
@@ -1556,6 +1582,57 @@ async def agent_status_all(target: str = ""):
     rows = [{"session_id": sid, "agent": agent_kind.get(sid, ("",))[0], "generation": agent_kind.get(sid, ("", 0))[1], **st}
             for sid, st in agent_status.items() if not target or sid == target]
     return {"agents": rows}
+
+
+@app.post("/api/agent-prompt")
+async def agent_prompt(payload: dict):
+    """Type a prompt into an agent and, with `wait`, block until it reaches `until` in a state that began after the
+    prompt was sent. Refused while the agent is blocked (the text would answer its question)."""
+    sid = str(payload.get("session_id") or "")
+    text = str(payload.get("text") or "")[:20000]
+    if not text.strip():
+        return err("text_required")
+    if sid not in agent_kind:
+        return err("no_agent_running", 409)
+    if (agent_status.get(sid) or {}).get("state") == "blocked":
+        return err("agent_blocked", 409)
+    gen, sent = agent_kind[sid][1], time.time()
+    if not await _type(sid, team.one_line(text)):
+        return err("not_running", 409)
+    if not payload.get("wait"):
+        return {"result": "sent"}
+    until = {u for u in (payload.get("until") or ["done", "idle"]) if u in WAIT_STATES}
+    timeout = min(max(float(payload.get("timeout") or 600), 0.1), 3600)
+    return await _wait_for(sid, gen, lambda st: st["state"] in until and st.get("since", 0) >= sent, timeout)
+
+
+@app.get("/api/events")
+async def events_stream(request: Request, types: str = "", since: int = 0):
+    """Server-Sent Events: agent.* / handoff.* / integration.changed. Resume with Last-Event-ID or `since`."""
+    want = tuple(t for t in types.split(",") if t) or EVENT_TYPES
+    try:
+        last = int(request.headers.get("last-event-id") or since or 0)
+    except ValueError:
+        last = 0
+    if not since and "last-event-id" not in request.headers:
+        last = _event_seq[0]  # a new subscriber gets events from now on
+
+    async def stream():
+        nonlocal last
+        yield ": shelldeck events\n\n"
+        while not await request.is_disconnected():
+            for e in [e for e in list(events_log) if e["id"] > last]:
+                last = e["id"]
+                if e["type"].startswith(want):
+                    yield f"id: {e['id']}\nevent: {e['type']}\ndata: {json.dumps(e)}\n\n"
+            ev = asyncio.Event()
+            _event_waiters.append(ev)
+            try:
+                await asyncio.wait_for(ev.wait(), 15)
+            except TimeoutError:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/agent-explain/{session_id}")
@@ -1607,14 +1684,18 @@ async def agent_wait(payload: dict):
         return err("invalid_until")
     if sid not in agent_kind:
         return err("no_agent_running", 409)
-    gen = agent_kind[sid][1]
+    return await _wait_for(sid, agent_kind[sid][1], lambda st: st["state"] in until, timeout)
+
+
+async def _wait_for(sid: str, gen: int, reached, timeout: float) -> dict:
+    """Wait (no polling) until reached(status) for the agent process `gen`; a replaced or exited agent ends it."""
     deadline = time.monotonic() + timeout
     while True:
         cur = agent_kind.get(sid)
         if not cur or cur[1] != gen:
             return {"result": "exited" if not cur else "replaced", "status": agent_status.get(sid)}
         st = agent_status.get(sid)
-        if st and st["state"] in until:
+        if st and reached(st):
             return {"result": "reached", "status": st}
         left = deadline - time.monotonic()
         if left <= 0:
@@ -1890,6 +1971,7 @@ async def create_handoff(payload: dict):
     h = db.add_handoff(project_id=to["project_id"], from_sid=sender.get("id"), from_nick=sender.get("nick"),
                        to_sid=to["id"], to_nick=to["nick"], agent=key, model=None, task=task)
     await asyncio.to_thread(_handoff_files, h)
+    _emit("handoff.created", {"id": h["id"], "from": h["from_nick"], "to": h["to_nick"], "to_sid": h["to_sid"], "agent": key})
     project = db.get_project(to["project_id"]) or {"path": "."}
     reply = f'when finished run: sd done {h["id"]} "<summary>"'
     await _type(to["id"], team.one_line(
@@ -1911,6 +1993,7 @@ async def finish_handoff(handoff_id: str, payload: dict):
     db.close_handoff(handoff_id, status, result)
     h = db.get_handoff(handoff_id)
     await asyncio.to_thread(_handoff_files, h)
+    _emit("handoff.completed", {"id": h["id"], "status": h["status"], "to": h["to_nick"], "to_sid": h["to_sid"]})
     await _tell_sender(h, f"[shelldeck] {h['to_nick']} {'finished' if status == 'done' else 'gave up on'} hand-off {h['id']}: {result or '(no summary)'}")
     return h
 
@@ -1926,6 +2009,7 @@ def _orphan(session_id: str) -> list[dict]:
 
 async def _orphaned(session_id: str) -> None:
     for h in await asyncio.to_thread(_orphan, session_id):
+        _emit("handoff.completed", {"id": h["id"], "status": "exited", "to": h["to_nick"], "to_sid": h["to_sid"]})
         if not STOPPING.is_set():
             await _tell_sender(h, f"[shelldeck] {h['to_nick']}'s terminal closed before hand-off {h['id']} was done")
 

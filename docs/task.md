@@ -104,6 +104,11 @@
   (quiet, burst, matched built-in question phrase) and integration/stored-session
   status, with a hint to install the integration when the screen decides. It
   never returns screen text or native ids. Checked live.
+- **2026-10-04 — Task 6.1 complete:** `POST /api/agent-prompt` (refused while
+  blocked; `--wait` pinned to the process generation and to a state that began
+  after the prompt), `sd agent rename`, an in-memory event log and SSE
+  `GET /api/events` with `Last-Event-ID`, and `sd events subscribe`. Checked live
+  (detected -> idle -> session_updated -> blocked streamed).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -452,9 +457,9 @@ settings.
 - [x] Add `sd agent status` with stable human and JSON forms.
 - [x] Add server-owned `sd agent wait` with timeout, closure, and replacement
   process handling.
-- [ ] Add atomic `sd agent prompt --wait` semantics.
-- [ ] Add agent attach/rename commands for manually started agent processes.
-- [ ] Add an event subscription endpoint/transport and `sd events subscribe`.
+- [x] Add atomic `sd agent prompt --wait` semantics.
+- [x] Add agent attach/rename commands (rename; manually started agents are attached automatically by process detection).
+- [x] Add an event subscription endpoint/transport and `sd events subscribe`.
 - [ ] Update the installed skill only after these commands are tested.
 
 **Done when:** supervisors can wait for an agent state transition without

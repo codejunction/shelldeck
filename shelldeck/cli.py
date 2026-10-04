@@ -1023,6 +1023,60 @@ def agent_wait(
     raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
 
 
+@agent_app.command("prompt")
+def agent_prompt(
+    target: str = typer.Argument(..., help="Terminal nick, id or name running an agent."),
+    text: str = typer.Argument(..., help="The prompt."),
+    wait: bool = typer.Option(False, "--wait", help="Block until the agent finishes this prompt."),
+    until: list[str] = typer.Option(["done", "idle"], "--until", "-u", help="With --wait: states that count as finished."),
+    timeout: str = typer.Option("10m", "--timeout", "-t"),
+):
+    """Send a prompt to an agent (refused while it is blocked on a question); --wait returns when it is done.
+    Exit codes with --wait: 0 reached, 2 timeout, 3 the agent exited or was replaced."""
+    secs = _duration(timeout)
+    r = _api("/api/agent-prompt", "POST", {"session_id": _session(target)["id"], "text": text, "wait": wait, "until": until, "timeout": secs},
+             timeout=secs + 15)
+    st = r.get("status") or {}
+    typer.echo(r["result"] + (f": {st.get('state')}" if st else ""))
+    if wait:
+        raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
+
+
+@agent_app.command("rename")
+def agent_rename(target: str = typer.Argument(...), name: str = typer.Argument(..., help="New terminal name, e.g. reviewer.")):
+    """Rename an agent's terminal (its nick stays)."""
+    s = _session(target)
+    _api(f"/api/sessions/{s['id']}", "PATCH", {"name": name})
+    typer.echo(f"{s.get('nick') or s['id']} is now {name!r}")
+
+
+events_app = typer.Typer(help="Server events (agent state, hand-offs, integrations).")
+app.add_typer(events_app, name="events")
+
+
+@events_app.command("subscribe")
+def events_subscribe(
+    types: str = typer.Option("", "--types", help="Comma-separated prefixes, e.g. agent.state,handoff (default: all)."),
+    since: int = typer.Option(0, "--since", help="Replay events after this id (from a previous run)."),
+):
+    """Print events as JSON lines until interrupted: agent.detected/state/exited/session_updated, handoff.created/completed,
+    integration.changed."""
+    q = urllib.parse.urlencode({k: v for k, v in (("types", types), ("since", since)) if v})
+    req = urllib.request.Request(_url(f"/api/events{'?' + q if q else ''}"), headers={"X-Shelldeck-Token": auth.read_cli_token(), "Accept": "text/event-stream"})
+    try:
+        with _open_url(req, 60) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace").rstrip("\n")
+                if line.startswith("data: "):
+                    typer.echo(line[6:])
+                    sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    except OSError:
+        typer.echo(f"shelldeck is not running on port {CFG['port']}", err=True)
+        raise typer.Exit(1) from None
+
+
 @agent_app.command("explain")
 def agent_explain(
     target: str = typer.Argument("", help="Terminal nick, id or name."),

@@ -32,6 +32,19 @@ sd agent wait TERMINAL --until idle [--until blocked] [--timeout 10m] [--json]  
 sd agent report working --source custom:mytool --agent codex [--reason R] [--title T] [--label L] [--ttl-ms 30000]
 ```
 
+## Prompts and events
+
+- `sd agent prompt TERMINAL "text" [--wait] [--until done|idle|blocked] [--timeout 10m]` (`POST /api/agent-prompt`).
+  - It is refused with `agent_blocked` while the agent waits on a question, because the text would answer it.
+  - `--wait` counts only a state that began after the prompt was sent, and it is pinned to the agent process present
+    when the prompt is sent.
+  - Exit codes: 0 reached, 2 timeout, 3 exited or replaced.
+- `sd events subscribe [--types agent.state,handoff] [--since ID]` (`GET /api/events`, Server-Sent Events, `Last-Event-ID`).
+  - Event types: `agent.detected`, `agent.state`, `agent.exited`, `agent.session_updated`, `handoff.created`,
+    `handoff.completed` and `integration.changed`.
+  - Each event is `{id, type, at, data}` with a compact snapshot. Prompts, screen text and native ids are never included.
+  - The server keeps the last 500 events in memory.
+
 ## Diagnostics
 
 `sd agent explain TERMINAL` (`GET /api/agent-explain/{session_id}`) shows:
