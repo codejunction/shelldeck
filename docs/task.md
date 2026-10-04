@@ -186,6 +186,12 @@
   query is sent, the reply is short, results are cached per (agent, query), and
   it falls back to keywords. Checked live with the real Claude Code CLI: "auth"
   -> authentication, oauth, token, ... found the OAuth fact in ~5 s, then cached.
+- **2026-10-04 — Claude verified with the real CLI:** `claude -p --settings
+  <shelldeck hook file>` inside a shelldeck terminal sent real hook reports
+  (SessionStart -> idle, UserPromptSubmit/Pre/PostToolUse -> working), its
+  `echo hi` tool call was captured, and the session file was written on exit. A
+  -p run exits right after Stop, so the final "done" can arrive after the
+  process is gone (not an issue for interactive sessions).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -351,7 +357,7 @@ can provide a resumable native session reference.
 
 1. Claude Code, Codex, Gemini CLI, Devin CLI: supported, exact state and resume.
    - [x] Installers, hook mapping, resume argv, end-to-end test with a fake agent process.
-   - [ ] Manual check against the real binaries (`gemini --resume <id>` especially).
+   - [~] Manual check against the real binaries: Claude done (real CLI, per-run hooks, capture); Codex, Gemini and Devin pending (`gemini --resume <id>` especially).
 2. Everything else (Cursor, Copilot, OpenCode, Kilo, Kimi, MastraCode, Pi, OMP,
    Qwen, Qoder, Droid, Grok, Antigravity, Letta, Hermes): preview, to finish
    after the remaining features. They are already installable on request.
