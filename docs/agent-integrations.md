@@ -19,7 +19,17 @@ approve, deny or block a tool.
 | GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | no |
 | OpenCode | A plugin, `plugins/shelldeck.js`, that posts `chat.message`, `tool.execute.before`, `session.*` and `permission.*` | `~/.config/opencode/` (`XDG_CONFIG_HOME`) | yes: `opencode --session <id>` |
 
-Codex, Devin, Qwen, Amp and the rest keep using screen detection until their hook format has been checked (see
+**Without installing anything**, shelldeck also reads two agents' own logs (source `native`):
+
+- **Codex:** the newest rollout in `~/.codex/sessions` for the terminal's folder.
+  - `task_started`, a user message or a tool call means working; `task_complete` means done.
+  - The session id gives `codex resume <id>`.
+- **Claude Code:** `~/.claude/sessions/<pid>.json`. `busy` means working, and its session id gives `claude --resume <id>`.
+
+A native "working" holds only 15 s past the last log event, so a prompt waiting for approval (the log goes quiet) is
+picked up by screen detection again. An integration report outranks native, which outranks the screen.
+
+Devin, Qwen, Amp and the rest keep using screen detection until their hook format has been checked (see
 `sd integration list`).
 
 ## Commands

@@ -49,6 +49,12 @@
   `integration`, Claude native session stored). Still not verified against
   installed agent binaries in this environment; Codex has no hook (screen
   detection remains).
+- **2026-10-04 — Task 3.2 (Codex) done the dotpals way:** no hook; Codex
+  rollouts (`~/.codex/sessions`) give `native:codex` working/done and
+  `codex resume <id>`, and Claude's `sessions/<pid>.json` gives busy plus
+  `claude --resume <id>`. Native reports expire 15 s after the log goes quiet,
+  so approval prompts fall back to screen detection. Native sources may now
+  issue validated resume argv.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -169,10 +175,10 @@ leaves unrelated configuration untouched.
 
 - [ ] Verify the current supported Codex hook format against official docs and a
   real install before writing it.
-- [ ] Install a Shelldeck-owned hook that reports the native session identity.
-- [ ] Support validated Codex resume argv.
-- [ ] Keep current screen/activity detection as lifecycle fallback.
-- [ ] Test config preservation and uninstall with temporary `CODEX_HOME`.
+- [x] Report the native session identity (from Codex's own rollout log, as dotpals does; no hook needed).
+- [x] Support validated Codex resume argv.
+- [x] Keep current screen/activity detection as lifecycle fallback.
+- [x] Tests with a temporary home and fake rollouts (nothing is written to Codex's config).
 
 **Done when:** Codex reports a session identity and can resume a compatible
 conversation without affecting unrelated Codex hooks.

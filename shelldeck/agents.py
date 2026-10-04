@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import tomllib
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -230,7 +232,7 @@ def _claude_context(p: psutil.Process) -> dict | None:
     return {"state": info.get("status")}
 
 
-def _codex_context(p: psutil.Process) -> dict | None:
+def _codex_log(p: psutil.Process) -> Path | None:
     log = _files.get((p.pid, "codex"))
     if not log:
         # the newest rollout started in this folder after the process did
@@ -244,8 +246,13 @@ def _codex_context(p: psutil.Process) -> dict | None:
             if os.path.normcase(meta.get("cwd") or "") == cwd:
                 log = _files[(p.pid, "codex")] = f
                 break
-        if not log:
-            return None
+    return log
+
+
+def _codex_context(p: psutil.Process) -> dict | None:
+    log = _codex_log(p)
+    if not log:
+        return None
     window = used = None
     for line in _tail_lines(log):  # newest first: the latest usage and the latest window, whichever comes first
         try:
@@ -300,6 +307,70 @@ def context(pid: int, key: str) -> dict | None:
         return CONTEXT[key](psutil.Process(pid))
     except (psutil.Error, OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return None
+
+
+# Codex rollout events (as dotpals reads them) -> lifecycle state; the newest one decides
+CODEX_EVENTS = {"task_started": "working", "user_message": "working", "function_call": "working", "custom_tool_call": "working",
+                "function_call_output": "working", "custom_tool_call_output": "working", "task_complete": "done"}
+
+
+def _codex_native(p: psutil.Process) -> dict | None:
+    log = _codex_log(p)
+    if not log:
+        return None
+    with log.open(encoding="utf-8", errors="replace") as fh:
+        meta = json.loads(fh.readline() or "{}").get("payload") or {}
+    native = meta.get("id") or meta.get("session_id")
+    for line in _tail_lines(log, 128 * 1024):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        state = CODEX_EVENTS.get((d.get("payload") or {}).get("type"))
+        if state:
+            try:
+                at = datetime.fromisoformat(str(d.get("timestamp")).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                at = log.stat().st_mtime
+            out = {"state": state, "age": max(0.0, time.time() - at)}
+            if isinstance(native, str) and native:
+                out |= {"session_id": native, "resume_argv": ["codex", "resume", native]}
+            return out
+    return None
+
+
+def _claude_native(p: psutil.Process) -> dict | None:
+    try:
+        info = _json(Path.home() / ".claude" / "sessions" / f"{p.pid}.json")
+    except (OSError, ValueError):
+        return None
+    out = {"state": "working" if info.get("status") == "busy" else None, "age": 0.0}  # "idle" may be a prompt: screen decides
+    if isinstance(info.get("sessionId"), str) and info["sessionId"]:
+        out |= {"session_id": info["sessionId"], "resume_argv": ["claude", "--resume", info["sessionId"]]}
+    return out
+
+
+NATIVE = {"codex": _codex_native, "claude": _claude_native}
+
+
+def native(shells: dict[str, int]) -> dict[str, dict]:
+    """Lifecycle the agents write in their own logs (no hook needed): session id -> {state, age, session_id?, resume_argv?}."""
+    out = {}
+    for sid, pid in shells.items():
+        try:
+            kids = psutil.Process(pid).children(recursive=True)
+        except psutil.Error:
+            continue
+        for k in kids:
+            try:
+                hit = identify(k)
+                if hit and hit[0] in NATIVE:
+                    if found := NATIVE[hit[0]](k):
+                        out[sid] = found
+                    break
+            except (psutil.Error, OSError, ValueError):
+                continue
+    return out
 
 
 def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:

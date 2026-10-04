@@ -30,7 +30,7 @@ class Integration:
 # Hook/plugin installation is added only after its upstream format is verified;
 # until then `screen` accurately communicates the available integration level.
 INTEGRATIONS: tuple[Integration, ...] = (
-    Integration("claude", "hook", True, True), Integration("codex", "hook", False, True),
+    Integration("claude", "hook", True, True), Integration("codex", "native", True, True, "reads its session logs; approval prompts from the screen"),
     Integration("copilot", "hook", True, False), Integration("cursor", "hook", True, False),
     Integration("opencode", "plugin", True, True), Integration("pi", "plugin", True, True),
     Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True),

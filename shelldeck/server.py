@@ -1394,6 +1394,18 @@ def _status_of(sid: str, now: float | None = None) -> dict:
     return lifecycle.to_dict(reports.status(sid, now), reports.metadata(sid, now))
 
 
+native_seen: dict[str, str] = {}  # terminal -> native session id last stored
+
+
+def _save_native(sid: str, key: str, nat: dict) -> None:
+    """Store an agent's own session id and resume argv (validated like an integration's)."""
+    try:
+        argv = lifecycle.parse_resume_argv(nat.get("resume_argv"), key)
+        db.save_agent_session(sid, key, f"native:{key}", str(nat["session_id"])[:200], list(argv), nat.get("state") or "unknown")
+    except (lifecycle.ReportError, sqlite3.Error):
+        log.debug("native session not saved", exc_info=True)
+
+
 def _remember_state(sid: str, state: str) -> None:
     """last_state of a stored native session; best effort."""
     try:
@@ -1409,9 +1421,11 @@ async def _check_agents() -> None:
         agent_state.pop(sid, None)
         agent_kind.pop(sid)
         reports.forget(sid)
+        native_seen.pop(sid, None)
         _remember_state(sid, "exited")
         await _publish(sid, {"state": "exited", "source": "process", "reason": None, "detail": None}, None)
         agent_status.pop(sid, None)
+    natives = await asyncio.to_thread(agents.native, {sid: pid for sid, pid in _shell_pids().items() if sid in found})
     for sid, (key, _) in found.items():
         if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
             _generation[0] += 1
@@ -1420,6 +1434,11 @@ async def _check_agents() -> None:
         was = agent_state.get(sid, "idle")
         agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
         reports.put(sid, lifecycle.heuristic(agent_state[sid], now))
+        if (nat := natives.get(sid)) and (rep := lifecycle.native_report(key, nat, now)):
+            reports.put(sid, rep)
+        if nat and nat.get("session_id") and native_seen.get(sid) != nat["session_id"]:
+            native_seen[sid] = nat["session_id"]
+            _save_native(sid, key, nat)
         status = _status_of(sid, now)
         if status["state"] != agent_status.get(sid, {}).get("state"):
             _remember_state(sid, status["state"])

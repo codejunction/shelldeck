@@ -180,8 +180,8 @@ def parse_report(payload: dict, agent: str, now: float | None = None) -> tuple[R
     if native is not None or payload.get("resume_argv") is not None:
         if not isinstance(native, str) or not 1 <= len(native) <= 200 or _CTRL.search(native):
             raise ReportError("invalid_agent_session_id")
-        if category != "integration":
-            raise ReportError("resume_not_allowed")  # only built-in integrations may issue resume commands
+        if category not in ("integration", "native"):
+            raise ReportError("resume_not_allowed")  # only built-in integrations/log readers may issue resume commands
         ref = AgentSessionReference(agent, native, parse_resume_argv(payload.get("resume_argv"), agent))
     return Report(source, status, t + ttl / 1000, t), parse_metadata(payload.get("metadata")), ref
 
@@ -233,3 +233,18 @@ def to_dict(status: Status, meta: DisplayMetadata | None = None) -> dict:
     if meta and meta != DisplayMetadata():
         out["meta"] = {"title": meta.title, "display_agent": meta.display_agent, "state_label": meta.state_label, "tokens": dict(meta.tokens)}
     return out
+
+
+NATIVE_WORKING_S = 15  # a log that stopped growing may be waiting on a prompt: let the screen decide again
+NATIVE_DONE_S = 120
+
+
+def native_report(agent: str, found: dict, now: float | None = None) -> Report | None:
+    """A report from an agent's own log ({state, age}); None when nothing current to say."""
+    state, age = found.get("state"), float(found.get("age") or 0)
+    hold = {"working": NATIVE_WORKING_S, "done": NATIVE_DONE_S}.get(state or "")
+    if not hold or age >= hold:
+        return None
+    t = monotonic() if now is None else now
+    source = f"native:{agent}"
+    return Report(source, Status(State(state), source=source), t + hold - age, t - age)
