@@ -62,7 +62,7 @@ RESUME = {
     "qodercli": lambda i: ["qodercli", "--resume", i], "cursor": lambda i: ["cursor-agent", "--resume", i],
     "kimi": lambda i: ["kimi", "--session", i], "mastracode": lambda i: ["mastracode", "--thread", i],
     "grok": lambda i: ["grok", "--resume", i], "antigravity": lambda i: ["agy", "--conversation", i],
-    "hermes": lambda i: ["hermes", "--resume", i],
+    "hermes": lambda i: ["hermes", "--resume", i], "pi": lambda i: ["pi", "--session", i], "omp": lambda i: ["omp", f"--resume={i}"],
     # Letta's default conversation is per agent: "default:<agent id>"
     "letta": lambda i: ["letta", "--conversation", "default", "--agent", i[8:]] if i.startswith("default:") else ["letta", "--conversation", i],
 }

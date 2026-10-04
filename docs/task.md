@@ -80,6 +80,11 @@
   are installable. The OpenCode plugin was verified end to end inside a real
   terminal (permission.asked -> blocked/approval from `integration`). Pi/OMP
   remain.
+- **2026-10-04 — Pi and OMP:** extensions in their `extensions/` folders,
+  with event names and interactive-session gates from herdr's assets. All four
+  JS plugins (OpenCode, Kilo, Pi, OMP) are run under Node in the tests with fake
+  events, and each body passes server validation. 19 agents are installable,
+  covering every agent herdr integrates.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -236,7 +241,7 @@ conversation without affecting unrelated Codex hooks.
 - [ ] Manual check against installed binaries.
 - [x] Kimi (TOML hooks), Kilo (plugin), MastraCode, Grok, Antigravity.
 - [x] Hermes (Python plugin), Letta.
-- [ ] Pi/OMP (TypeScript extensions).
+- [x] Pi/OMP (TypeScript extensions).
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.

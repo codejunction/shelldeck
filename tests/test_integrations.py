@@ -263,3 +263,62 @@ def test_hermes_refuses_inline_yaml(homes, monkeypatch):
     with pytest.raises(ValueError, match="by hand"):
         integrations.install("hermes")
     assert not (homes / "hermes" / "plugins").exists()
+
+
+DRIVER = """
+const sent = []
+globalThis.fetch = (url, init) => { sent.push(JSON.parse(init.body)); return Promise.resolve({}) }
+process.env.SHELLDECK_AGENT_REPORT_TOKEN = "t"
+const { pathToFileURL } = await import("node:url")
+const mod = await import(pathToFileURL(process.argv[2]).href)
+const handlers = {}
+const ctx = { mode: "tui", hasUI: true, isIdle: () => true, sessionManager: { getSessionId: () => "s-1" } }
+if (mod.default) {
+  mod.default({ on: (name, fn) => { handlers[name] = fn } })
+  for (const [name, ev] of JSON.parse(process.argv[3])) handlers[name]?.(ev, ctx)
+} else {
+  const p = await mod.ShelldeckPlugin()
+  for (const [name, ev] of JSON.parse(process.argv[3])) await p.event({ event: { type: name, properties: { sessionID: "s-1" } } })
+}
+console.log(JSON.stringify(sent))
+"""
+
+
+@pytest.mark.skipif(not integrations.shutil.which("node"), reason="needs node")
+@pytest.mark.parametrize("agent,events,states,resume", [
+    ("pi", [["session_start", {}], ["agent_start", {}], ["agent_settled", {}]], ["idle", "working", "done"], ["pi", "--session", "s-1"]),
+    ("omp", [["agent_start", {}], ["tool_approval_requested", {}], ["tool_approval_resolved", {}], ["tool_execution_start", {"toolName": "ask"}],
+             ["agent_end", {"willContinue": True}], ["agent_end", {}]], ["working", "blocked", "working", "blocked", "done"], ["omp", "--resume=s-1"]),
+    ("opencode", [["session.created", {}], ["permission.asked", {}], ["permission.replied", {}], ["session.idle", {}]],
+     ["idle", "blocked", "working", "done"], ["opencode", "--session", "s-1"]),
+    ("kilo", [["session.idle", {}]], ["done"], ["kilo", "--session", "s-1"]),
+])
+def test_js_plugins_report_lifecycle(tmp_path, agent, events, states, resume):
+    import subprocess
+    src = integrations._pi_extension(agent) if agent in ("pi", "omp") else integrations._opencode_plugin(agent)
+    (tmp_path / "p.mjs").write_text(src)
+    (tmp_path / "d.mjs").write_text(DRIVER)
+    out = subprocess.run(["node", str(tmp_path / "d.mjs"), str(tmp_path / "p.mjs"), json.dumps(events)], capture_output=True, text=True, timeout=20)
+    sent = json.loads(out.stdout.strip().splitlines()[-1])
+    assert [b["state"] for b in sent] == states
+    assert all(b["source"] == f"integration:{agent}" and b["resume_argv"] == resume for b in sent)
+    from shelldeck import agent_state
+    for b in sent:
+        agent_state.parse_report(b, agent)  # every body passes server validation
+
+
+def test_pi_and_omp_install(homes, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    with pytest.raises(ValueError, match="install pi first"):
+        integrations.install("pi")
+    (homes / "home" / ".pi" / "agent").mkdir(parents=True)
+    (homes / "home" / ".omp" / "agent").mkdir(parents=True)
+    for agent in ("pi", "omp"):
+        integrations.install(agent)
+        assert integrations.status(agent)["status"] == "installed"
+    assert (homes / "home" / ".omp" / "agent" / "extensions" / "shelldeck-omp-agent-state.ts").exists()
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(homes / "home" / ".pi" / "agent"))
+    with pytest.raises(ValueError, match="same extensions folder"):
+        integrations.install("omp")
+    for agent in ("pi", "omp"):
+        integrations.uninstall(agent)

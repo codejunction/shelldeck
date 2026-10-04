@@ -226,7 +226,7 @@ class OwnFile:
         return self._file()
 
     def install(self) -> dict:
-        root = self.file.parent.parent if self.file.parent.name in ("hooks", "plugins", "plugin") else self.file.parent
+        root = self.file.parent.parent if self.file.parent.name in ("hooks", "plugins", "plugin", "extensions") else self.file.parent
         if not root.is_dir():
             raise ValueError(f"{self.agent} config folder not found at {root}; install {self.agent} first")
         if self.file.exists() and self.marker not in self.file.read_text(encoding="utf-8", errors="replace"):
@@ -537,6 +537,74 @@ class HermesPlugin:
         return True, enabled and self.file.read_text(encoding="utf-8") == HERMES_INIT
 
 
+PI_EXTENSION = """// shelldeck-{agent}-extension v1
+// Reports {agent}'s lifecycle to the shelldeck terminal it runs in (`sd integration install {agent}`).
+// Event names follow herdr's {agent} extension. Outside a shelldeck terminal it does nothing.
+export default function (pi) {{
+  const env = (globalThis.process && process.env) || {{}}
+  const token = env.SHELLDECK_AGENT_REPORT_TOKEN
+  if (!token) return
+  const url = "http://127.0.0.1:" + (env.SHELLDECK_PORT || "5455") + "/api/agent-reports"
+  let root = false
+  let sessionId
+  const sessionOf = (ctx) => {{
+    try {{ const id = ctx?.sessionManager?.getSessionId?.(); if (typeof id === "string" && id && !id.startsWith("-")) sessionId = id }} catch {{}}
+  }}
+  const send = (state, reason) => {{
+    try {{
+      const body = {{ source: "integration:{agent}", agent: "{agent}", state, blocked_reason: reason || null,
+        ttl_ms: state === "working" ? 60000 : 120000 }}
+      if (sessionId) {{ body.agent_session_id = sessionId; body.resume_argv = {resume} }}
+      fetch(url, {{ method: "POST", headers: {{ "content-type": "application/json", "x-shelldeck-report-token": token }},
+        body: JSON.stringify(body), signal: AbortSignal.timeout(1500) }}).catch(() => {{}})
+    }} catch {{}}
+  }}
+  const start = (ctx) => {{ if ({gate}) {{ root = true; sessionOf(ctx) }} return root }}
+  pi.on("session_start", (_e, ctx) => {{ if (start(ctx)) send(ctx?.isIdle?.() === false ? "working" : "idle") }})
+  pi.on("agent_start", (_e, ctx) => {{ if (root || start(ctx)) {{ sessionOf(ctx); send("working") }} }})
+{extra}}}
+"""
+PI_EXTRA = {
+    "pi": '''  pi.on("agent_settled", (_e, ctx) => { if (root && ctx?.isIdle?.() === true) send("done") })
+''',
+    "omp": '''  pi.on("session_switch", (_e, ctx) => { if (start(ctx)) send("idle") })
+  pi.on("tool_approval_requested", (_e, ctx) => { if (root || start(ctx)) send("blocked", "approval") })
+  pi.on("tool_approval_resolved", () => { if (root) send("working") })
+  pi.on("tool_execution_start", (e) => { if (root && e?.toolName === "ask") send("blocked", "question") })
+  pi.on("tool_execution_end", (e) => { if (root && e?.toolName === "ask") send("working") })
+  pi.on("agent_end", (e) => { if (root && e?.willContinue !== true) send("done") })
+''',
+}
+
+
+def _pi_extension(agent: str) -> str:
+    resume = '["pi", "--session", sessionId]' if agent == "pi" else '["omp", "--resume=" + sessionId]'
+    gate = 'ctx?.mode === "tui"' if agent == "pi" else "ctx?.hasUI === true"  # interactive sessions only, as herdr gates them
+    return PI_EXTENSION.format(agent=agent, resume=resume, gate=gate, extra=PI_EXTRA[agent])
+
+
+def _pi_dir() -> Path:
+    return (Path(os.environ["PI_CODING_AGENT_DIR"]) if os.environ.get("PI_CODING_AGENT_DIR") else Path.home() / ".pi" / "agent") / "extensions"
+
+
+def _omp_dir() -> Path:
+    if os.environ.get("PI_CODING_AGENT_DIR"):
+        return Path(os.environ["PI_CODING_AGENT_DIR"]) / "extensions"
+    return Path.home() / (os.environ.get("PI_CONFIG_DIR") or ".omp") / "agent" / "extensions"
+
+
+class Extension(OwnFile):
+    """A Pi/OMP extension file; installing needs the agent's own folder (the extensions dir's parent)."""
+
+    def install(self) -> dict:
+        if not self.file.parent.parent.is_dir():
+            raise ValueError(f"{self.agent} config folder not found at {self.file.parent.parent}; install {self.agent} first")
+        if self.agent == "omp" and _omp_dir() == _pi_dir():
+            raise ValueError("pi and omp use the same extensions folder; set separate agent folders first")
+        self.file.parent.mkdir(exist_ok=True)
+        return super().install()
+
+
 def _copilot_file() -> str:
     hooks = {e: [{"type": "command", "command": hook_command("copilot", e), "timeoutSec": 5}] for e in hook.EVENTS["copilot"]}
     return json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n"
@@ -620,6 +688,8 @@ INSTALLERS = {
     "letta": JsonHooks("letta", lambda: Path.home() / ".letta" / "settings.json",
                        lambda e: {"hooks": [{"type": "command", "command": hook_command("letta"), "timeout": 10_000, "quiet": True}]}),
     "hermes": HermesPlugin(),
+    "pi": Extension("pi", lambda: _pi_dir() / "shelldeck-agent-state.ts", lambda: _pi_extension("pi"), "shelldeck-pi-extension"),
+    "omp": Extension("omp", lambda: _omp_dir() / "shelldeck-omp-agent-state.ts", lambda: _pi_extension("omp"), "shelldeck-omp-extension"),
     "antigravity": NamedBlock("antigravity", lambda: _home("ANTIGRAVITY_CLI_CONFIG_DIR", ".gemini", "config") / "hooks.json", _antigravity_block),
     "grok": OwnFile("grok", lambda: _home("GROK_HOME", ".grok") / "hooks" / "shelldeck.json", _grok_file, "-m shelldeck.hook grok"),
     "kilo": OwnFile("kilo", lambda: _xdg() / "kilo" / "plugin" / "shelldeck.js", lambda: _opencode_plugin("kilo"), "shelldeck-kilo-plugin"),
@@ -633,7 +703,7 @@ def _root(inst) -> Path:
     f = inst.file
     if isinstance(inst, HermesPlugin):
         return inst.root
-    return f.parent.parent if f.parent.name in ("hooks", "plugins", "plugin") else f.parent
+    return f.parent.parent if f.parent.name in ("hooks", "plugins", "plugin", "extensions") else f.parent
 
 
 def status(agent: str, available: bool = False) -> dict:
