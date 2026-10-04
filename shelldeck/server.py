@@ -1378,8 +1378,10 @@ def _changed() -> None:
 async def _publish(sid: str, status: dict, key: str | None) -> None:
     """Broadcast a status change; a transition into blocked also notifies (push for top-level agents)."""
     was = agent_status.get(sid)
-    if was == status:
+    if was and {k: v for k, v in was.items() if k != "since"} == status:
         return
+    # when the state itself began (unchanged state, new detail: keep the start), for elapsed time in the UI
+    status = {**status, "since": was["since"] if was and was.get("state") == status["state"] and was.get("since") else time.time()}
     agent_status[sid] = status
     _changed()
     await _broadcast({"type": "agent_state", "session_id": sid, "state": _legacy(status), "status": status})
@@ -2166,6 +2168,8 @@ async def alarms_ws(ws: WebSocket):
     socket_owner[ws] = who[1]
     try:
         await _send_alarm_snapshot(ws)
+        for sid, st in list(agent_status.items()):  # a tab that opens later sees current states too
+            await ws.send_json({"type": "agent_state", "session_id": sid, "state": _legacy(st), "status": st})
         while True:
             if (await ws.receive_text()) == '{"type":"ping"}':
                 await ws.send_text('{"type":"pong"}')

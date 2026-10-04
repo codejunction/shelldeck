@@ -1,5 +1,5 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
-import { S, newTerminal, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
+import { ATTENTION, S, attentionOf, newTerminal, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
 import { api, esc, icon, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
@@ -24,15 +24,23 @@ export async function renderAgents(el) {
   } catch (e) {
     return toastError(e);
   }
-  const running = data.running.length
-    ? data.running
+  const rank = (r) => ATTENTION.indexOf(attentionOf(r.session_id) || r.status?.state || "unknown");
+  const ordered = [...data.running].sort((a, b) => rank(a) - rank(b));
+  const blocked = ordered.filter((r) => attentionOf(r.session_id) === "blocked");
+  const done = ordered.filter((r) => attentionOf(r.session_id) === "done");
+  const banner = blocked.length || done.length
+    ? `<div class="card attn-banner" role="status">${blocked.length ? `<b>${blocked.length} need${blocked.length > 1 ? "" : "s"} you</b>` : ""}${done.length ? `<span>${done.length} finished, not seen yet</span>` : ""}
+        <button class="btn sm primary" data-open-next="${(blocked[0] || done[0]).session_id}">${icon("sparkle")}Open next</button></div>`
+    : "";
+  const running = ordered.length
+    ? ordered
         .map((r) => {
           const p = S.projects.find((x) => x.id === r.project_id);
           const parent = r.parent && S.projects.flatMap((x) => x.sessions).find((x) => x.id === r.parent);
           return `<tr data-sid="${r.session_id}" title="Open terminal">
             <td><b>${esc(r.nick || "")}</b>${parent ? `<br><span class="faint">sub-agent of ${esc(parent.nick || parent.id)}</span>` : ""}</td>
             <td><span class="ai-chip">${icon("sparkle")}<b>AI</b>${esc(r.label)}</span></td>
-            <td>${statusCell(r.status)}</td>
+            <td>${statusCell({ ...r.status, ...(S.serverStatus[r.session_id] || {}) }, attentionOf(r.session_id))}</td>
             <td class="mono">${esc(r.model || "") || '<span class="faint">default</span>'}</td>
             <td><span class="proj-dot" style="background:${p ? projectColor(p) : "var(--faint)"}"></span>${esc(r.project || "")}</td>
             <td>${esc(r.name || "")} <span class="faint mono">${esc(r.session_id)}</span></td>
@@ -72,6 +80,7 @@ export async function renderAgents(el) {
   el.innerHTML = `<div class="page-head"><div><h1>AI agents</h1>
       <p>Coding agents running in your terminals are marked AI in their header. Each terminal has a name; agents in a project can see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>.</p></div>
       <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
+    ${banner}
     <div class="card mon-table"><table>
       <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
       <tbody>${running}</tbody></table></div>
@@ -177,6 +186,8 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  const next = e.target.closest("[data-open-next]")?.dataset.openNext;
+  if (next) return showSession(next);
   const again = e.target.closest("[data-resume-agent]")?.dataset.resumeAgent;
   if (again) {
     try {
@@ -230,12 +241,19 @@ async function resumeDevin(d) {
 }
 
 /** Lifecycle state as text (never colour alone) plus where it came from: integration, screen/activity, unknown. */
-function statusCell(st) {
+function statusCell(st, attention) {
   if (!st) return '<span class="faint">unknown</span>';
-  const label = st.meta?.state_label || st.state;
+  // the screen can see a question the server can't (tab-side heuristic); "done" stays until you look
+  const label = attention === "blocked" ? "needs you" : attention === "done" ? "done (not seen)" : st.meta?.state_label || st.state;
+  const since = st.since ? ` · ${ago(st.since)}` : "";
   const src = st.source === "heuristic" ? "screen" : st.source;
   const why = st.reason ? ` · ${st.reason}` : "";
-  return `<b>${esc(label)}</b>${esc(why)}<br><span class="faint">from ${esc(src)}</span>`;
+  return `<b>${esc(label)}</b>${esc(why)}<br><span class="faint">from ${esc(src)}${since}</span>`;
+}
+
+function ago(t) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 /** Lifecycle integrations (hooks/plugins that report state), not to be confused with the skill (instructions). */

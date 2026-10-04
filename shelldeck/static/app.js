@@ -27,6 +27,7 @@ export const S = {
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
   agentState: {}, // sid -> working | waiting | approval (updateAgentStates)
   serverAgentState: {}, // sid -> working | approval | idle, from the server's agent_state broadcasts
+  doneUnseen: new Set(), // agents that finished while you weren't looking; cleared when their terminal is shown
   serverStatus: {}, // sid -> {state, source, reason, detail, meta}: server-owned lifecycle (agent_state.py)
   online: true,
 };
@@ -1166,6 +1167,7 @@ function toggleMaximize(force) {
 
 /** Show a session: focus if visible, else open it in the focused pane (or split with `split`). */
 export function showSession(sid, { split = null } = {}) {
+  S.doneUnseen.delete(sid); // reviewed
   switchView("terminals");
   if (mobile.matches) $("#app").classList.remove("sb-mobile-open");
   if (isFree()) {
@@ -1338,6 +1340,7 @@ export function renderSidebar() {
         <span class="chev">${icon("chevron")}</span>
         <span class="proj-dot" style="background:${projectColor(p)}"></span>
         <span class="name">${esc(p.name)}</span>
+        ${rollupChip(p)}
         <span class="count">${p.sessions.length || ""}</span>
         <span class="row-actions">
           ${p.has_git ? `<button class="icon-btn sm" data-act="git" title="Git graph" aria-label="Git graph">${icon("git-branch")}</button>` : ""}
@@ -1364,6 +1367,29 @@ export function renderSidebar() {
     )
     .join("");
   markSeen();
+}
+
+/** blocked > working > done(unseen) > idle > unknown: what an agent terminal most needs from you, for ordering. */
+export const ATTENTION = ["blocked", "done", "exited", "working", "idle", "unknown"];
+
+/** One agent terminal's attention state: needs-you (top-level only) beats everything, then server state. */
+export function attentionOf(sid) {
+  if (S.agentState[sid] === "approval" && !isSubAgent(sid)) return "blocked";
+  const st = S.serverStatus[sid]?.state;
+  if (st === "blocked" && !isSubAgent(sid)) return "blocked";
+  if (S.doneUnseen.has(sid)) return "done";
+  if (S.agentState[sid] === "working" || st === "working") return "working";
+  return S.agents[sid] ? st || "idle" : null;
+}
+
+/** The project's most urgent agent state as text (not color alone); nothing for idle terminals. */
+function rollupChip(p) {
+  const states = p.sessions.map((s) => attentionOf(s.id)).filter(Boolean);
+  for (const [state, label] of [["blocked", "needs you"], ["working", "working"], ["done", "done"]]) {
+    const n = states.filter((x) => x === state).length;
+    if (n) return `<span class="rollup ${state}" title="${n} agent${n > 1 ? "s" : ""} ${label}">${label}${n > 1 ? ` ${n}` : ""}</span>`;
+  }
+  return "";
 }
 
 /** Status mark before a sidebar row: the AI icon while an agent runs in it (amber when it needs you), else the alive dot. */
@@ -1915,7 +1941,12 @@ function connectAlarms() {
     if (msg.type === "share_state") setShareState(msg.state);
     if (msg.type === "agent_state") {
       S.serverAgentState[msg.session_id] = msg.state;
-      if (msg.status) S.serverStatus[msg.session_id] = msg.status;
+      if (msg.status) {
+        S.serverStatus[msg.session_id] = msg.status;
+        if (msg.status.state === "done" && msg.session_id !== S.focused) S.doneUnseen.add(msg.session_id);
+        if (msg.status.state === "exited") S.doneUnseen.delete(msg.session_id);
+        renderSidebar();
+      }
     }
     // a sub-agent's question whose parent isn't an agent (a plain shell): then it is yours
     if (msg.type === "question" && notify(msg.session_id, `${msg.nick} is asking you`, msg.text.slice(0, 200), "warn")) views.chime();

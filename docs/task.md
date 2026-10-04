@@ -93,6 +93,11 @@
   `gemini --resume <id>`. Each of the four was verified end to end on a real
   server + PTY with a fake agent process (hook -> integration state; native
   session stored).
+- **2026-10-04 — Task 6.2 complete:** project rollups (text, not color alone),
+  the agents list sorted by attention with elapsed time (`since` from the server),
+  an *Open next* banner across projects, done-until-seen, and the current state
+  sent to newly opened tabs. Checked in a browser with a real blocked agent
+  (sidebar "needs you", banner, toast).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -451,13 +456,13 @@ polling screen text, and a new agent process cannot satisfy an old wait.
 
 ### Task 6.2: Attention queue and project rollups
 
-- [ ] Add a prioritized attention section to `static/agents.js`.
-- [ ] Display semantic state, source, reason, elapsed time, model/context,
+- [x] Add a prioritized attention section to `static/agents.js`.
+- [x] Display semantic state, source, reason, elapsed time, model/context,
   role/title, and integration health.
-- [ ] Add direct actions appropriate to the viewer's permissions: open, peek,
+- [~] Add direct actions appropriate to the viewer's permissions (open, open next and resume done; peek/answer/message via CLI): open, peek,
   answer, message, resume, diagnose, reassign, and close.
-- [ ] Add project sidebar rollups with accessible text/icon state indicators.
-- [ ] Keep completed agents visible until reviewed; do not re-alert unchanged
+- [x] Add project sidebar rollups with accessible text/icon state indicators.
+- [x] Keep completed agents visible until reviewed; do not re-alert unchanged
   state.
 
 **Done when:** a user can identify and open the next agent needing a decision in
