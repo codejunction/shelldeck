@@ -85,6 +85,14 @@
   JS plugins (OpenCode, Kilo, Pi, OMP) are run under Node in the tests with fake
   events, and each body passes server validation. 19 agents are installable,
   covering every agent herdr integrates.
+- **2026-10-04 — Priority agents (user decision):** Claude Code, Codex, Gemini
+  CLI and Devin CLI are the supported set; every other integration is marked
+  "later" (preview: not in the default install, folded away in the UI). Devin
+  now reports full lifecycle from its hooks, with its session id from
+  `sessions.db` as a fallback (`agents._devin_native`). Gemini gets
+  `gemini --resume <id>`. Each of the four was verified end to end on a real
+  server + PTY with a fake agent process (hook -> integration state; native
+  session stored).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -245,6 +253,15 @@ conversation without affecting unrelated Codex hooks.
 
 **Done when:** OpenCode reports `working`, `blocked`, and `idle` accurately and
 can provide a resumable native session reference.
+
+### Priority order for integrations (decided)
+
+1. Claude Code, Codex, Gemini CLI, Devin CLI: supported, exact state and resume.
+   - [x] Installers, hook mapping, resume argv, end-to-end test with a fake agent process.
+   - [ ] Manual check against the real binaries (`gemini --resume <id>` especially).
+2. Everything else (Cursor, Copilot, OpenCode, Kilo, Kimi, MastraCode, Pi, OMP,
+   Qwen, Qoder, Droid, Grok, Antigravity, Letta, Hermes): preview, to finish
+   after the remaining features. They are already installable on request.
 
 ## Milestone 4 — Persistence and safe restore
 

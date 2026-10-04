@@ -546,9 +546,9 @@ def integration_list(json_: bool = typer.Option(False, "--json", help="Print mac
     if json_:
         typer.echo(json.dumps(rows, indent=2))
         return
-    table = Table("Agent", "Method", "Lifecycle", "Resume", "CLI", "Integration", "Notes")
+    table = Table("Agent", "Tier", "Method", "Lifecycle", "Resume", "CLI", "Integration", "Notes")
     for item in rows:
-        table.add_row(item["agent"], item["kind"], "yes" if item["lifecycle"] else "screen/fallback",
+        table.add_row(item["agent"], item["tier"], item["kind"], "yes" if item["lifecycle"] else "screen/fallback",
                       "yes" if item["session_restore"] else "no", "found" if item["available"] else "not found",
                       item["status"].replace("_", " "), item["notes"])
     console.print(table)
@@ -566,7 +566,7 @@ def _integration_rows(agent: str = "") -> list[dict]:
 def integration_detect():
     """Agent CLIs found on this machine that have an installable integration."""
     for r in _integration_rows():
-        typer.echo(f"{r['agent']:<10} {'found' if r['available'] else 'not found':<10} {r['status'].replace('_', ' ')}")
+        typer.echo(f"{r['agent']:<12} {r['tier']:<9} {'found' if r['available'] else 'not found':<10} {r['status'].replace('_', ' ')}")
 
 
 @integration_app.command("status")
@@ -577,9 +577,12 @@ def integration_status(agent: str = typer.Argument("", help="One agent (default:
 
 
 @integration_app.command("install")
-def integration_install(agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents (default: every one found).")):
+def integration_install(
+    agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents (default: Claude, Codex, Gemini and Devin when found)."),
+    all_: bool = typer.Option(False, "--all", help="Also the preview integrations (installed agents only)."),
+):
     """Add shelldeck's lifecycle hook/plugin to agents' configs (merged; other hooks stay; a backup is kept)."""
-    targets = agents_ or [r["agent"] for r in _integration_rows() if r["config_found"]]
+    targets = agents_ or [r["agent"] for r in _integration_rows() if r["config_found"] and (all_ or r["tier"] == "priority")]
     if not targets:
         typer.echo("no supported agent CLI found; name one: sd integration install claude")
     failed = False

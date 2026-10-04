@@ -350,7 +350,25 @@ def _claude_native(p: psutil.Process) -> dict | None:
     return out
 
 
-NATIVE = {"codex": _codex_native, "claude": _claude_native}
+def _devin_native(p: psutil.Process) -> dict | None:
+    """Devin's session id from its sessions.db (the `-r` id, else the newest session in this folder since the process
+    started), so it can be resumed even when a hook payload carries no id. State comes from hooks or the screen."""
+    db = _devin_db()
+    if not db:
+        return None
+    cmd = p.cmdline()
+    sid = next((cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a in ("-r", "--resume")), None)
+    if not sid:
+        with closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1)) as conn:
+            row = conn.execute("SELECT id FROM sessions WHERE working_directory = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
+                               (p.cwd(), int(p.create_time()) - 5)).fetchone()
+        sid = row[0] if row else None
+    if not isinstance(sid, str) or not sid or sid.startswith("-"):
+        return None
+    return {"state": None, "age": 0.0, "session_id": sid, "resume_argv": ["devin", "--resume", sid]}
+
+
+NATIVE = {"codex": _codex_native, "claude": _claude_native, "devin": _devin_native}
 
 
 def native(shells: dict[str, int]) -> dict[str, dict]:
@@ -368,7 +386,7 @@ def native(shells: dict[str, int]) -> dict[str, dict]:
                     if found := NATIVE[hit[0]](k):
                         out[sid] = found
                     break
-            except (psutil.Error, OSError, ValueError):
+            except (psutil.Error, OSError, ValueError, sqlite3.Error):
                 continue
     return out
 

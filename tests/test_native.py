@@ -63,3 +63,26 @@ def test_native_report_expires_so_a_quiet_log_falls_back_to_the_screen():
     _, _, ref = agent_state.parse_report({"source": "native:codex", "agent": "codex", "state": "working", "agent_session_id": "x",
                                           "resume_argv": ["codex", "resume", "x"]}, "codex")
     assert ref.resume_argv[0] == "codex"
+
+
+def test_devin_session_from_its_db(tmp_path, monkeypatch):
+    import sqlite3
+    db = tmp_path / "sessions.db"
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE sessions (id TEXT, working_directory TEXT, created_at INTEGER, model TEXT)")
+        c.execute("INSERT INTO sessions VALUES ('dv-1', ?, ?, 'm')", (str(tmp_path), int(time.time())))
+
+    class P(Proc):
+        def cmdline(self):
+            return ["devin"]
+
+    monkeypatch.setattr(agents, "_devin_db", lambda: db)
+    got = agents._devin_native(P(5, str(tmp_path)))
+    assert got["state"] is None and got["resume_argv"] == ["devin", "--resume", "dv-1"]
+    assert agent_state.native_report("devin", got, now=1) is None  # no state claim, only the session
+
+    class R(P):
+        def cmdline(self):
+            return ["devin", "-r", "dv-9"]
+
+    assert agents._devin_native(R(5, str(tmp_path)))["session_id"] == "dv-9"

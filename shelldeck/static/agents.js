@@ -240,21 +240,22 @@ function statusCell(st) {
 
 /** Lifecycle integrations (hooks/plugins that report state), not to be confused with the skill (instructions). */
 function integrationSection() {
-  const rows = data.integrations || [];
-  if (!rows.length) return "";
+  const all = data.integrations || [];
+  if (!all.length) return "";
   const label = { installed: "installed", outdated: "outdated: reinstall", not_installed: "not installed", error: "config unreadable" };
-  const cards = rows
-    .map((i) => {
+  const card = (i) => {
       const on = i.status === "installed" || i.status === "outdated";
       const btn = on
         ? `${i.status === "outdated" ? `<button class="btn sm" data-integration="${i.agent}" data-op="install">Reinstall</button>` : ""}<button class="btn sm" data-integration="${i.agent}" data-op="remove">Remove</button>`
         : `<button class="btn sm" data-integration="${i.agent}" data-op="install"${i.config_found ? "" : ' disabled title="Install the agent first (its config folder was not found)"'}>Install</button>`;
       return `<div class="card ag-card"><div class="ag-title"><b>${esc(i.agent)}</b><code class="faint">${esc(i.kind)}</code></div>
         <p class="faint">${esc(label[i.status] || i.status)}${i.lifecycle ? " · exact state" : " · session id only"}${i.session_restore ? " · resumable" : ""}${i.available ? "" : " · CLI not found"}</p><div class="row">${btn}</div></div>`;
-    })
-    .join("");
+  };
+  const main = all.filter((i) => i.tier === "priority").map(card).join("");
+  const later = all.filter((i) => i.tier !== "priority");
   return `<div class="ag-head"><h2>Integrations</h2><span class="faint">Hooks that report working / needs you / done exactly, instead of reading the screen. The skill only teaches commands.</span></div>
-    <div class="ag-grid">${cards}</div>`;
+    <div class="ag-grid">${main}</div>
+    ${later.length ? `<details class="ag-later"><summary class="faint">Preview: ${later.length} more agents (not fully supported yet)</summary><div class="ag-grid">${later.map(card).join("")}</div></details>` : ""}`;
 }
 
 const RESUME_WHY = { executable_not_found: "agent CLI not found", cwd_missing: "folder is gone", invalid_resume_argv: "stored command rejected", no_resume: "nothing to resume", agent_running: "running" };

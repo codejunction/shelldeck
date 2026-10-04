@@ -30,10 +30,10 @@ class Integration:
 # Hook/plugin installation is added only after its upstream format is verified;
 # until then `screen` accurately communicates the available integration level.
 INTEGRATIONS: tuple[Integration, ...] = (
-    Integration("claude", "hook", True, True), Integration("codex", "hook", True, True, "hooks, plus its session logs without them; approval prompts from the screen"),
+    Integration("claude", "hook", True, True), Integration("codex", "hook", True, True, "also reads its session logs without the hook"),
     Integration("copilot", "hook", True, True), Integration("cursor", "hook", True, True),
     Integration("opencode", "plugin", True, True), Integration("pi", "plugin", True, True),
-    Integration("omp", "plugin", True, True), Integration("devin", "hook", False, True, "session id only; state from the screen"),
+    Integration("omp", "plugin", True, True), Integration("devin", "hook", True, True),
     Integration("droid", "hook", False, True, "session id only; state from the screen"),
     Integration("kimi", "hook", True, True, "needs Kimi Code 0.14+"), Integration("kilo", "plugin", True, True),
     Integration("hermes", "plugin", False, True, "session id only; state from the screen"), Integration("qodercli", "hook", False, True, "session id only; state from the screen"),
@@ -41,21 +41,25 @@ INTEGRATIONS: tuple[Integration, ...] = (
     Integration("mastracode", "hook", True, True), Integration("grok", "hook", False, True, "session id only; state from the screen"),
     Integration("antigravity", "hook", False, True, "session id only; state from the screen"), Integration("amp", "screen", False, False),
     Integration("kiro", "screen", False, False), Integration("maki", "screen", False, False),
-    Integration("gemini", "hook", True, False), Integration("cline", "screen", False, False),
+    Integration("gemini", "hook", True, True), Integration("cline", "screen", False, False),
     Integration("command", "native", True, False), Integration("crush", "native", True, False),
     Integration("muse", "native", True, False), Integration("prime", "native", True, False),
 )
 
 BY_AGENT = {item.agent: item for item in INTEGRATIONS}
+# Supported first and kept working: exact state + resume. Everything else installable is a preview ("later"):
+# it ships, but isn't installed by default or promised until these four are done everywhere.
+PRIORITY = ("claude", "codex", "gemini", "devin")
 
 
 def catalog(installed: set[str] | None = None) -> list[dict]:
     """Serializable integration capabilities, optionally marked by installed CLI."""
     installed = installed or set()
     out = []
-    for item in INTEGRATIONS:
+    for item in sorted(INTEGRATIONS, key=lambda i: (i.agent not in PRIORITY, PRIORITY.index(i.agent) if i.agent in PRIORITY else 0)):
         st = status(item.agent, item.agent in installed) if item.agent in INSTALLERS else {"status": "unsupported"}
-        out.append({**asdict(item), "available": item.agent in installed or st.get("available", False), "installable": item.agent in INSTALLERS,
+        out.append({**asdict(item), "tier": "priority" if item.agent in PRIORITY else "later",
+                    "available": item.agent in installed or st.get("available", False), "installable": item.agent in INSTALLERS,
                     "config_found": bool(st.get("available")), "status": st["status"]})
     return out
 

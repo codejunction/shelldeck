@@ -107,7 +107,7 @@ def test_hook_maps_events_to_lifecycle():
     assert hook.state_for("copilot", {"hook_event_name": "errorOccurred", "recoverable": True}) == (None, None)
     body = hook.report("claude", {"hook_event_name": "Stop", "session_id": "abc"})
     assert body["state"] == "done" and body["resume_argv"] == ["claude", "--resume", "abc"]
-    assert "resume_argv" not in hook.report("gemini", {"hook_event_name": "BeforeTool", "session_id": "x"})
+    assert hook.report("gemini", {"hook_event_name": "BeforeTool", "session_id": "x"})["resume_argv"] == ["gemini", "--resume", "x"]
 
 
 def test_hook_main_never_fails_and_replies(monkeypatch, capsys):
@@ -132,7 +132,7 @@ def test_install_needs_the_agent_installed(homes):
 
 
 @pytest.mark.parametrize("agent,rel,matcher", [("qwen", "qwen/settings.json", "*"), ("qodercli", "qoder/settings.json", "*"),
-                                               ("droid", "home/.factory/settings.json", None), ("devin", "xdg/devin/config.json", None)])
+                                               ("droid", "home/.factory/settings.json", None)])
 def test_session_only_agents(homes, agent, rel, matcher):
     file = homes / rel
     file.parent.mkdir(parents=True)
@@ -322,3 +322,24 @@ def test_pi_and_omp_install(homes, monkeypatch):
         integrations.install("omp")
     for agent in ("pi", "omp"):
         integrations.uninstall(agent)
+
+
+def test_devin_full_lifecycle(homes):
+    d = homes / "xdg" / "devin"
+    d.mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps({"keep": 1}))
+    integrations.install("devin")
+    hooks = json.loads((d / "config.json").read_text())["hooks"]
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"}
+    assert hook.state_for("devin", {"hook_event_name": "PermissionRequest"}) == ("blocked", "approval")
+    assert hook.report("devin", {"hook_event_name": "Stop", "session_id": "d1"})["resume_argv"] == ["devin", "--resume", "d1"]
+    assert hook.report("devin", {"hook_event_name": "UserPromptSubmit"})["state"] == "working"  # no id: state still reported
+    integrations.uninstall("devin")
+    assert json.loads((d / "config.json").read_text()) == {"keep": 1}
+
+
+def test_priority_tier_first():
+    rows = integrations.catalog()
+    assert [r["agent"] for r in rows[:4]] == ["claude", "codex", "gemini", "devin"]
+    assert all(r["tier"] == "priority" and r["lifecycle"] and r["session_restore"] for r in rows[:4])
+    assert {r["tier"] for r in rows[4:]} == {"later"}

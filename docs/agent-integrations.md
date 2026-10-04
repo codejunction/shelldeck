@@ -4,6 +4,12 @@ An **integration** is a hook or plugin that shelldeck adds to an agent's own con
 lifecycle (working, blocked on approval, done, idle) straight to the terminal it runs in. It is not the **skill**:
 the skill only teaches an agent the `sd` commands.
 
+**Supported now: Claude Code, Codex, Gemini CLI and Devin CLI.** Each gets exact state (working, needs you, done) and
+resume. These four are installed by `sd integration install` and shown first on the AI agents page.
+
+Every other row below is a **preview, to be finished later**. It installs with `sd integration install <agent>`
+or `--all`, and it is tested against config files only, not against the running agent.
+
 Without an integration, shelldeck still detects the agent and reads its state from the screen. With one, the AI agents
 page shows the state as coming from `integration`.
 
@@ -13,14 +19,14 @@ approve, deny or block a tool.
 | Agent | What is installed | Where (env override) | Session/resume |
 | --- | --- | --- | --- |
 | Claude Code | Hook entries for `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `SubagentStart`, `PreCompact`, `Stop`, `StopFailure` (all `async`) | `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR`) | yes: `claude --resume <id>` |
-| Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` | `~/.gemini/settings.json` (`GEMINI_DIR`) | no |
+| Gemini CLI (v0.26+) | Hook groups (`matcher: "*"`) for `SessionStart`, `BeforeAgent`, `Before/AfterTool`, `PreCompress`, `AfterAgent`, `Notification` (approval) | `~/.gemini/settings.json` (`GEMINI_DIR`) | yes: `gemini --resume <id>` (to confirm on a real install) |
 | Cursor (editor and CLI) | `hooks.json` entries for the watching hooks (`sessionStart`, `beforeSubmitPrompt`, `after*`, `postToolUse*`, `subagentStop`, `preCompact`, `stop`) | `~/.cursor/hooks.json` (`CURSOR_DIR`) | yes: `cursor-agent --resume <id>` |
 | GitHub Copilot CLI | Its own file; each event's command names the event, because Copilot's payloads don't | `~/.copilot/hooks/shelldeck.json` (`COPILOT_HOME`) | yes: `copilot --resume=<id>` |
 | Codex | `hooks.json` entries for `SessionStart`, `UserPromptSubmit`, `Stop`, `Interrupt`, plus `hooks = true` under `[features]` in `config.toml` (left in place on uninstall) | `~/.codex/` (`CODEX_HOME`) | yes: `codex resume <id>` |
 | Qwen Code | `SessionStart` (`matcher: "*"`): session id only | `~/.qwen/settings.json` (`QWEN_HOME`) | yes: `qwen --resume <id>` |
 | Qoder CLI | `SessionStart` (`matcher: "*"`): session id only | `~/.qoder/settings.json` (`QODER_CONFIG_DIR`) | yes: `qodercli --resume <id>` |
 | Factory Droid | `SessionStart`: session id only | `~/.factory/settings.json` | yes: `droid --resume <id>` |
-| Devin CLI | `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest`, `Stop`: session id only | `config.json` in `$XDG_CONFIG_HOME/devin`, `%APPDATA%\devin` or `~/.config/devin` | yes: `devin --resume <id>` |
+| Devin CLI | `SessionStart`, `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest` (approval), `Stop` (done). Without an id in the payload, the session comes from Devin's `sessions.db` | `config.json` in `$XDG_CONFIG_HOME/devin`, `%APPDATA%\devin` or `~/.config/devin` | yes: `devin --resume <id>` |
 | Kimi Code CLI (0.14+) | A marked `[[hooks]]` block (`# >>> shelldeck kimi integration`) appended to `config.toml`: prompts, tools, `AskUserQuestion` (blocked: question), permission request/result, stop, interrupt | `~/.kimi-code/` (`KIMI_CODE_HOME`) | yes: `kimi --session <id>` |
 | MastraCode | Flat entries keyed by event at the top of `hooks.json` (agent start/end, tools, permissions, sub-agents, interrupt) | `~/.mastracode/hooks.json` | yes: `mastracode --thread <id>` |
 | Antigravity CLI | One `shelldeck` block (`PreInvocation`) in `hooks.json`, which is keyed by hook name: session id only | `~/.gemini/config/` (`ANTIGRAVITY_CLI_CONFIG_DIR`) | yes: `agy --conversation <id>` |
@@ -42,7 +48,7 @@ approve, deny or block a tool.
 A native "working" holds only 15 s past the last log event, so a prompt waiting for approval (the log goes quiet) is
 picked up by screen detection again. An integration report outranks native, which outranks the screen.
 
-**Session id only** (Qwen, Qoder, Droid, Devin, Grok, Antigravity, Letta, Hermes): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
+**Session id only** (Qwen, Qoder, Droid, Grok, Antigravity, Letta, Hermes): herdr found these agents' hook events unreliable for lifecycle, so their hooks report only the session id, for resume. The state stays with screen detection.
 
 Installing needs the agent's config folder (install and run the agent once first). Amp, Kiro, Maki, Cline, Aider, Goose, Crush and the rest keep using screen detection for now (see `sd integration list`).
 
