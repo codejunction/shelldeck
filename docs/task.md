@@ -192,6 +192,9 @@
   `echo hi` tool call was captured, and the session file was written on exit. A
   -p run exits right after Stop, so the final "done" can arrive after the
   process is gone (not an issue for interactive sessions).
+- **2026-10-04 — 0.0.7rc2 published to PyPI** (release run 37227723591, CI green
+  on Windows and Ubuntu, py3.12–3.14). Installed from PyPI and checked (version,
+  `sd recall --smart`).
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
