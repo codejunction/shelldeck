@@ -948,3 +948,60 @@ def test_report_token_alone_is_enough_locally_but_not_over_a_tunnel(tmp_path, mo
         assert c.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-tl"}).status_code == 401
     server.reports.forget("tl")
     server.agent_status.pop("tl", None)
+
+
+def test_resume_plan_is_safe(client, tmp_path, monkeypatch):
+    work = tmp_path / "w"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    assert server._resume_plan(sid) == (None, "no_resume")
+    db.save_agent_session(sid, "claude", "native:claude", "abc-123", ["claude", "--resume", "abc-123"], "working")
+    assert server._resume_plan(sid) == ("claude --resume abc-123", None)
+    rows = client.get("/api/agent-sessions").json()["sessions"]
+    assert rows[0]["can_resume"] and "abc-123" not in str(rows)  # native ids stay on the server
+    # a stored value that would need quoting (or could run more) is refused
+    db.save_agent_session(sid, "claude", "native:claude", "x", ["claude", "--resume", "x; rm -rf ~"], "working")
+    assert server._resume_plan(sid) == (None, "invalid_resume_argv")
+    db.save_agent_session(sid, "claude", "native:claude", "x", ["/bin/claude", "x"], "working")
+    assert server._resume_plan(sid) == (None, "invalid_resume_argv")
+    db.save_agent_session(sid, "claude", "native:claude", "abc", ["claude", "--resume", "abc"], "working")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: None)
+    assert server._resume_plan(sid) == (None, "executable_not_found")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: "/x")
+    db.update_session_cwd(sid, str(tmp_path / "gone"))
+    assert server._resume_plan(sid) == (None, "cwd_missing")
+    db.update_session_cwd(sid, str(work))
+    db.add_handoff(project_id=pid, from_sid=None, from_nick=None, to_sid=sid, to_nick="x", agent="claude", model=None, task="t")
+    assert server._resume_plan(sid, auto=True) == (None, "open_handoff")  # auto never resumes into a hand-off
+    assert server._resume_plan(sid)[0] == "claude --resume abc"  # a person asking may
+
+
+def test_auto_resume_respects_setting(client, monkeypatch, tmp_path):
+    started = []
+
+    async def fake_start(sid, line):
+        started.append((sid, line))
+
+    work = tmp_path / "w2"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    db.save_agent_session(sid, "codex", "native:codex", "t1", ["codex", "resume", "t1"], "done")
+    monkeypatch.setattr(server.shutil, "which", lambda exe: "/x")
+    monkeypatch.setattr(server, "_start_agent", fake_start)
+
+    async def go(mode):
+        server.resumed.discard(sid)
+        db.set_setting("agent_resume", mode)
+        server._auto_resume(sid)
+        await asyncio.sleep(0)
+
+    asyncio.run(go("ask"))
+    assert started == []
+    asyncio.run(go("auto"))
+    assert started == [(sid, "codex resume t1")]
+    asyncio.run(go("never"))
+    assert len(started) == 1
+    assert client.put("/api/settings", json={"agent_resume": "bogus"}).status_code == 400

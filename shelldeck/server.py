@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -54,6 +55,7 @@ SETTINGS_DEFAULTS = {
     "terminal_theme": "default",
     "font_family": "",
     "editor": "vscode",
+    "agent_resume": "ask",  # never | ask | auto: start a stored agent session again when its terminal comes back
 }
 # keep in sync with TERMINAL_THEMES in static/app.js
 TERMINAL_THEMES = ("default", "dracula", "one-dark", "nord", "gruvbox-dark", "solarized-dark", "solarized-light", "github-light")
@@ -786,6 +788,8 @@ async def write_settings(payload: dict):
             return err("invalid_font_family")
         if key == "editor" and value not in ("vscode", "system", "shelldeck"):
             return err("invalid_editor")
+        if key == "agent_resume" and value not in ("never", "ask", "auto"):
+            return err("invalid_agent_resume")
     for key, value in payload.items():
         db.set_setting(key, str(value).strip())
     return get_settings()
@@ -1395,6 +1399,76 @@ def _status_of(sid: str, now: float | None = None) -> dict:
 
 
 native_seen: dict[str, str] = {}  # terminal -> native session id last stored
+resumed: set[str] = set()  # terminals already auto-resumed in this server run
+SAFE_ARG = re.compile(r"[A-Za-z0-9._:/=@+-]{1,200}")  # needs no quoting in pwsh, cmd, bash, zsh or fish
+
+
+def _resume_plan(sid: str, auto: bool = False) -> tuple[str | None, str | None]:
+    """(command line, None) when a stored agent session can be resumed in this terminal, else (None, error code).
+    The line comes only from validated argv; nothing is rebuilt from terminal output."""
+    rec = db.get_agent_session(sid)
+    s = db.get_session(sid)
+    if not rec or not s or not rec.get("resume_argv_json"):
+        return None, "no_resume"
+    try:
+        argv = lifecycle.parse_resume_argv(json.loads(rec["resume_argv_json"]), rec["agent"])
+    except (ValueError, lifecycle.ReportError):
+        return None, "invalid_resume_argv"
+    if not all(SAFE_ARG.fullmatch(a) for a in argv):
+        return None, "invalid_resume_argv"
+    if not shutil.which(argv[0]):
+        return None, "executable_not_found"
+    cwd = s.get("cwd") or ((db.get_project(s["project_id"]) or {}).get("path") if s.get("project_id") else None)
+    if cwd and not Path(cwd).is_dir():
+        return None, "cwd_missing"
+    if auto and db.list_handoffs(to_sid=sid, status="open"):
+        return None, "open_handoff"  # a hand-off is reviewed by a person, never resumed silently
+    return " ".join(argv), None
+
+
+def _auto_resume(sid: str) -> None:
+    """On a terminal's first spawn after a restart: resume its agent when the setting is auto and it's safe."""
+    if sid in resumed or get_settings().get("agent_resume") != "auto":
+        return
+    resumed.add(sid)
+    rec = db.get_agent_session(sid)
+    if not rec or rec.get("last_state") == "exited":
+        return
+    line, why = _resume_plan(sid, auto=True)
+    if not line:
+        log.info("not resuming the agent in %s: %s", sid, why)
+        return
+    t = asyncio.get_running_loop().create_task(_start_agent(sid, line))
+    background.add(t)
+    t.add_done_callback(background.discard)
+
+
+@app.get("/api/agent-sessions")
+async def agent_sessions():
+    """Stored agent sessions and whether each can be resumed now. Native ids are never sent."""
+    running = set(agent_kind)
+    rows = []
+    for r in await asyncio.to_thread(db.list_agent_sessions):
+        line, why = await asyncio.to_thread(_resume_plan, r["session_id"])
+        rows.append({"session_id": r["session_id"], "agent": r["agent"], "source": r["source"].split(":", 1)[0], "last_state": r["last_state"],
+                     "last_seen_at": r["last_seen_at"], "running": r["session_id"] in running, "can_resume": bool(line) and r["session_id"] not in running,
+                     "error": "agent_running" if r["session_id"] in running else why})
+    return {"sessions": rows, "mode": get_settings().get("agent_resume")}
+
+
+@app.post("/api/sessions/{session_id}/resume")
+async def resume_agent(session_id: str):
+    """Start the terminal's stored agent session again (the user asked; works whatever the setting)."""
+    if session_id in agent_kind:
+        return err("agent_running", 409)
+    line, why = await asyncio.to_thread(_resume_plan, session_id)
+    if not line:
+        return err(why or "no_resume", 409)
+    if not manager.get(session_id):
+        resumed.add(session_id)  # this resume replaces the auto one
+        _attach(db.get_session(session_id), 30, 120)  # its pane resizes it when it opens
+    await _start_agent(session_id, line)
+    return {"command": line}
 
 
 def _save_native(sid: str, key: str, nat: dict) -> None:
@@ -2065,6 +2139,10 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent")),
                                          ("SHELLDECK_AGENT_REPORT_TOKEN", report_tokens.setdefault(sid, secrets.token_urlsafe(24)))) if v},
         )
+        try:
+            _auto_resume(sid)
+        except Exception:  # noqa: BLE001 - a resume problem must never stop the shell from opening
+            log.warning("agent auto-resume failed", exc_info=True)
     if session.get("parent"):
         ask_buf.setdefault(sid, "")  # watch this sub-agent for questions (_watch_questions)
     if sid not in readers:

@@ -19,8 +19,8 @@ export async function renderAgents(el) {
   }
   const kept = keep(el);
   try {
-    const [agents, skills, handoffs, ints] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs"), api("/api/integrations")]);
-    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs, integrations: ints.integrations.filter((i) => i.installable) };
+    const [agents, skills, handoffs, ints, stored] = await Promise.all([api("/api/agents"), api("/api/skills"), api("/api/handoffs"), api("/api/integrations"), api("/api/agent-sessions")]);
+    data = { ...agents, skills: Object.fromEntries(skills.skills.map((x) => [x.agent, x.installed])), handoffs: handoffs.handoffs, stored: stored.sessions, integrations: ints.integrations.filter((i) => i.installable) };
   } catch (e) {
     return toastError(e);
   }
@@ -76,6 +76,7 @@ export async function renderAgents(el) {
       <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th></tr></thead>
       <tbody>${running}</tbody></table></div>
     ${handoffSection()}
+    ${resumeSection()}
     ${integrationSection()}
     <div class="ag-head"><h2>Available agents</h2>
       ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
@@ -176,6 +177,17 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  const again = e.target.closest("[data-resume-agent]")?.dataset.resumeAgent;
+  if (again) {
+    try {
+      await api(`/api/sessions/${again}/resume`, { method: "POST" });
+      showSession(again);
+      toast({ title: "Agent resumed" });
+      return renderAgents(el);
+    } catch (err) {
+      return toastError(err);
+    }
+  }
   const integ = e.target.closest("[data-integration]");
   if (integ) {
     const { integration: agent, op } = integ.dataset;
@@ -243,4 +255,22 @@ function integrationSection() {
     .join("");
   return `<div class="ag-head"><h2>Integrations</h2><span class="faint">Hooks that report working / needs you / done exactly, instead of reading the screen. The skill only teaches commands.</span></div>
     <div class="ag-grid">${cards}</div>`;
+}
+
+const RESUME_WHY = { executable_not_found: "agent CLI not found", cwd_missing: "folder is gone", invalid_resume_argv: "stored command rejected", no_resume: "nothing to resume", agent_running: "running" };
+
+/** Stored agent sessions (from integrations or the agent's own logs) whose terminal has no agent now. */
+function resumeSection() {
+  const sessions = S.projects.flatMap((p) => p.sessions.map((s) => ({ ...s, project: p })));
+  const rows = (data.stored || []).filter((r) => !r.running && sessions.some((s) => s.id === r.session_id));
+  if (!rows.length) return "";
+  const body = rows
+    .map((r) => {
+      const s = sessions.find((x) => x.id === r.session_id);
+      const action = r.can_resume ? `<button class="btn sm" data-resume-agent="${r.session_id}">Resume</button>` : `<span class="faint">${esc(RESUME_WHY[r.error] || r.error || "")}</span>`;
+      return `<tr><td><b>${esc(s.nick || "")}</b></td><td>${esc(r.agent)}</td><td>${esc(r.last_state)}</td><td>${esc(s.project.name)}</td><td>${action}</td></tr>`;
+    })
+    .join("");
+  return `<div class="ag-head"><h2>Resumable sessions</h2><span class="faint">Agent conversations shelldeck can start again in their terminal (Settings: resume ask / auto / never).</span></div>
+    <div class="card mon-table"><table><thead><tr><th>Name</th><th>Agent</th><th>Last state</th><th>Project</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
 }

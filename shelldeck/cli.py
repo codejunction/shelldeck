@@ -1012,6 +1012,22 @@ def agent_wait(
     raise typer.Exit({"reached": 0, "timeout": 2}.get(r["result"], 3))
 
 
+@agent_app.command("resume")
+def agent_resume(target: str = typer.Argument("", help="Terminal nick, id or name (default: list resumable sessions).")):
+    """Start a terminal's stored agent session again (e.g. `claude --resume <id>` after a restart)."""
+    if not target:
+        rows = _api("/api/agent-sessions")["sessions"]
+        nicks = {s["id"]: s.get("nick") for s in _api("/api/sessions")["sessions"]}
+        if not rows:
+            typer.echo("no stored agent sessions")
+        for r in rows:
+            note = "resumable" if r["can_resume"] else (r["error"] or "").replace("_", " ")
+            typer.echo(f"{nicks.get(r['session_id']) or r['session_id']}  {r['agent']}  last {r['last_state']}  {note}")
+        return
+    r = _api(f"/api/sessions/{_session(target)['id']}/resume", "POST")
+    typer.echo(f"resumed: {r['command'].split()[0]} ...")
+
+
 @agent_app.command("report")
 def agent_report(
     state: str = typer.Argument(..., help="idle, working, blocked, done or unknown."),

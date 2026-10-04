@@ -59,7 +59,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 ## Settings (`/api/settings`, `SETTINGS_DEFAULTS` in server.py)
 
-`default_shell` (any of `shells.kinds()`), `wsl_distro`, `font_size` (8–32), `theme` (dark|light|system), `layout_mode` (tiled|free), `project_tint` (on|off), `terminal_theme` (`TERMINAL_THEMES` in server.py, mirrored by `PRESETS` in app.js), `font_family` (free text, `FONT_FAMILY` regex), `editor` (vscode|shelldeck|system). Validation lives in `write_settings`; adding a key means updating the defaults, the validation, `views.settingsDialog`, and the README table.
+`default_shell` (any of `shells.kinds()`), `wsl_distro`, `font_size` (8–32), `theme` (dark|light|system), `layout_mode` (tiled|free), `project_tint` (on|off), `terminal_theme` (`TERMINAL_THEMES` in server.py, mirrored by `PRESETS` in app.js), `font_family` (free text, `FONT_FAMILY` regex), `editor` (vscode|shelldeck|system), `agent_resume` (never|ask|auto; `_resume_plan` validates stored argv against `SAFE_ARG`, `shutil.which` and the cwd, `_auto_resume` runs once per terminal per server run from `_attach` and skips open hand-offs). Validation lives in `write_settings`; adding a key means updating the defaults, the validation, `views.settingsDialog`, and the README table.
 
 ## Layout
 

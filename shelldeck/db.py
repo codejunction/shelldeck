@@ -1008,6 +1008,12 @@ def touch_agent_session(session_id: str, state: str) -> None:
         conn.commit()
 
 
+def list_agent_sessions() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM agent_sessions ORDER BY last_seen_at DESC")]
+
+
 def get_agent_session(session_id: str) -> dict | None:
     with _connect() as conn:
         conn.row_factory = sqlite3.Row

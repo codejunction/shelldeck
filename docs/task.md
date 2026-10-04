@@ -55,6 +55,13 @@
   `claude --resume <id>`. Native reports expire 15 s after the log goes quiet,
   so approval prompts fall back to screen detection. Native sources may now
   issue validated resume argv.
+- **2026-10-04 — Tasks 4.1 and 4.2 complete:** `agent_resume` setting
+  (never/ask/auto, default ask), `GET /api/agent-sessions` (no native ids sent),
+  `POST /api/sessions/{id}/resume`, `sd agent resume`, a *Resumable sessions*
+  table and a Settings select. `_resume_plan` re-validates argv (bare executable,
+  plain-word args only), the executable and the cwd. Auto-resume runs once per
+  terminal after its shell starts and never into an open hand-off; failures are
+  logged and the terminal stays a normal shell.
 - **2026-10-04 — Docs:** README, CHANGELOG (Unreleased), CLAUDE.md,
   `docs/agent-automation.md` and `docs/agent-report.schema.json` describe the
   lifecycle, report API, waits and context commands.
@@ -220,8 +227,8 @@ can provide a resumable native session reference.
   status table waits for the integration manager).
 - [x] Persist only validated native-session information and bounded metadata.
 - [x] Do not persist high-frequency heartbeat reports by default.
-- [ ] Add settings for `never`, `ask`, and `auto` native-session restore.
-- [ ] Default new users to `ask`.
+- [x] Add settings for `never`, `ask`, and `auto` native-session restore.
+- [x] Default new users to `ask`.
 
 **Primary files:** `shelldeck/db.py`, `shelldeck/server.py`, settings UI and
 tests.
@@ -231,13 +238,13 @@ invalid/missing resume data cannot be launched.
 
 ### Task 4.2: Restore sessions safely
 
-- [ ] Restore normal terminals as shells first.
-- [ ] Resume an agent only after its shell is ready and the integration is
+- [x] Restore normal terminals as shells first.
+- [x] Resume an agent only after its shell is ready and the integration is
   installed, compatible, and enabled.
-- [ ] Preserve terminal/layout records when cwd, executable, or integration is
+- [x] Preserve terminal/layout records when cwd, executable, or integration is
   unavailable; provide a retry/error action rather than silently changing work.
-- [ ] Do not auto-complete or silently reassign an open hand-off during restore.
-- [ ] Add restart tests for success, disabled restore, invalid argv, missing cwd,
+- [x] Do not auto-complete or silently reassign an open hand-off during restore.
+- [x] Add restart tests for success, disabled restore, invalid argv, missing cwd,
   and missing executable.
 
 **Done when:** restart recovery is explicit, safe, and recoverable for both
