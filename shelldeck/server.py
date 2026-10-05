@@ -1099,8 +1099,6 @@ async def connect_remote(request: Request, remote_id: str, payload: dict | None 
 @app.post("/api/projects")
 async def add_project(payload: dict):
     if rid := str(payload.get("remote_id") or ""):  # a folder on a saved SSH machine
-        if not remotes.SSH_SUPPORTED:
-            return err("ssh_unsupported_on_windows", 501)
         r = db.get_remote(rid)
         if not r or r["kind"] != "ssh":
             return err("remote_not_found", 404)
@@ -2619,14 +2617,14 @@ def _clamp(value, lo: int, hi: int, default: int) -> int:
 def _remote_line(session: dict) -> str | None:
     """The ssh command for a terminal in a remote machine's project, or None for a local one."""
     project = db.get_project(session.get("project_id") or "") if session.get("project_id") else None
-    if not project or not project.get("remote_id") or not remotes.SSH_SUPPORTED:
+    if not project or not project.get("remote_id"):
         return None
     r = db.get_remote(project["remote_id"])
     if not r:
         return None
     try:
         r = {**r, **remotes.validate(r)}
-        return remotes.ssh_line(r, project.get("remote_path") or "~")
+        return remotes.ssh_line(r, project.get("remote_path") or "~", session.get("shell") or get_settings()["default_shell"])
     except remotes.RemoteError:
         log.warning("remote %s has invalid stored values", r["id"])
         return None

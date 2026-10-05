@@ -24,8 +24,8 @@ export const S = {
   collapsed: new Set(store.get("collapsed", [])),
   order: store.get("order", []),
   machine: store.get("machine", "local"), // "local" or a remote id: which machine's projects the sidebar shows
-  remotes: [], // saved SSH machines (/api/remotes)
-  sshSupported: true, // false on a Windows host: no SSH machines yet
+  remotes: [], // saved SSH (Linux) machines (/api/remotes)
+  desktops: [], // saved RDP (Windows) machines
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
@@ -113,10 +113,11 @@ export function setMachine(id) {
 }
 
 async function machineMenu(anchor) {
-  const { addMachineDialog } = await import("./remotes.js");
+  const { addMachineDialog, connect } = await import("./remotes.js");
   menu(anchor, [
     { label: "Local (this computer)", icon: S.machine === "local" ? "play" : "terminal", onClick: () => setMachine("local") },
     ...S.remotes.map((r) => ({ label: r.name, hint: `${r.user ? `${r.user}@` : ""}${r.host}`, icon: S.machine === r.id ? "play" : "share", onClick: () => setMachine(r.id) })),
+    ...(S.desktops.length ? ["sep", ...S.desktops.map((r) => ({ label: `${r.name} (remote desktop)`, hint: r.host, icon: "external", onClick: () => connect(r.id) }))] : []),
     "sep",
     { label: "Add machine…", icon: "plus", onClick: () => addMachineDialog(async (r) => { await refreshProjects(); setMachine(r.id); toast({ title: `${r.name} added`, body: "Its root folder (/) is a project; New terminal opens a shell there. Add more folders with the folder button." }); }) },
     { label: "Manage machines", icon: "settings", onClick: () => switchView("remotes") },
@@ -1417,11 +1418,10 @@ export function orderedProjects() {
 
 export async function refreshProjects() {
   try {
-    const [{ projects }, { remotes, clients }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: S.remotes, clients: { ssh_supported: S.sshSupported } }))]);
-    S.sshSupported = clients?.ssh_supported !== false;
+    const [{ projects }, { remotes }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: [...S.remotes, ...S.desktops] }))]);
     S.projects = projects;
-    S.remotes = remotes.filter((r) => r.kind === "ssh");
-    $("#machine").hidden = !S.sshSupported; // SSH machines: Linux/macOS only for now
+    S.remotes = remotes.filter((r) => r.kind === "ssh"); // Linux machines: their projects and terminals
+    S.desktops = remotes.filter((r) => r.kind === "rdp"); // Windows machines: a remote desktop, opened from the picker
     if (S.machine !== "local" && !S.remotes.some((r) => r.id === S.machine)) setMachine("local");
     renderMachine();
     setOnline(true);

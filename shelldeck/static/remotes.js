@@ -16,7 +16,7 @@ export async function renderRemotes(el) {
   }
   const c = data.clients || {};
   const warn = [
-    c.ssh_supported === false ? "SSH machines aren't available on Windows yet; RDP desktops work." : !c.ssh ? "ssh is not on PATH." : "",
+    !c.ssh ? "ssh is not on PATH (Windows: Settings › System › Optional features › OpenSSH Client)." : "",
     !c.rdp ? "No RDP client found (Windows has mstsc; on Linux install xfreerdp or Remmina)." : "",
   ].filter(Boolean);
   const rows = data.remotes.length
@@ -47,7 +47,7 @@ export async function renderRemotes(el) {
 }
 
 async function onClick(e, el) {
-  if (e.target.closest("[data-add]")) return editDialog(null, { onSaved: () => renderRemotes(el), rdpOnly: data.clients?.ssh_supported === false });
+  if (e.target.closest("[data-add]")) return editDialog(null, { onSaved: () => renderRemotes(el) });
   const edit = e.target.closest("[data-edit]")?.dataset.edit;
   if (edit) return editDialog(data.remotes.find((r) => r.id === edit), { onSaved: () => renderRemotes(el) });
   const del = e.target.closest("[data-del]")?.dataset.del;
@@ -90,13 +90,13 @@ export function addMachineDialog(onSaved) {
   editDialog(null, { sshOnly: true, onSaved });
 }
 
-function editDialog(r, { sshOnly = false, rdpOnly = false, onSaved = () => {} } = {}) {
-  const kind = r?.kind || (rdpOnly ? "rdp" : "ssh");
+function editDialog(r, { sshOnly = false, onSaved = () => {} } = {}) {
+  const kind = r?.kind || "ssh";
   const d = dialog({
     title: r ? `Edit ${r.name}` : sshOnly ? "Add machine" : "Add remote system",
     body: `<form class="remote-form">
-      ${sshOnly ? `<p class="muted" style="margin:0">A Linux or macOS machine you reach over SSH. Its projects and terminals get their own list in the sidebar.</p>` : ""}
-      <div class="seg" role="radiogroup" aria-label="Type" ${sshOnly || rdpOnly ? "hidden" : ""}>
+      ${sshOnly ? `<p class="muted" style="margin:0">A Linux machine you reach over SSH. Its projects and terminals get their own list in the sidebar. Windows machines: add them as RDP desktops under Manage machines.</p>` : ""}
+      <div class="seg" role="radiogroup" aria-label="Type" ${sshOnly ? "hidden" : ""}>
         <button type="button" role="radio" data-kind="ssh">Linux / SSH terminal</button>
         <button type="button" role="radio" data-kind="rdp">Windows / RDP desktop</button>
       </div>

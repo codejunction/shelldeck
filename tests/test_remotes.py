@@ -8,9 +8,6 @@ from fastapi.testclient import TestClient
 
 from shelldeck import auth, remotes, server, stats
 
-# SSH machines are Linux/macOS-first for now; Windows ssh is not validated yet
-not_windows = pytest.mark.skipif(sys.platform == "win32", reason="Windows SSH: later")
-
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -21,15 +18,17 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-@not_windows
 def test_validate_rejects_anything_that_could_reach_a_shell():
     ok = remotes.validate({"kind": "ssh", "host": "srv.example.com", "user": "dev", "port": "2222"})
     assert ok["name"] == "dev@srv.example.com" and ok["port"] == 2222
     assert remotes.ssh_line(ok) == "ssh -p 2222 -l dev srv.example.com"
     assert remotes.ssh_line(remotes.validate({"host": "10.0.0.5", "identity": "~/keys/my key"})) == 'ssh -i "~/keys/my key" 10.0.0.5'
-    # LDAP / NTID style accounts: CORP\\jdoe is single-quoted (a backslash escapes in POSIX shells)
+    # LDAP / NTID style accounts: CORP\\jdoe is single-quoted for bash/pwsh/fish, bare for cmd
     ntid = remotes.validate({"host": "vm1", "user": "CORP\\jdoe"})
-    assert remotes.ssh_line(ntid) == "ssh -l 'CORP\\jdoe' vm1"
+    assert remotes.ssh_line(ntid, "~", "pwsh") == "ssh -l 'CORP\\jdoe' vm1" and remotes.ssh_line(ntid, "~", "cmd") == "ssh -l CORP\\jdoe vm1"
+    # from a Windows host the folder command is quoted per local shell
+    assert remotes.ssh_line(ok, "/srv/app", "pwsh") == "ssh -t -p 2222 -l dev srv.example.com 'cd /srv/app && exec $SHELL -l'"
+    assert remotes.ssh_line(ok, "/srv/app", "cmd") == 'ssh -t -p 2222 -l dev srv.example.com "cd /srv/app && exec $SHELL -l"'
     assert remotes.ssh_line(remotes.validate({"host": "vm1", "user": "jdoe@corp.example.com"})) == "ssh -l jdoe@corp.example.com vm1"
     for bad, code in [({"host": "h", "user": "CORP\\j;d"}, "invalid_user"), ({"host": "h", "user": "a@b@c"}, "invalid_user"),
                       ({"host": "-oProxyCommand=x"}, "invalid_host"), ({"host": "a;rm -rf ~"}, "invalid_host"), ({"host": "h", "user": "a b"}, "invalid_user"),
@@ -38,14 +37,6 @@ def test_validate_rejects_anything_that_could_reach_a_shell():
         with pytest.raises(remotes.RemoteError) as e:
             remotes.validate(bad)
         assert str(e.value) == code
-
-
-def test_ssh_is_refused_on_windows(monkeypatch):
-    monkeypatch.setattr(remotes, "SSH_SUPPORTED", False)
-    with pytest.raises(remotes.RemoteError) as e:
-        remotes.validate({"kind": "ssh", "host": "h"})
-    assert str(e.value) == "ssh_unsupported_on_windows"
-    assert remotes.validate({"kind": "rdp", "host": "h"})["kind"] == "rdp"  # RDP stays
 
 
 def test_rdp_argv_per_os(monkeypatch):
@@ -60,7 +51,6 @@ def test_rdp_argv_per_os(monkeypatch):
         remotes.rdp_argv(r)
 
 
-@not_windows
 def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_attach", lambda s, r, c: None)
     work = tmp_path / "w"
@@ -79,8 +69,9 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     assert client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app; rm -rf /"}).json()["error"] == "invalid_remote_path"
     app = client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app/"}).json()
     assert app["name"] == "app" and app["remote_path"] == "/srv/app" and app["id"] != pid
-    sess = client.post("/api/sessions", json={"project_id": app["id"]}).json()
+    sess = {**client.post("/api/sessions", json={"project_id": app["id"]}).json(), "shell": "bash"}  # bash isn't a kind on Windows
     assert server._remote_line(sess) == "ssh -t -l dev srv 'cd /srv/app && exec $SHELL -l'"
+    assert server._remote_line({**sess, "shell": "cmd"}) == 'ssh -t -l dev srv "cd /srv/app && exec $SHELL -l"'
     assert server._remote_line(client.post("/api/sessions", json={"project_id": pid}).json()) is None  # local project
     assert client.get("/api/remotes").json()["remotes"][0]["last_used_at"]
     rdp = client.post("/api/remotes", json={"kind": "rdp", "host": "win"}).json()
@@ -132,7 +123,6 @@ def test_cli_notes_reach_open_pages(client, monkeypatch):
     assert client.get(f"/api/scratch/{n['id']}").json()["body"] == "# From an agent\n"
 
 
-@not_windows
 def test_connection_test_steps(client, monkeypatch):
     import socket
 

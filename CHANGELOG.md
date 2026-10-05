@@ -7,7 +7,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 ### Added
 
 - Git changes at a glance: a `±N` chip on git projects in the sidebar, and a *Changes* tab in the git dialog with branch, ahead/behind, each changed file's added/removed lines and its diff.
-- Machines (Linux/macOS hosts; not on Windows yet): a picker above *New terminal* (Local, your SSH machines, *Add machine…* with *Test connection*). Projects, terminals and the AI agents list follow the picked machine. A machine starts with a project for `/`; more folders can be added. LDAP/NTID usernames (`CORP\jdoe`, `jdoe@corp.com`) and password logins work; key files are optional.
+- Machines: a picker above *New terminal* on every host (SSH to Linux machines; Windows machines open as RDP desktops from the same menu) (Local, your SSH machines, *Add machine…* with *Test connection*). Projects, terminals and the AI agents list follow the picked machine. A machine starts with a project for `/`; more folders can be added. LDAP/NTID usernames (`CORP\jdoe`, `jdoe@corp.com`) and password logins work; key files are optional.
 - Remote systems (*More › Remote systems*): save SSH hosts (open as shelldeck terminals) and RDP desktops (mstsc on Windows, xfreerdp or Remmina on Linux). No passwords are stored.
 - Replay the last command: `Ctrl+Alt+P`, the pane's replay button or the palette.
 - Background terminals: the pane's eye button and `Ctrl+Alt+W` keep a terminal running off screen (marked *running* in the sidebar while busy); closing a terminal with a running command offers to keep it in the background.
