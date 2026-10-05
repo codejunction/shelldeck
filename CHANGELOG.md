@@ -4,6 +4,13 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-10-05
+
+### Added
+
+- Loading spinners: a clicked button, menu item or field shows a spinner while the request it started runs (adding a project, launching an agent, saving, sharing...), the terminal pane shows one while its shell starts or reconnects, and search-all and Context search show "Searching…".
+- AI agents page: *Hand-offs*, *Resumable sessions* and *Devin sessions* are fixed-height tables with their own search box, 25 rows at a time, loading more as you scroll (or *Load more*). Hand-offs are no longer cut at the newest 30.
+
 ## [0.0.8] - 2026-10-05
 
 ### Fixed
@@ -161,7 +168,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.9
 [0.0.8]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.8
 [0.0.7]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.7
 [0.0.6]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.6

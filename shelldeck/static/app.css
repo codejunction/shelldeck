@@ -2283,6 +2283,48 @@ textarea:focus {
   margin: 24px 0 10px;
 }
 
+/* history tables on the AI agents page: fixed height, own scroll, sticky header */
+.tbl-fixed {
+  max-height: 380px;
+  overflow: auto;
+  cursor: default;
+}
+
+.tbl-fixed th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+}
+
+.tbl-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.ag-head .tbl-sub {
+  flex: 1;
+  min-width: 0;
+}
+
+.ag-head:has(.tbl-search) {
+  flex-wrap: wrap;
+}
+
+.ag-head:has(.tbl-search) h2 {
+  flex: none;
+}
+
+.ag-head .tbl-search {
+  width: 200px;
+  flex: none;
+  margin-left: auto;
+}
+
 .ag-head h2 {
   margin: 0;
   font-size: 15px;
@@ -3142,6 +3184,67 @@ textarea:focus {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+
+.spinner.sm {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border-width: 2px;
+  flex: none;
+}
+
+.pane-status {
+  gap: 10px;
+}
+
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 4px;
+  color: var(--faint);
+}
+
+/* a control waiting on the request it started */
+.busy {
+  position: relative;
+  pointer-events: none;
+  cursor: progress;
+}
+
+button.busy,
+.menu-item.busy,
+[data-action].busy,
+[data-act].busy {
+  color: transparent !important;
+}
+
+button.busy > *,
+[data-action].busy > *,
+[data-act].busy > * {
+  visibility: hidden;
+}
+
+button.busy::after,
+.menu-item.busy::after,
+[data-action].busy::after,
+[data-act].busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+input.busy,
+select.busy {
+  opacity: 0.6;
 }
 
 @keyframes spin {

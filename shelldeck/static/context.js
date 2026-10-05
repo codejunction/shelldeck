@@ -1,6 +1,6 @@
 // Context page: what agents keep about a project (context.py, local context.db). Read-first: a "where things stand"
 // summary, facts, decisions and recent activity in plain words; editing opens only when asked. Not polled.
-import { $, api, esc, icon, toast, toastError } from "./ui.js";
+import { $, api, esc, icon, loadingHTML, toast, toastError } from "./ui.js";
 import { orderedProjects } from "./app.js";
 
 let selected = null; // project name, as /api/context takes it
@@ -262,6 +262,7 @@ async function onSubmit(e, el) {
       }
       const params = new URLSearchParams({ q: f.q, project: selected || "", agent: pickedAgent || "off" });
       if (pickedAgent !== "off" && pickedModel) params.set("model", pickedModel);
+      form.nextElementSibling?.classList.contains("loading-row") || form.insertAdjacentHTML("afterend", loadingHTML(pickedAgent !== "off" ? "Searching (widening the query with the agent)…" : "Searching…"));
       const r = await api(`/api/context/recall?${params}`);
       search = { q: f.q, ...r };
       return renderContext(el);
