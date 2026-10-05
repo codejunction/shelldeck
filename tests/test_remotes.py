@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 
 from shelldeck import auth, remotes, server, stats
 
+# SSH machines are Linux/macOS-first for now; Windows ssh is not validated yet
+not_windows = pytest.mark.skipif(sys.platform == "win32", reason="Windows SSH: later")
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -18,6 +21,7 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
+@not_windows
 def test_validate_rejects_anything_that_could_reach_a_shell():
     ok = remotes.validate({"kind": "ssh", "host": "srv.example.com", "user": "dev", "port": "2222"})
     assert ok["name"] == "dev@srv.example.com" and ok["port"] == 2222
@@ -48,6 +52,7 @@ def test_rdp_argv_per_os(monkeypatch):
         remotes.rdp_argv(r)
 
 
+@not_windows
 def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_attach", lambda s, r, c: None)
     work = tmp_path / "w"
@@ -117,6 +122,7 @@ def test_cli_notes_reach_open_pages(client, monkeypatch):
     assert client.get(f"/api/scratch/{n['id']}").json()["body"] == "# From an agent\n"
 
 
+@not_windows
 def test_connection_test_steps(client, monkeypatch):
     import socket
 
