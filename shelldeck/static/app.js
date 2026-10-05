@@ -23,6 +23,8 @@ export const S = {
   view: "terminals",
   collapsed: new Set(store.get("collapsed", [])),
   order: store.get("order", []),
+  machine: store.get("machine", "local"), // "local" or a remote id: which machine's projects the sidebar shows
+  remotes: [], // saved SSH machines (/api/remotes)
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
@@ -69,7 +71,70 @@ export function sessionTitle(s) {
 
 function focusedProject() {
   const s = S.focused && findSession(S.focused);
-  return s?.project || orderedProjects()[0] || null;
+  return (s && onMachine(s.project) ? s.project : null) || machineProjects()[0] || null;
+}
+
+// ------------------------------------------------------------------ machines
+
+/** Does a project belong to the machine picked in the sidebar? */
+export function onMachine(p) {
+  return (p?.remote_id || "local") === S.machine;
+}
+
+/** Is this terminal in a project of the picked machine? (agents list, counts) */
+export function sessionOnMachine(sid) {
+  return onMachine(findSession(sid)?.project);
+}
+
+export function machineProjects() {
+  return orderedProjects().filter(onMachine);
+}
+
+function machineName(id = S.machine) {
+  return id === "local" ? "Local" : S.remotes.find((r) => r.id === id)?.name || "Machine";
+}
+
+function renderMachine() {
+  const b = $("#machine");
+  if (!b) return;
+  const r = S.remotes.find((x) => x.id === S.machine);
+  b.querySelector(".m-name").textContent = machineName();
+  b.querySelector(".m-sub").textContent = r ? `${r.user ? `${r.user}@` : ""}${r.host}` : "this computer";
+  b.classList.toggle("remote", !!r);
+}
+
+export function setMachine(id) {
+  S.machine = id === "local" || S.remotes.some((r) => r.id === id) ? id : "local";
+  store.set("machine", S.machine);
+  renderMachine();
+  renderSidebar();
+  if (S.view === "agents") views.show("agents", $("#view-agents"));
+}
+
+async function machineMenu(anchor) {
+  const { addMachineDialog } = await import("./remotes.js");
+  menu(anchor, [
+    { label: "Local (this computer)", icon: S.machine === "local" ? "play" : "terminal", onClick: () => setMachine("local") },
+    ...S.remotes.map((r) => ({ label: r.name, hint: `${r.user ? `${r.user}@` : ""}${r.host}`, icon: S.machine === r.id ? "play" : "share", onClick: () => setMachine(r.id) })),
+    "sep",
+    { label: "Add machine…", icon: "plus", onClick: () => addMachineDialog(async (r) => { await refreshProjects(); setMachine(r.id); toast({ title: `${r.name} added`, body: "Its root folder (/) is a project; New terminal opens a shell there. Add more folders with the folder button." }); }) },
+    { label: "Manage machines", icon: "settings", onClick: () => switchView("remotes") },
+  ]);
+}
+
+/** Add project: a local folder (folder browser), or a folder path on the picked remote machine. */
+async function addProject() {
+  if (S.machine === "local") return views.addProjectDialog();
+  const path = await promptDialog(`Add a folder on ${machineName()}`, "~/", { label: "Folder on the remote machine (e.g. ~/code/app or /srv/app)", ok: "Add" });
+  if (!path) return;
+  try {
+    const p = await api("/api/projects", { method: "POST", body: { remote_id: S.machine, path } });
+    await refreshProjects();
+    S.collapsed.delete(p.id);
+    renderSidebar();
+  } catch (e) {
+    toastError(e);
+  }
 }
 
 // ------------------------------------------------------------------ theme
@@ -915,7 +980,7 @@ function buildPane(sid) {
   pane.dataset.sid = sid;
   pane.innerHTML = `<div class="pane-head" draggable="true" title="Drag to move or split">
       ${icon("terminal")}
-      <span class="title">${s?.nick ? `<b class="nick" title="Terminal name: sd peek/tell ${esc(s.nick)}">${esc(s.nick)}</b>` : ""}${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}</small></span>
+      <span class="title">${s?.nick ? `<b class="nick" title="Terminal name: sd peek/tell ${esc(s.nick)}">${esc(s.nick)}</b>` : ""}${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}${s?.project.remote_id ? ` · ${esc(machineName(s.project.remote_id))}` : ""}</small></span>
       <span class="agent">${agentChip(sid)}</span>
       <span class="ports">${portChips(sid)}</span>
       <button class="icon-btn sm" data-pane="replay" title="Replay last command (Ctrl+Alt+P)" aria-label="Replay last command">${icon("refresh")}</button>
@@ -1212,6 +1277,15 @@ function autoSplitDir() {
 
 export async function newTerminal(projectId, shell = "", { split } = {}) {
   const project = S.projects.find((p) => p.id === projectId) || focusedProject();
+  if (!project && S.machine !== "local") {  // a machine with no folders yet: a shell in its home
+    try {
+      const r = await api(`/api/remotes/${S.machine}/connect`, { method: "POST", body: {} });
+      await refreshProjects();
+      return showSession(r.session.id, { split: split === undefined ? autoSplitDir() : split });
+    } catch (e) {
+      return toastError(e);
+    }
+  }
   if (!project) return views.addProjectDialog();
   try {
     const s = await api("/api/sessions", { method: "POST", body: { project_id: project.id, shell } });
@@ -1342,8 +1416,11 @@ export function orderedProjects() {
 
 export async function refreshProjects() {
   try {
-    const { projects } = await api("/api/projects");
+    const [{ projects }, { remotes }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: S.remotes }))]);
     S.projects = projects;
+    S.remotes = remotes.filter((r) => r.kind === "ssh");
+    if (S.machine !== "local" && !S.remotes.some((r) => r.id === S.machine)) setMachine("local");
+    renderMachine();
     setOnline(true);
   } catch (e) {
     if (e.message !== "locked") setOnline(false);
@@ -1375,9 +1452,11 @@ export function renderSidebar() {
   const nav = $("#projects");
   if (!firstSidebar) nav.classList.add("settled");
   const visible = new Set(leaves());
-  const projects = orderedProjects();
+  const projects = machineProjects();
   if (!projects.length) {
-    nav.innerHTML = `<div class="sb-empty">No projects yet. Add a folder to get started.</div>`;
+    nav.innerHTML = S.machine === "local"
+      ? `<div class="sb-empty">No projects yet. Add a folder to get started.</div>`
+      : `<div class="sb-empty">No folders on ${esc(machineName())} yet. <b>New terminal</b> opens a shell in its home; the folder button adds a project there.</div>`;
     return;
   }
   nav.innerHTML = projects
@@ -2089,7 +2168,8 @@ function wireGlobal() {
     if (act === "toggle-sidebar") toggleSidebar();
     else if (act === "new-terminal") newTerminal();
     else if (act === "palette") commandPalette();
-    else if (act === "add-project") views.addProjectDialog();
+    else if (act === "add-project") addProject();
+    else if (act === "machine") machineMenu(a);
     else if (act === "view") switchView(S.view === a.dataset.view ? "terminals" : a.dataset.view);
     else if (act === "settings") views.settingsDialog();
     else if (act === "split") splitNew(a.dataset.dir);

@@ -1,5 +1,5 @@
 // Remote systems page: saved SSH hosts (a terminal that runs ssh) and RDP desktops (mstsc / xfreerdp on the host).
-import { S, orderedProjects, refreshProjects, showSession } from "./app.js";
+import { S, orderedProjects, refreshProjects, setMachine, showSession } from "./app.js";
 import { $, api, confirmDialog, dialog, esc, icon, toast, toastError } from "./ui.js";
 
 let data = { remotes: [], clients: {} };
@@ -22,13 +22,12 @@ export async function renderRemotes(el) {
   const rows = data.remotes.length
     ? data.remotes
         .map((r) => {
-          const p = S.projects.find((x) => x.id === r.project_id);
           const target = `${r.user ? `${esc(r.user)}@` : ""}${esc(r.host)}${r.port && r.port !== (r.kind === "rdp" ? 3389 : 22) ? `:${r.port}` : ""}`;
           return `<tr data-id="${r.id}">
             <td><b>${esc(r.name)}</b></td>
             <td><span class="remote-kind ${r.kind}">${r.kind === "rdp" ? "Desktop (RDP)" : "Terminal (SSH)"}</span></td>
             <td class="mono">${target}${r.identity ? `<br><span class="faint">key ${esc(r.identity)}</span>` : ""}</td>
-            <td>${p ? esc(p.name) : '<span class="faint">current project</span>'}</td>
+            <td>${r.kind === "ssh" ? `${S.projects.filter((x) => x.remote_id === r.id).length} project(s)` : '<span class="faint">—</span>'}</td>
             <td class="faint">${r.last_used_at ? new Date(r.last_used_at).toLocaleString() : "never"}</td>
             <td class="row-btns">
               <button class="btn sm primary" data-connect="${r.id}">${icon(r.kind === "rdp" ? "external" : "terminal")}Connect</button>
@@ -43,14 +42,14 @@ export async function renderRemotes(el) {
       <button class="btn primary" data-add>${icon("plus")}Add remote</button></div>
     ${warn.map((w) => `<p class="faint">${esc(w)}</p>`).join("")}
     <div class="card mon-table"><table>
-      <thead><tr><th>Name</th><th>Type</th><th>Address</th><th>Opens in</th><th>Last used</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Type</th><th>Address</th><th>Projects</th><th>Last used</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 
 async function onClick(e, el) {
-  if (e.target.closest("[data-add]")) return editDialog(null, el);
+  if (e.target.closest("[data-add]")) return editDialog(null, { onSaved: () => renderRemotes(el) });
   const edit = e.target.closest("[data-edit]")?.dataset.edit;
-  if (edit) return editDialog(data.remotes.find((r) => r.id === edit), el);
+  if (edit) return editDialog(data.remotes.find((r) => r.id === edit), { onSaved: () => renderRemotes(el) });
   const del = e.target.closest("[data-del]")?.dataset.del;
   if (del) {
     const r = data.remotes.find((x) => x.id === del);
@@ -73,6 +72,7 @@ export async function connect(id, el) {
     const r = await api(`/api/remotes/${id}/connect`, { method: "POST", body: { project_id: focused?.id || orderedProjects()[0]?.id || "" } });
     if (r.kind === "rdp") return toast({ title: "Remote desktop opening", body: r.command });
     await refreshProjects();
+    setMachine(id); // the sidebar follows to that machine
     const term = await showSession(r.session.id);
     term?.focus();
   } catch (err) {
@@ -85,34 +85,40 @@ export async function connect(id, el) {
   }
 }
 
-function editDialog(r, el) {
-  const projects = orderedProjects();
+/** Sidebar machine picker's *Add machine…*: an SSH machine, tested before it is saved. */
+export function addMachineDialog(onSaved) {
+  editDialog(null, { sshOnly: true, onSaved });
+}
+
+function editDialog(r, { sshOnly = false, onSaved = () => {} } = {}) {
+  const projects = orderedProjects().filter((p) => !p.remote_id);
   const kind = r?.kind || "ssh";
   const d = dialog({
-    title: r ? `Edit ${r.name}` : "Add remote system",
+    title: r ? `Edit ${r.name}` : sshOnly ? "Add machine" : "Add remote system",
     body: `<form class="remote-form">
-      <div class="seg" role="radiogroup" aria-label="Type">
+      ${sshOnly ? `<p class="muted" style="margin:0">A Linux or macOS machine you reach over SSH. Its projects and terminals get their own list in the sidebar.</p>` : ""}
+      <div class="seg" role="radiogroup" aria-label="Type" ${sshOnly ? "hidden" : ""}>
         <button type="button" role="radio" data-kind="ssh">Linux / SSH terminal</button>
         <button type="button" role="radio" data-kind="rdp">Windows / RDP desktop</button>
       </div>
       <label class="field"><span>Host or IP</span><input name="host" required value="${esc(r?.host || "")}" placeholder="server.example.com" autocomplete="off" spellcheck="false" /></label>
-      <label class="field"><span>User <small class="faint">(optional)</small></span><input name="user" value="${esc(r?.user || "")}" autocomplete="off" spellcheck="false" /></label>
+      <label class="field"><span>User <small class="faint">(jdoe, LDAP/NTID like CORP\\jdoe or jdoe@corp.com)</small></span><input name="user" value="${esc(r?.user || "")}" autocomplete="off" spellcheck="false" /></label>
       <label class="field"><span>Port</span><input name="port" type="number" min="1" max="65535" value="${r?.port || ""}" placeholder="22" /></label>
-      <label class="field ssh-only"><span>Key file <small class="faint">(optional, e.g. ~/.ssh/id_ed25519)</small></span><input name="identity" value="${esc(r?.identity || "")}" autocomplete="off" spellcheck="false" /></label>
-      <label class="field ssh-only"><span>Opens in project</span><select name="project_id"><option value="">The current project</option>${projects
-        .map((p) => `<option value="${p.id}" ${p.id === r?.project_id ? "selected" : ""}>${esc(p.name)}</option>`)
-        .join("")}</select></label>
-      <label class="field"><span>Name <small class="faint">(optional)</small></span><input name="name" value="${esc(r?.name || "")}" autocomplete="off" /></label>
+      <label class="field ssh-only"><span>Key file <small class="faint">(optional: leave empty to log in with your password)</small></span><input name="identity" value="${esc(r?.identity || "")}" autocomplete="off" spellcheck="false" /></label>
+      <input type="hidden" name="project_id" value="${esc(r?.project_id || "")}" />
+      <label class="field"><span>Name <small class="faint">(optional, shown in the machine list)</small></span><input name="name" value="${esc(r?.name || "")}" autocomplete="off" /></label>
+      <p class="faint small ssh-only" style="margin:0">Passwords aren't stored: with no key, ssh asks for it in the terminal.</p>
+      <div class="remote-test ssh-only" data-test-out role="status" hidden></div>
       <div class="error" data-err></div>
     </form>`,
-    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-save>${r ? "Save" : "Add"}</button>`,
+    foot: `<button class="btn ssh-only" data-test>Test connection</button><span style="flex:1"></span><button class="btn" data-close>Cancel</button><button class="btn primary" data-save>${r ? "Save" : sshOnly ? "Add machine" : "Add"}</button>`,
   });
   const form = $("form", d.el);
   let k = kind;
   const setKind = (v) => {
     k = v;
     for (const b of d.el.querySelectorAll("[data-kind]")) b.classList.toggle("on", b.dataset.kind === v), b.setAttribute("aria-checked", String(b.dataset.kind === v));
-    for (const f of d.el.querySelectorAll(".ssh-only")) f.hidden = v !== "ssh";
+    for (const f of d.el.querySelectorAll(".ssh-only")) f.hidden = v !== "ssh" || (f.matches("[data-test-out]") && !f.textContent);
     form.port.placeholder = v === "rdp" ? "3389" : "22";
   };
   setKind(kind);
@@ -120,13 +126,33 @@ function editDialog(r, el) {
     const v = e.target.closest("[data-kind]")?.dataset.kind;
     if (v) setKind(v);
   });
+  const fields = () => ({ kind: k, host: form.host.value, user: form.user.value, port: form.port.value || null, identity: form.identity.value, project_id: form.project_id.value, name: form.name.value });
+  $("[data-test]", d.el).onclick = async (e) => {
+    const out = $("[data-test-out]", d.el);
+    const btn = e.currentTarget;
+    $("[data-err]", d.el).textContent = "";
+    out.hidden = false;
+    out.className = "remote-test ssh-only";
+    out.textContent = "Testing…";
+    btn.disabled = true;
+    try {
+      const t = await api("/api/remotes/test", { method: "POST", body: fields() });
+      out.classList.add(t.ok ? (t.step === "done" ? "ok" : "warn") : "bad");
+      out.textContent = t.message;
+    } catch (err) {
+      out.classList.add("bad");
+      out.textContent = String(err.message || err).replaceAll("_", " ");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  for (const f of d.el.querySelectorAll(".ssh-only")) f.hidden = k !== "ssh" || (f.matches("[data-test-out]") && !f.textContent);
   const save = async (e) => {
     e?.preventDefault();
-    const body = { kind: k, host: form.host.value, user: form.user.value, port: form.port.value || null, identity: form.identity.value, project_id: form.project_id.value, name: form.name.value };
     try {
-      await api(r ? `/api/remotes/${r.id}` : "/api/remotes", { method: r ? "PUT" : "POST", body });
+      const saved = await api(r ? `/api/remotes/${r.id}` : "/api/remotes", { method: r ? "PUT" : "POST", body: fields() });
       d.close();
-      renderRemotes(el);
+      onSaved(saved);
     } catch (err) {
       $("[data-err]", d.el).textContent = String(err.message || err).replaceAll("_", " ");
     }

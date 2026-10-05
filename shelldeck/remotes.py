@@ -10,12 +10,14 @@ the terminal (or uses keys / ssh-agent), and the RDP client asks in its own wind
 import re
 import shutil
 import subprocess
+from pathlib import Path
 import sys
 
 KINDS = ("ssh", "rdp")
 DEFAULT_PORT = {"ssh": 22, "rdp": 3389}
 HOST = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9-]{1,63})*|\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9A-Fa-f:]{2,45}\]?)$")
-USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# plain (jdoe), LDAP/NTID-style (CORP\jdoe, jdoe@corp.example.com): passed with -l, quoted where the shell needs it
+USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:\\[A-Za-z0-9][A-Za-z0-9._-]{0,63}|@[A-Za-z0-9][A-Za-z0-9.-]{0,252})?$")
 NAME_MAX = 60
 RDP_CLIENTS = ("xfreerdp3", "xfreerdp", "remmina")  # non-Windows, first found wins
 
@@ -52,14 +54,36 @@ def validate(raw: dict, project_ok=lambda pid: True) -> dict:
     return {"name": name, "kind": kind, "host": host, "user": user, "port": port, "identity": identity, "project_id": project_id}
 
 
-def ssh_line(r: dict) -> str:
-    """The command typed into the terminal's shell. Values were validated; only the key path may need quotes."""
+REMOTE_PATH = re.compile(r"^(?:~|/)[A-Za-z0-9._/~+@:,=-]*$")  # no spaces or quotes: one word in every local shell
+
+
+def check_path(path: str) -> str:
+    path = (path or "").strip() or "~"
+    if path != "~" and (not REMOTE_PATH.match(path) or ".." in path.split("/")):
+        raise RemoteError("invalid_remote_path")
+    return path.rstrip("/") or "/"
+
+
+def ssh_line(r: dict, path: str = "~", shell: str = "") -> str:
+    """The command typed into the terminal's shell. Values were validated; only the key path may need quotes.
+    With a folder, ssh -t runs `cd <folder> && exec $SHELL -l` there: single quotes keep $SHELL for the remote in
+    pwsh, bash, zsh and fish; cmd has no single quotes but doesn't expand $ either, so it gets double quotes."""
+    path = check_path(path)
     parts = ["ssh"]
+    if path != "~":
+        parts.append("-t")
     if r.get("port") and int(r["port"]) != 22:
         parts += ["-p", str(int(r["port"]))]
     if r.get("identity"):
         parts += ["-i", f'"{r["identity"]}"' if " " in r["identity"] else r["identity"]]
-    parts.append(f"{r['user']}@{r['host']}" if r.get("user") else r["host"])
+    if r.get("user"):
+        user = r["user"]
+        # a backslash is an escape in bash/zsh/fish: single-quote it there (pwsh too); cmd passes it as is
+        parts += ["-l", user if "\\" not in user or shell == "cmd" else f"'{user}'"]
+    parts.append(r["host"])
+    if path != "~":
+        q = '"' if shell == "cmd" else "'"
+        parts.append(f"{q}cd {path} && exec $SHELL -l{q}")
     return " ".join(parts)
 
 
@@ -77,7 +101,9 @@ def rdp_argv(r: dict) -> list[str]:
     for exe in RDP_CLIENTS:
         if found := shutil.which(exe):
             if exe == "remmina":
-                user = f"{r['user']}@" if r.get("user") else ""
+                from urllib.parse import quote  # noqa: PLC0415
+
+                user = f"{quote(r['user'], safe='')}@" if r.get("user") else ""
                 return [found, "-c", f"rdp://{user}{_hostport(r)}"]
             return [found, f"/v:{_hostport(r)}", *([f"/u:{r['user']}"] if r.get("user") else []), "/dynamic-resolution"]
     raise RemoteError("rdp_client_not_found")
@@ -101,3 +127,38 @@ def clients() -> dict:
     except RemoteError:
         rdp = None
     return {"ssh": bool(shutil.which("ssh")), "rdp": rdp and ("mstsc" if sys.platform == "win32" else rdp.replace("\\", "/").rsplit("/", 1)[-1])}
+
+
+def test_ssh(r: dict, timeout: float = 8) -> dict:
+    """Can this machine reach the remote, and log in without a prompt? Never stores or sends a password, never
+    changes known_hosts: {ok, step: network|auth|done, message}."""
+    import socket
+
+    host = r["host"].strip("[]")
+    try:
+        with socket.create_connection((host, int(r["port"])), timeout=timeout):
+            pass
+    except OSError as e:
+        return {"ok": False, "step": "network", "message": f"Can't reach {r['host']}:{r['port']} ({e.strerror or e})."}
+    if not shutil.which("ssh"):
+        return {"ok": False, "step": "network", "message": "The port answers, but ssh isn't installed on this machine."}
+    target = host
+    nul = "NUL" if sys.platform == "win32" else "/dev/null"
+    argv = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}", "-o", "StrictHostKeyChecking=no",
+            "-o", f"UserKnownHostsFile={nul}", "-o", "LogLevel=ERROR", "-p", str(int(r["port"]))]
+    if r.get("identity"):
+        argv += ["-i", str(Path(r["identity"]).expanduser())]
+    if r.get("user"):
+        argv += ["-l", r["user"]]  # argv, no shell: CORP\jdoe needs no quoting here
+    try:
+        out = subprocess.run([*argv, "--", target, "exit"], capture_output=True, text=True, timeout=timeout + 4, stdin=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"ok": False, "step": "auth", "message": "The port answers, but ssh timed out logging in."}
+    err = (out.stderr or "").strip().splitlines()[-1:] or [""]
+    if out.returncode == 0:
+        return {"ok": True, "step": "done", "message": "Connected and logged in with your key or ssh-agent."}
+    if "Permission denied" in err[0] or "publickey" in err[0]:
+        return {"ok": True, "step": "auth", "message": "Reachable, and it asks for a password (LDAP/NTID or local account): "
+                "ssh will prompt for it in the terminal. Add a key file to log in without typing it."}
+    return {"ok": False, "step": "auth", "message": err[0][:200] or f"ssh exited with {out.returncode}."}

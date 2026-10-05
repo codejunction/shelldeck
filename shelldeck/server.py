@@ -946,6 +946,12 @@ async def list_projects():
     alive = set(manager.list_alive())
     projects = db.list_projects()
     for p in projects:
+        if p.get("remote_id"):  # a folder on another machine: nothing to check locally
+            p["exists"], p["has_git"], p["git_changes"] = True, False, None
+            p["sessions"] = db.list_sessions(p["id"])
+            for s in p["sessions"]:
+                s["alive"] = s["id"] in alive
+            continue
         p["exists"] = Path(p["path"]).is_dir()
         p["has_git"] = p["exists"] and gitgraph.has_git(p["path"])
         p["git_changes"] = await _git_count(p["path"]) if p["has_git"] else None
@@ -1014,10 +1020,24 @@ async def list_remotes():
 
 @app.post("/api/remotes")
 async def add_remote(payload: dict):
+    """Save a machine; an SSH one gets a project for its root folder (/) right away, named after the machine."""
     try:
-        return db.save_remote(remotes.validate(payload, lambda pid: bool(db.get_project(pid))))
+        r = db.save_remote(remotes.validate(payload, lambda pid: bool(db.get_project(pid))))
     except remotes.RemoteError as e:
         return err(str(e))
+    if r["kind"] == "ssh":
+        r["project_id_root"] = db.ensure_remote_project(r["id"], "/", r["name"])["id"]
+    return r
+
+
+@app.post("/api/remotes/test")
+async def test_remote(payload: dict):
+    """Try an SSH machine before saving it: network, then a key/agent login (no password is asked or kept)."""
+    try:
+        r = remotes.validate({**payload, "kind": "ssh"})
+    except remotes.RemoteError as e:
+        return err(str(e))
+    return await asyncio.to_thread(remotes.test_ssh, r)
 
 
 @app.put("/api/remotes/{remote_id}")
@@ -1032,7 +1052,16 @@ async def update_remote(remote_id: str, payload: dict):
 
 @app.delete("/api/remotes/{remote_id}")
 async def delete_remote(remote_id: str):
-    return {"status": "ok"} if db.delete_remote(remote_id) else err("remote_not_found", 404)
+    """The machine and its projects; their terminals close."""
+    if not db.get_remote(remote_id):
+        return err("remote_not_found", 404)
+    for p in db.remote_projects(remote_id):
+        for sess in db.list_sessions(p["id"]):
+            await _end_session(sess["id"])
+            manager.forget(sess["id"])
+        db.delete_project(p["id"])
+    db.delete_remote(remote_id)
+    return {"status": "ok"}
 
 
 @app.post("/api/remotes/{remote_id}/connect")
@@ -1055,27 +1084,29 @@ async def connect_remote(request: Request, remote_id: str, payload: dict | None 
             return err(str(e), 409)
         db.touch_remote(remote_id)
         return {"kind": "rdp", "command": " ".join(argv)}
-    pid = r.get("project_id") or str((payload or {}).get("project_id") or "")
-    project = db.get_project(pid) if pid else None
-    project = project or next(iter(db.list_projects()), None)
-    if not project or not Path(project["path"]).is_dir():
-        return err("project_required", 409)
-    session = db.add_session(project["id"], cwd=project["path"], shell="", name=r["name"])
+    # opens in the machine's first project (its root, created with the machine), so it lists under that machine
+    project = next(iter(db.remote_projects(remote_id)), None) or db.ensure_remote_project(remote_id, "/", r["name"])
+    session = db.add_session(project["id"], cwd=str(Path.home()), shell="", name=r["name"])
     try:
         _attach(session, 30, 120)
     except Exception:  # noqa: BLE001 - spawn failures come from winpty/OS
         log.exception("remote terminal failed for %s", remote_id)
         return err("spawn_failed", 500)
-    line = remotes.ssh_line(r)
-    starter = asyncio.create_task(_start_agent(session["id"], line))
-    background.add(starter)
-    starter.add_done_callback(background.discard)
     db.touch_remote(remote_id)
-    return {"kind": "ssh", "session": session, "command": line}
+    return {"kind": "ssh", "session": session, "project_id": project["id"], "command": _remote_line(session)}
 
 
 @app.post("/api/projects")
 async def add_project(payload: dict):
+    if rid := str(payload.get("remote_id") or ""):  # a folder on a saved SSH machine
+        r = db.get_remote(rid)
+        if not r or r["kind"] != "ssh":
+            return err("remote_not_found", 404)
+        try:
+            path = remotes.check_path(str(payload.get("path") or ""))
+        except remotes.RemoteError as e:
+            return err(str(e))
+        return db.ensure_remote_project(rid, path, None if path != "~" else r["name"])
     raw = str(payload.get("path") or "").strip()
     if not raw:
         return err("path_required")
@@ -1166,7 +1197,7 @@ async def create_session(payload: dict):
     shell = str(payload.get("shell") or "").strip()
     if shell and shell not in shells.kinds():
         return err("invalid_shell")
-    cwd = str(payload.get("cwd") or project["path"])
+    cwd = str(Path.home()) if project.get("remote_id") else str(payload.get("cwd") or project["path"])
     name = str(payload.get("name") or "").strip() or _default_name(project["id"], shell)
     session = db.add_session(project["id"], cwd=cwd, shell=shell, name=name)
     session["project_path"] = project["path"]
@@ -2583,6 +2614,22 @@ def _clamp(value, lo: int, hi: int, default: int) -> int:
         return default
 
 
+def _remote_line(session: dict) -> str | None:
+    """The ssh command for a terminal in a remote machine's project, or None for a local one."""
+    project = db.get_project(session.get("project_id") or "") if session.get("project_id") else None
+    if not project or not project.get("remote_id"):
+        return None
+    r = db.get_remote(project["remote_id"])
+    if not r:
+        return None
+    try:
+        r = {**r, **remotes.validate(r)}
+        return remotes.ssh_line(r, project.get("remote_path") or "~", session.get("shell") or get_settings()["default_shell"])
+    except remotes.RemoteError:
+        log.warning("remote %s has invalid stored values", r["id"])
+        return None
+
+
 def _attach(session: dict, rows: int, cols: int) -> None:
     sid = session["id"]
     if manager.get(sid):
@@ -2599,10 +2646,15 @@ def _attach(session: dict, rows: int, cols: int) -> None:
             extra_env={k: v for k, v in (("SHELLDECK_NICK", session.get("nick")), ("SHELLDECK_PARENT", session.get("parent")),
                                          ("SHELLDECK_AGENT_REPORT_TOKEN", report_tokens.setdefault(sid, secrets.token_urlsafe(24)))) if v},
         )
-        try:
-            _auto_resume(sid)
-        except Exception:  # noqa: BLE001 - a resume problem must never stop the shell from opening
-            log.warning("agent auto-resume failed", exc_info=True)
+        if line := _remote_line(session):  # a remote project's terminal: ssh there, every time its shell starts
+            t = asyncio.get_running_loop().create_task(_start_agent(sid, line))
+            background.add(t)
+            t.add_done_callback(background.discard)
+        else:
+            try:
+                _auto_resume(sid)
+            except Exception:  # noqa: BLE001 - a resume problem must never stop the shell from opening
+                log.warning("agent auto-resume failed", exc_info=True)
     if session.get("parent"):
         ask_buf.setdefault(sid, "")  # watch this sub-agent for questions (_watch_questions)
     if sid not in readers:

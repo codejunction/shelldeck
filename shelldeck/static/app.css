@@ -207,6 +207,57 @@ i[data-icon] svg {
   color: var(--text);
 }
 
+.sb-machine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  margin: 0 8px 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sb-machine:hover {
+  background: var(--hover);
+}
+
+.sb-machine.remote {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.sb-machine .m-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  line-height: 1.25;
+}
+
+.sb-machine .m-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-machine .m-sub {
+  font-size: 11px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-machine > svg:last-child {
+  transform: rotate(90deg);
+  opacity: 0.6;
+}
+
 .sb-new:hover,
 .sb-search:hover,
 .sb-link:hover {
@@ -3460,4 +3511,26 @@ body.embed .pane {
 
 .remote-form .seg button {
   padding: 4px 12px;
+}
+
+.remote-test {
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--hover);
+}
+
+.remote-test.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.remote-test.warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+.remote-test.bad {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
 }

@@ -241,6 +241,9 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         if "color" not in cols:
             conn.execute("ALTER TABLE projects ADD COLUMN color INTEGER")
+        for col in ("remote_id", "remote_path"):  # a folder on a remote machine (remotes table); NULL = this machine
+            if col not in cols:
+                conn.execute(f"ALTER TABLE projects ADD COLUMN {col} TEXT")
         missing = conn.execute("SELECT id FROM projects WHERE color IS NULL ORDER BY created_at").fetchall()
         for (pid,) in missing:
             conn.execute("UPDATE projects SET color = ? WHERE id = ?", (_next_color(conn), pid))
@@ -271,6 +274,27 @@ def ensure_project(path: str) -> dict:
         )
         conn.commit()
         return {"id": pid, "path": path, "name": name, "created_at": _now(), "color": color}
+
+
+def ensure_remote_project(remote_id: str, path: str, name: str | None = None) -> dict:
+    """A folder on a remote machine. `path` stays unique by keying it as ssh://<remote>/<folder>."""
+    key = f"ssh://{remote_id}/{path}"
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM projects WHERE path = ?", (key,)).fetchone()
+        if row:
+            return dict(row)
+        pid = short_id()
+        color = _next_color(conn)
+        name = name or (path.rstrip("/").rsplit("/", 1)[-1] or path)
+        conn.execute("INSERT INTO projects (id, path, name, created_at, color, remote_id, remote_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (pid, key, name, _now(), color, remote_id, path))
+        conn.commit()
+        return {"id": pid, "path": key, "name": name, "created_at": _now(), "color": color, "remote_id": remote_id, "remote_path": path}
+
+
+def remote_projects(remote_id: str) -> list[dict]:
+    return [p for p in list_projects() if p.get("remote_id") == remote_id]
 
 
 def list_projects() -> list[dict]:

@@ -21,9 +21,14 @@ def client(tmp_path, monkeypatch):
 def test_validate_rejects_anything_that_could_reach_a_shell():
     ok = remotes.validate({"kind": "ssh", "host": "srv.example.com", "user": "dev", "port": "2222"})
     assert ok["name"] == "dev@srv.example.com" and ok["port"] == 2222
-    assert remotes.ssh_line(ok) == "ssh -p 2222 dev@srv.example.com"
+    assert remotes.ssh_line(ok) == "ssh -p 2222 -l dev srv.example.com"
     assert remotes.ssh_line(remotes.validate({"host": "10.0.0.5", "identity": "~/keys/my key"})) == 'ssh -i "~/keys/my key" 10.0.0.5'
-    for bad, code in [({"host": "-oProxyCommand=x"}, "invalid_host"), ({"host": "a;rm -rf ~"}, "invalid_host"), ({"host": "h", "user": "a b"}, "invalid_user"),
+    # LDAP / NTID style accounts: CORP\\jdoe is single-quoted for bash/pwsh/fish, bare for cmd
+    ntid = remotes.validate({"host": "vm1", "user": "CORP\\jdoe"})
+    assert remotes.ssh_line(ntid, "~", "pwsh") == "ssh -l 'CORP\\jdoe' vm1" and remotes.ssh_line(ntid, "~", "cmd") == "ssh -l CORP\\jdoe vm1"
+    assert remotes.ssh_line(remotes.validate({"host": "vm1", "user": "jdoe@corp.example.com"})) == "ssh -l jdoe@corp.example.com vm1"
+    for bad, code in [({"host": "h", "user": "CORP\\j;d"}, "invalid_user"), ({"host": "h", "user": "a@b@c"}, "invalid_user"),
+                      ({"host": "-oProxyCommand=x"}, "invalid_host"), ({"host": "a;rm -rf ~"}, "invalid_host"), ({"host": "h", "user": "a b"}, "invalid_user"),
                       ({"host": "h", "user": "-l"}, "invalid_user"), ({"host": "h", "port": 70000}, "invalid_port"), ({"host": "h", "kind": "vnc"}, "invalid_kind"),
                       ({"host": "h", "identity": "k; id"}, "invalid_identity"), ({"host": "h", "identity": "-F x"}, "invalid_identity")]:
         with pytest.raises(remotes.RemoteError) as e:
@@ -44,12 +49,6 @@ def test_rdp_argv_per_os(monkeypatch):
 
 
 def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
-    started = []
-
-    async def fake_start(sid, line):
-        started.append((sid, line))
-
-    monkeypatch.setattr(server, "_start_agent", fake_start)
     monkeypatch.setattr(server, "_attach", lambda s, r, c: None)
     work = tmp_path / "w"
     work.mkdir()
@@ -58,9 +57,19 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     r = client.post("/api/remotes", json={"host": "srv", "user": "dev", "name": "Build box"}).json()
     assert r["kind"] == "ssh" and r["port"] == 22
     assert client.put(f"/api/remotes/{r['id']}", json={"host": "srv2", "user": "dev", "project_id": "nope"}).json()["error"] == "project_not_found"
-    out = client.post(f"/api/remotes/{r['id']}/connect", json={"project_id": pid}).json()
-    assert out["command"] == "ssh dev@srv" and started == [(out["session"]["id"], "ssh dev@srv")]
-    assert out["session"]["name"] == "Build box" and out["session"]["project_id"] == pid
+    out = client.post(f"/api/remotes/{r['id']}/connect").json()
+    assert out["command"] == "ssh -t -l dev srv 'cd / && exec $SHELL -l'" and out["session"]["name"] == "Build box"
+    home = next(p for p in client.get("/api/projects").json()["projects"] if p["id"] == out["project_id"])
+    assert home["id"] == r["project_id_root"]  # created with the machine
+    assert home["remote_id"] == r["id"] and home["remote_path"] == "/" and home["name"] == "Build box" and home["exists"]
+    # a folder on that machine is a project of its own; its terminals ssh there and cd into it
+    assert client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app; rm -rf /"}).json()["error"] == "invalid_remote_path"
+    app = client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app/"}).json()
+    assert app["name"] == "app" and app["remote_path"] == "/srv/app" and app["id"] != pid
+    sess = client.post("/api/sessions", json={"project_id": app["id"], "shell": "bash"}).json()
+    assert server._remote_line(sess) == "ssh -t -l dev srv 'cd /srv/app && exec $SHELL -l'"
+    assert server._remote_line({**sess, "shell": "cmd"}) == 'ssh -t -l dev srv "cd /srv/app && exec $SHELL -l"'
+    assert server._remote_line(client.post("/api/sessions", json={"project_id": pid}).json()) is None  # local project
     assert client.get("/api/remotes").json()["remotes"][0]["last_used_at"]
     rdp = client.post("/api/remotes", json={"kind": "rdp", "host": "win"}).json()
     monkeypatch.setattr(remotes, "open_rdp", lambda r: ["mstsc", "/v:win"])
@@ -68,6 +77,7 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_host", lambda request: False)
     assert client.post(f"/api/remotes/{rdp['id']}/connect").status_code == 403  # opens a window on the host only
     assert client.delete(f"/api/remotes/{r['id']}").json() == {"status": "ok"}
+    assert not [p for p in client.get("/api/projects").json()["projects"] if p.get("remote_id") == r["id"]]  # its projects went too
     assert client.delete(f"/api/remotes/{r['id']}").status_code == 404
 
 
@@ -104,3 +114,29 @@ def test_cli_notes_reach_open_pages(client, monkeypatch):
     n = client.post("/api/scratch", json={"body": "# From an agent\n"}).json()
     assert sent == [{"type": "scratch", "id": n["id"]}]
     assert client.get(f"/api/scratch/{n['id']}").json()["body"] == "# From an agent\n"
+
+
+def test_connection_test_steps(client, monkeypatch):
+    import socket
+
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()  # nothing listens there now
+    r = client.post("/api/remotes/test", json={"host": "127.0.0.1", "port": port, "user": "CORP\\jdoe"}).json()
+    assert r["ok"] is False and r["step"] == "network"
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    try:
+        class Done:
+            returncode, stderr = 255, "CORP\\jdoe@127.0.0.1: Permission denied (publickey,password)."
+
+        seen = []
+        monkeypatch.setattr(remotes.shutil, "which", lambda exe: "/usr/bin/ssh")
+        monkeypatch.setattr(remotes.subprocess, "run", lambda argv, **kw: seen.append(argv) or Done())
+        r = client.post("/api/remotes/test", json={"host": "127.0.0.1", "port": srv.getsockname()[1], "user": "CORP\\jdoe"}).json()
+        assert r["ok"] and r["step"] == "auth" and "password" in r["message"]  # LDAP/NTID: reachable, ssh asks in the terminal
+        assert ["-l", "CORP\\jdoe"] == seen[0][seen[0].index("-l"):seen[0].index("-l") + 2] and "BatchMode=yes" in seen[0]
+    finally:
+        srv.close()
