@@ -1191,3 +1191,84 @@ def test_extract_facts_prompt(client, monkeypatch):
     assert len(typed) == 1 and "sd remember" in typed[0] and "don't read memory first" in typed[0]
     assert len(server.EXTRACT_PROMPT) < 420  # one short turn
     server.agent_status.pop("tx", None)
+
+
+def test_first_report_detects_the_agent_and_survives_the_watcher(client, monkeypatch):
+    """A hook's report that beats the 2s watcher registers the agent, so the watcher doesn't wipe it."""
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    async def agent_in(sid):
+        return "claude"
+
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setattr(server, "_agent_in", agent_in)
+    monkeypatch.setattr(server, "_capture", lambda *a, **k: None)
+    monkeypatch.setitem(server.manager.procs, "te", Live())
+    monkeypatch.setitem(server.report_tokens, "te", "tok-te")
+    server.agent_kind.pop("te", None)
+    body = {"source": "integration:claude", "agent": "claude", "state": "working"}
+    assert client.post("/api/agent-reports", json=body, headers={"X-Shelldeck-Report-Token": "tok-te"}).json()["status"]["state"] == "working"
+    gen = server.agent_kind["te"]
+    monkeypatch.setattr(server.agents, "running", lambda pids: {"te": ("claude", 1)})
+    monkeypatch.setattr(server.agents, "native", lambda pids: {})
+    monkeypatch.setattr(server, "_shell_pids", lambda: {"te": 1})
+    asyncio.run(server._check_agents())
+    assert server.agent_kind["te"] == gen and server.agent_status["te"]["source"] == "integration"
+    for d in (server.agent_kind, server.agent_status, server.agent_state):
+        d.pop("te", None)
+    server.reports.forget("te")
+
+
+def test_resume_runs_the_stored_executable(client, tmp_path, monkeypatch):
+    work = tmp_path / "w3"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    monkeypatch.setattr(server.integrations, "run_flags", lambda agent: ["--settings", "/tmp/s.json"] if agent == "claude" else [])
+    db.save_agent_session(sid, "cursor", "integration:cursor", "c1", ["cursor-agent", "--resume", "c1"], "done")
+    assert server._resume_plan(sid) == ("cursor-agent --resume c1", None)
+    db.save_agent_session(sid, "claude", "integration:claude", "a1", ["claude", "--resume", "a1"], "done")
+    assert server._resume_plan(sid) == ("claude --settings /tmp/s.json --resume a1", None)
+
+
+def test_stored_session_state_follows_reports(client, tmp_path, monkeypatch):
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    work = tmp_path / "w4"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setattr(server, "_capture", lambda *a, **k: None)
+    monkeypatch.setitem(server.manager.procs, sid, Live())
+    monkeypatch.setitem(server.report_tokens, sid, "tok-st")
+    monkeypatch.setitem(server.agent_kind, sid, ("devin", 1))
+    hdr = {"X-Shelldeck-Report-Token": "tok-st"}
+    body = {"source": "integration:devin", "agent": "devin", "agent_session_id": "d-1", "resume_argv": ["devin", "--resume", "d-1"]}
+    client.post("/api/agent-reports", json={**body, "state": "blocked", "blocked_reason": "approval"}, headers=hdr)
+    assert db.get_agent_session(sid)["last_state"] == "blocked"  # the state after this report, not before it
+    client.post("/api/agent-reports", json={"source": "integration:devin", "agent": "devin", "state": "done"}, headers=hdr)
+    assert db.get_agent_session(sid)["last_state"] == "done"
+    server.reports.forget(sid)
+    server.agent_status.pop(sid, None)

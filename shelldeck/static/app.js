@@ -1151,6 +1151,7 @@ function markFocus() {
 }
 
 export function setFocus(sid) {
+  if (S.doneUnseen.delete(sid)) renderSidebar(); // looked at it in place
   if (isFree()) raise(sid);
   if (S.focused === sid) return;
   S.focused = sid;
@@ -1945,7 +1946,8 @@ function connectAlarms() {
       S.serverAgentState[msg.session_id] = msg.state;
       if (msg.status) {
         S.serverStatus[msg.session_id] = msg.status;
-        if (msg.status.state === "done" && msg.session_id !== S.focused) S.doneUnseen.add(msg.session_id);
+        const watching = !document.hidden && document.hasFocus() && S.view === "terminals" && S.focused === msg.session_id;
+        if (msg.status.state === "done" && !watching) S.doneUnseen.add(msg.session_id);
         if (msg.status.state === "exited") S.doneUnseen.delete(msg.session_id);
         renderSidebar();
       }

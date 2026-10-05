@@ -1,6 +1,6 @@
 [project]
 name = "shelldeck"
-version = "0.0.7"
+version = "0.0.8"
 description = "Project-first multi-terminal for Windows and Linux: real shells, grouped by project, in your browser"
 readme = "README.md"
 license = "MIT"

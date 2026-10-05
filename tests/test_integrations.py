@@ -371,3 +371,15 @@ def test_devin_installs_only_events_devin_accepts():
     assert set(integrations.INSTALLERS["devin"].events()) <= DEVIN_EVENTS
     act = hook.report("devin", {"hook_event_name": "PostToolUse", "tool_name": "exec", "tool_input": {"command": "pytest"}})
     assert act["activity"] == {"command": "pytest", "ok": True}
+
+
+def test_claude_tools_that_ask_you_block():
+    ask = {"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion"}
+    assert hook.state_for("claude", ask) == ("blocked", "question")
+    assert hook.state_for("claude", {**ask, "tool_name": "ExitPlanMode"}) == ("blocked", "approval")
+    assert hook.state_for("claude", {**ask, "hook_event_name": "PostToolUse"}) == ("working", None)
+
+
+def test_devin_notebook_edit_is_captured():
+    act = hook.report("devin", {"hook_event_name": "PostToolUse", "tool_name": "notebook_edit", "tool_input": {"notebook_path": "a.ipynb"}})
+    assert act["activity"] == {"file": "a.ipynb", "change": "edit"}

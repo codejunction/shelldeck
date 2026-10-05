@@ -72,6 +72,8 @@ RESUME = {
     "letta": lambda i: ["letta", "--conversation", "default", "--agent", i[8:]] if i.startswith("default:") else ["letta", "--conversation", i],
 }
 STATES = {WORKING, IDLE, DONE, BLOCKED, SESSION}  # an explicit state in the installed command (matcher-specific hooks)
+# Claude tools that stop and wait for the user (no PermissionRequest fires for them)
+ASKS_USER = {"AskUserQuestion": "question", "ExitPlanMode": "approval"}
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 
 
@@ -82,6 +84,8 @@ def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str |
         return forced, (("question" if asks else "approval") if forced == BLOCKED else None)
     name = event.get("hook_event_name") or ""
     state = EVENTS.get(agent, {}).get(name)
+    if agent == "claude" and name == "PreToolUse" and event.get("tool_name") in ASKS_USER:
+        return BLOCKED, ASKS_USER[event["tool_name"]]  # these tools wait on you; PostToolUse sets working again
     if agent == "claude" and name == "Notification":
         kind = event.get("notification_type") or ""
         msg = str(event.get("message") or "").lower()
@@ -100,7 +104,7 @@ def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str |
 # toolName/toolArgs). Only the command or the edited path leaves the agent: never output or file contents.
 AFTER_TOOL = {"PostToolUse": True, "PostToolUseFailure": False, "AfterTool": None, "postToolUse": True, "postToolUseFailure": False}
 SHELL_TOOLS = {"bash", "shell", "exec", "exec_command", "local_shell", "run_shell_command", "powershell", "run_terminal_cmd", "execute"}
-EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
+EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "notebook_edit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
 
 
 def activity(event: dict) -> dict | None:

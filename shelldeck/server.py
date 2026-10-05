@@ -1457,10 +1457,10 @@ def _resume_plan(sid: str, auto: bool = False) -> tuple[str | None, str | None]:
     if auto and db.list_handoffs(to_sid=sid, status="open"):
         return None, "open_handoff"  # a hand-off is reviewed by a person, never resumed silently
     try:  # per-run hooks as the agent's own flag (Claude's --settings), placed before the resume args
-        extra = integrations.run_flags(rec["agent"])
-        return team.launch_line(rec["agent"], extra=extra) + " " + " ".join(argv[1:]), None
+        extra = [team._arg(a) for a in integrations.run_flags(rec["agent"])]
     except (ValueError, OSError):
-        return " ".join(argv), None
+        extra = []
+    return " ".join([argv[0], *extra, *argv[1:]]), None  # argv[0] is the checked executable (cursor-agent, agy)
 
 
 def _auto_resume(sid: str) -> None:
@@ -1546,6 +1546,28 @@ def _remember_state(sid: str, state: str) -> None:
         log.debug("agent session state not saved", exc_info=True)
 
 
+def _detected(sid: str, key: str) -> None:
+    """A new agent process in a terminal: new generation, context session, and none of the old one's reports."""
+    _generation[0] += 1
+    if sid in agent_kind:  # another agent took over the terminal: close the previous run first
+        _capture(sid, "end_session", _ctx_session(sid))
+    agent_kind[sid] = (key, _generation[0])
+    _capture(sid, "start_session", _ctx_session(sid), key)
+    _emit("agent.detected", {"session_id": sid, "agent": key, "generation": _generation[0]})
+    reports.forget(sid)
+
+
+async def _agent_key(sid: str) -> str | None:
+    """The terminal's agent, detecting it now when the 2s watcher hasn't yet (a hook's first report, a fresh launch),
+    so early reports aren't dropped when the watcher catches up."""
+    if sid in agent_kind:
+        return agent_kind[sid][0]
+    key = await _agent_in(sid)
+    if key and sid not in agent_kind:
+        _detected(sid, key)
+    return key
+
+
 async def _check_agents() -> None:
     found = await asyncio.to_thread(agents.running, _shell_pids())
     now = time.monotonic()
@@ -1560,14 +1582,8 @@ async def _check_agents() -> None:
         agent_status.pop(sid, None)
     natives = await asyncio.to_thread(agents.native, {sid: pid for sid, pid in _shell_pids().items() if sid in found})
     for sid, (key, _) in found.items():
-        if agent_kind.get(sid, ("",))[0] != key:  # a new agent process: forget the old one's reports
-            _generation[0] += 1
-            if sid in agent_kind:  # another agent took over the terminal: close the previous run first
-                _capture(sid, "end_session", _ctx_session(sid))
-            agent_kind[sid] = (key, _generation[0])
-            _capture(sid, "start_session", _ctx_session(sid), key)
-            _emit("agent.detected", {"session_id": sid, "agent": key, "generation": _generation[0]})
-            reports.forget(sid)
+        if agent_kind.get(sid, ("",))[0] != key:
+            _detected(sid, key)
         was = agent_state.get(sid, "idle")
         agent_state[sid] = await asyncio.to_thread(_next_state, sid, was, now)
         reports.put_heuristic(sid, lifecycle.heuristic(agent_state[sid], now))
@@ -1592,7 +1608,7 @@ async def agent_report(request: Request, payload: dict):
         return err("invalid_report_token", 403)
     if payload.get("session_id") not in (None, sid):
         return err("session_mismatch", 403)
-    key = agent_kind.get(sid, (None,))[0] or await _agent_in(sid)
+    key = await _agent_key(sid)
     if not key:
         return err("no_agent_running", 409)
     try:
@@ -1606,10 +1622,12 @@ async def agent_report(request: Request, payload: dict):
         _capture(sid, "record_activity", act, agent=key, session_id=_ctx_session(sid))
     if report:
         reports.put(sid, report, meta)
-    if ref:
-        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), agent_status.get(sid, {}).get("state", "unknown"))
-        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
     status = _status_of(sid)
+    if ref:
+        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), status["state"])
+        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
+    elif status["state"] != agent_status.get(sid, {}).get("state"):
+        _remember_state(sid, status["state"])  # the watcher only sees changes it made itself
     log.info("agent report: session=%s source=%s agent=%s state=%s", sid, source, key, status["state"] if report else "(session only)")
     await _publish(sid, status, key)
     return {"status": status}
@@ -1633,7 +1651,7 @@ async def agent_command_list(agent: str):
 async def agent_command(session_id: str, payload: dict):
     """Type an agent's native command (e.g. Gemini's /compress for `compact`) into its terminal. Refused while the agent
     is blocked (it would answer the question) or working (most agents ignore or queue commands mid-turn) unless `force`."""
-    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    key = await _agent_key(session_id)
     if not key:
         return err("no_agent_running", 409)
     try:
@@ -1662,7 +1680,7 @@ EXTRACT_PROMPT = ("[shelldeck] Save what you learned this session to project mem
 async def extract_facts(session_id: str):
     """On demand only: one prompt asking the agent to record its own session knowledge (no model runs in shelldeck).
     Refused while the agent is blocked or working, like any prompt."""
-    key = agent_kind.get(session_id, (None,))[0] or await _agent_in(session_id)
+    key = await _agent_key(session_id)
     if not key:
         return err("no_agent_running", 409)
     state = (agent_status.get(session_id) or {}).get("state")
@@ -1682,7 +1700,7 @@ async def agent_prompt(payload: dict):
     text = str(payload.get("text") or "")[:20000]
     if not text.strip():
         return err("text_required")
-    if sid not in agent_kind:
+    if not await _agent_key(sid):
         return err("no_agent_running", 409)
     if (agent_status.get(sid) or {}).get("state") == "blocked":
         return err("agent_blocked", 409)
@@ -1775,7 +1793,7 @@ async def agent_wait(payload: dict):
     timeout = min(max(float(payload.get("timeout") or 600), 0.1), 3600)
     if not until:
         return err("invalid_until")
-    if sid not in agent_kind:
+    if not await _agent_key(sid):
         return err("no_agent_running", 409)
     return await _wait_for(sid, agent_kind[sid][1], lambda st: st["state"] in until, timeout)
 
