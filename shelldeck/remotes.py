@@ -7,6 +7,7 @@ key path, and nothing user-supplied is ever passed to a shell as options. Passwo
 the terminal (or uses keys / ssh-agent), and the RDP client asks in its own window.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -130,10 +131,24 @@ def clients() -> dict:
     return {"ssh": bool(shutil.which("ssh")), "rdp": rdp and ("mstsc" if sys.platform == "win32" else rdp.replace("\\", "/").rsplit("/", 1)[-1])}
 
 
-def test_ssh(r: dict, timeout: float = 8) -> dict:
-    """Can this machine reach the remote, and log in without a prompt? Never stores or sends a password, never
-    changes known_hosts: {ok, step: network|auth|done, message}."""
+def _askpass(folder: Path) -> Path:
+    """A tiny SSH_ASKPASS helper that prints SHELLDECK_ASKPASS (the password lives only in ssh's environment)."""
+    if sys.platform == "win32":
+        helper = folder / "askpass.cmd"
+        helper.write_text(f'@"{sys.executable}" -c "import os,sys; sys.stdout.write(os.environ[\'SHELLDECK_ASKPASS\'] + chr(10))"\r\n',
+                          encoding="utf-8")
+    else:
+        helper = folder / "askpass"
+        helper.write_text('#!/bin/sh\nprintf \'%s\\n\' "$SHELLDECK_ASKPASS"\n', encoding="utf-8")
+        helper.chmod(0o700)
+    return helper
+
+
+def test_ssh(r: dict, timeout: float = 8, password: str = "") -> dict:
+    """Can this machine reach the remote and log in? With `password`, ssh gets it once through SSH_ASKPASS (an
+    LDAP/NTID or local account); it is never stored or logged. Never changes known_hosts: {ok, step, message}."""
     import socket
+    import tempfile
 
     host = r["host"].strip("[]")
     try:
@@ -143,23 +158,32 @@ def test_ssh(r: dict, timeout: float = 8) -> dict:
         return {"ok": False, "step": "network", "message": f"Can't reach {r['host']}:{r['port']} ({e.strerror or e})."}
     if not shutil.which("ssh"):
         return {"ok": False, "step": "network", "message": "The port answers, but ssh isn't installed on this machine."}
-    target = host
     nul = "NUL" if sys.platform == "win32" else "/dev/null"
-    argv = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}", "-o", "StrictHostKeyChecking=no",
+    argv = ["ssh", "-o", f"ConnectTimeout={int(timeout)}", "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={nul}", "-o", "LogLevel=ERROR", "-p", str(int(r["port"]))]
+    argv += ["-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1"] if password else ["-o", "BatchMode=yes"]
     if r.get("identity"):
         argv += ["-i", str(Path(r["identity"]).expanduser())]
     if r.get("user"):
         argv += ["-l", r["user"]]  # argv, no shell: CORP\jdoe needs no quoting here
-    try:
-        out = subprocess.run([*argv, "--", target, "exit"], capture_output=True, text=True, timeout=timeout + 4, stdin=subprocess.DEVNULL,
-                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-    except (OSError, subprocess.TimeoutExpired):
-        return {"ok": False, "step": "auth", "message": "The port answers, but ssh timed out logging in."}
+    env = None
+    with tempfile.TemporaryDirectory(prefix="shelldeck-") as tmp:
+        if password:
+            env = {**os.environ, "SSH_ASKPASS": str(_askpass(Path(tmp))), "SSH_ASKPASS_REQUIRE": "force",
+                   "DISPLAY": os.environ.get("DISPLAY") or ":0", "SHELLDECK_ASKPASS": password}
+        try:
+            out = subprocess.run([*argv, "--", host, "exit"], capture_output=True, text=True, timeout=timeout + 8, stdin=subprocess.DEVNULL,
+                                 env=env, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        except (OSError, subprocess.TimeoutExpired):
+            return {"ok": False, "step": "auth", "message": "The port answers, but ssh timed out logging in."}
     err = (out.stderr or "").strip().splitlines()[-1:] or [""]
     if out.returncode == 0:
-        return {"ok": True, "step": "done", "message": "Connected and logged in with your key or ssh-agent."}
+        how = "the password" if password else "your key or ssh-agent"
+        tail = " Terminals ask for it each time (it isn't saved); add a key file to skip that." if password else ""
+        return {"ok": True, "step": "done", "message": f"Connected and logged in with {how}.{tail}"}
     if "Permission denied" in err[0] or "publickey" in err[0]:
-        return {"ok": True, "step": "auth", "message": "Reachable, and it asks for a password (LDAP/NTID or local account): "
-                "ssh will prompt for it in the terminal. Add a key file to log in without typing it."}
+        if password:
+            return {"ok": False, "step": "auth", "message": "Reachable, but that user and password were refused."}
+        return {"ok": True, "step": "auth", "message": "Reachable, and it asks for a password (LDAP/NTID or local account). "
+                "Type it in the Password field to test the login; terminals ask for it when they connect."}
     return {"ok": False, "step": "auth", "message": err[0][:200] or f"ssh exited with {out.returncode}."}

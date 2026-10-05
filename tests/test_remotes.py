@@ -147,3 +147,33 @@ def test_connection_test_steps(client, monkeypatch):
         assert ["-l", "CORP\\jdoe"] == seen[0][seen[0].index("-l"):seen[0].index("-l") + 2] and "BatchMode=yes" in seen[0]
     finally:
         srv.close()
+
+
+def test_password_reaches_ssh_only_through_askpass(monkeypatch):
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    seen = {}
+    real_run = subprocess.run
+
+    class Ok:
+        returncode, stderr = 0, ""
+
+    def run(argv, env=None, **kw):
+        seen["argv"], seen["env"] = argv, env
+        seen["helper"] = real_run([env["SSH_ASKPASS"]], capture_output=True, text=True, env=env, shell=sys.platform == "win32").stdout
+        return Ok()
+
+    try:
+        monkeypatch.setattr(remotes.shutil, "which", lambda exe: "/usr/bin/ssh")
+        monkeypatch.setattr(remotes.subprocess, "run", run)
+        r = remotes.validate({"host": "127.0.0.1", "port": srv.getsockname()[1], "user": "CORP\\jdoe"})
+        out = remotes.test_ssh(r, password='p@ss w$rd&|"x')
+    finally:
+        srv.close()
+    assert out["ok"] and out["step"] == "done" and "password" in out["message"]
+    assert "p@ss" not in " ".join(seen["argv"])  # never on the command line
+    assert seen["env"]["SSH_ASKPASS_REQUIRE"] == "force" and "BatchMode=no" in seen["argv"]
+    assert seen["helper"].rstrip("\r\n") == 'p@ss w$rd&|"x'

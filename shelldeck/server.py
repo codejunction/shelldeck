@@ -1032,12 +1032,13 @@ async def add_remote(payload: dict):
 
 @app.post("/api/remotes/test")
 async def test_remote(payload: dict):
-    """Try an SSH machine before saving it: network, then a key/agent login (no password is asked or kept)."""
+    """Try an SSH machine before saving it: network, then a login with the key/agent or the given password (used once, never kept)."""
     try:
         r = remotes.validate({**payload, "kind": "ssh"})
     except remotes.RemoteError as e:
         return err(str(e))
-    return await asyncio.to_thread(remotes.test_ssh, r)
+    password = str(payload.get("password") or "")[:256]  # this test only: never stored or logged
+    return await asyncio.to_thread(remotes.test_ssh, r, 8, password)
 
 
 @app.put("/api/remotes/{remote_id}")

@@ -103,10 +103,11 @@ function editDialog(r, { sshOnly = false, onSaved = () => {} } = {}) {
       <label class="field"><span>Host or IP</span><input name="host" required value="${esc(r?.host || "")}" placeholder="server.example.com" autocomplete="off" spellcheck="false" /></label>
       <label class="field"><span>User <small class="faint">(jdoe, LDAP/NTID like CORP\\jdoe or jdoe@corp.com)</small></span><input name="user" value="${esc(r?.user || "")}" autocomplete="off" spellcheck="false" /></label>
       <label class="field"><span>Port</span><input name="port" type="number" min="1" max="65535" value="${r?.port || ""}" placeholder="22" /></label>
+      <label class="field ssh-only"><span>Password <small class="faint">(only for Test connection; never saved)</small></span><input name="password" type="password" autocomplete="off" /></label>
       <label class="field ssh-only"><span>Key file <small class="faint">(optional: leave empty to log in with your password)</small></span><input name="identity" value="${esc(r?.identity || "")}" autocomplete="off" spellcheck="false" /></label>
       <input type="hidden" name="project_id" value="${esc(r?.project_id || "")}" />
       <label class="field"><span>Name <small class="faint">(optional, shown in the machine list)</small></span><input name="name" value="${esc(r?.name || "")}" autocomplete="off" /></label>
-      <p class="faint small ssh-only" style="margin:0">Passwords aren't stored: with no key, ssh asks for it in the terminal.</p>
+      <p class="faint small ssh-only" style="margin:0">Passwords aren't stored: with no key file, ssh asks for it in the terminal each time it connects.</p>
       <div class="remote-test ssh-only" data-test-out role="status" hidden></div>
       <div class="error" data-err></div>
     </form>`,
@@ -135,7 +136,7 @@ function editDialog(r, { sshOnly = false, onSaved = () => {} } = {}) {
     out.textContent = "Testing…";
     btn.disabled = true;
     try {
-      const t = await api("/api/remotes/test", { method: "POST", body: fields() });
+      const t = await api("/api/remotes/test", { method: "POST", body: { ...fields(), password: form.password.value } });
       out.classList.add(t.ok ? (t.step === "done" ? "ok" : "warn") : "bad");
       out.textContent = t.message;
     } catch (err) {
