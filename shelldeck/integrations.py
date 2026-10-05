@@ -99,7 +99,8 @@ def _read_json(file: Path, fallback: dict) -> dict:
     try:
         data = json.loads(text)
     except ValueError:
-        raise ValueError(f"{file} is not plain JSON, so it wasn't changed") from None
+        raise ValueError(f"{file} is not plain JSON (comments or trailing commas?), so it wasn't changed: "
+                         "remove them and install again") from None
     if not isinstance(data, dict):
         raise ValueError(f"{file} is not a JSON object, so it wasn't changed")
     return data

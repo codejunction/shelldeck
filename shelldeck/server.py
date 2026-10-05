@@ -1622,10 +1622,12 @@ async def agent_report(request: Request, payload: dict):
         _capture(sid, "record_activity", act, agent=key, session_id=_ctx_session(sid))
     if report:
         reports.put(sid, report, meta)
-    if ref:
-        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), agent_status.get(sid, {}).get("state", "unknown"))
-        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
     status = _status_of(sid)
+    if ref:
+        db.save_agent_session(sid, key, source, ref.session_id, list(ref.resume_argv), status["state"])
+        _emit("agent.session_updated", {"session_id": sid, "agent": key, "source": source})
+    elif status["state"] != agent_status.get(sid, {}).get("state"):
+        _remember_state(sid, status["state"])  # the watcher only sees changes it made itself
     log.info("agent report: session=%s source=%s agent=%s state=%s", sid, source, key, status["state"] if report else "(session only)")
     await _publish(sid, status, key)
     return {"status": status}

@@ -1240,3 +1240,35 @@ def test_resume_runs_the_stored_executable(client, tmp_path, monkeypatch):
     assert server._resume_plan(sid) == ("cursor-agent --resume c1", None)
     db.save_agent_session(sid, "claude", "integration:claude", "a1", ["claude", "--resume", "a1"], "done")
     assert server._resume_plan(sid) == ("claude --settings /tmp/s.json --resume a1", None)
+
+
+def test_stored_session_state_follows_reports(client, tmp_path, monkeypatch):
+    class Live:
+        pid = 1
+
+        def isalive(self):
+            return True
+
+        def kill(self):
+            pass
+
+    async def quiet(msg, host_only=False):
+        pass
+
+    work = tmp_path / "w4"
+    work.mkdir()
+    pid = client.post("/api/projects", json={"path": str(work)}).json()["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid, "shell": shells.default_kind()}).json()["id"]
+    monkeypatch.setattr(server, "_broadcast", quiet)
+    monkeypatch.setattr(server, "_capture", lambda *a, **k: None)
+    monkeypatch.setitem(server.manager.procs, sid, Live())
+    monkeypatch.setitem(server.report_tokens, sid, "tok-st")
+    monkeypatch.setitem(server.agent_kind, sid, ("devin", 1))
+    hdr = {"X-Shelldeck-Report-Token": "tok-st"}
+    body = {"source": "integration:devin", "agent": "devin", "agent_session_id": "d-1", "resume_argv": ["devin", "--resume", "d-1"]}
+    client.post("/api/agent-reports", json={**body, "state": "blocked", "blocked_reason": "approval"}, headers=hdr)
+    assert db.get_agent_session(sid)["last_state"] == "blocked"  # the state after this report, not before it
+    client.post("/api/agent-reports", json={"source": "integration:devin", "agent": "devin", "state": "done"}, headers=hdr)
+    assert db.get_agent_session(sid)["last_state"] == "done"
+    server.reports.forget(sid)
+    server.agent_status.pop(sid, None)

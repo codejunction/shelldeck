@@ -104,7 +104,7 @@ def state_for(agent: str, event: dict, forced: str | None = None) -> tuple[str |
 # toolName/toolArgs). Only the command or the edited path leaves the agent: never output or file contents.
 AFTER_TOOL = {"PostToolUse": True, "PostToolUseFailure": False, "AfterTool": None, "postToolUse": True, "postToolUseFailure": False}
 SHELL_TOOLS = {"bash", "shell", "exec", "exec_command", "local_shell", "run_shell_command", "powershell", "run_terminal_cmd", "execute"}
-EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
+EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "notebook_edit", "write_file", "replace", "apply_patch", "create", "str_replace_editor"}
 
 
 def activity(event: dict) -> dict | None:

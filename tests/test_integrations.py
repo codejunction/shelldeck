@@ -378,3 +378,8 @@ def test_claude_tools_that_ask_you_block():
     assert hook.state_for("claude", ask) == ("blocked", "question")
     assert hook.state_for("claude", {**ask, "tool_name": "ExitPlanMode"}) == ("blocked", "approval")
     assert hook.state_for("claude", {**ask, "hook_event_name": "PostToolUse"}) == ("working", None)
+
+
+def test_devin_notebook_edit_is_captured():
+    act = hook.report("devin", {"hook_event_name": "PostToolUse", "tool_name": "notebook_edit", "tool_input": {"notebook_path": "a.ipynb"}})
+    assert act["activity"] == {"file": "a.ipynb", "change": "edit"}
