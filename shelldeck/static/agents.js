@@ -244,10 +244,29 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  const next = e.target.closest("[data-open-next]")?.dataset.openNext;
+  if (next) return showSession(next);
+  if (e.target.closest("[data-copy-prompt]")) {
+    await navigator.clipboard.writeText(TEAM_PROMPT).catch(() => {});
+    return toast({ title: "Team prompt copied", body: "Paste it into each agent." });
+  }
+  const skill = e.target.closest("[data-skill]")?.dataset.skill;
+  if (skill) {
+    try {
+      const { results } = await api("/api/skills", { method: "POST", body: { agents: [skill] } });
+      toast({ title: "Skill installed", body: results.map((r) => r.path).join("\n") });
+      return renderAgents(el);
+    } catch (err) {
+      return toastError(err);
+    }
+  }
   const resume = e.target.closest("[data-resume]")?.dataset.resume;
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
-  if (!key) return;
+  if (!key) {
+    const sid = e.target.closest("tr[data-sid]")?.dataset.sid;
+    return sid ? showSession(sid) : undefined;
+  }
   const model = e.target.closest(".ag-card").querySelector("[data-model]")?.value;
   // the server builds the line with the agent's own flags (model, per-run hooks such as Claude's --settings)
   try {
