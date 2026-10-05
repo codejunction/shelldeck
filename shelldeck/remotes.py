@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 
 KINDS = ("ssh", "rdp")
+SSH_SUPPORTED = sys.platform != "win32"  # ponytail: SSH machines are Linux/macOS only for now; Windows keeps RDP
 DEFAULT_PORT = {"ssh": 22, "rdp": 3389}
 HOST = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9-]{1,63})*|\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9A-Fa-f:]{2,45}\]?)$")
 # plain (jdoe), LDAP/NTID-style (CORP\jdoe, jdoe@corp.example.com): passed with -l, quoted where the shell needs it
@@ -31,6 +32,8 @@ def validate(raw: dict, project_ok=lambda pid: True) -> dict:
     kind = str(raw.get("kind") or "ssh")
     if kind not in KINDS:
         raise RemoteError("invalid_kind")
+    if kind == "ssh" and not SSH_SUPPORTED:
+        raise RemoteError("ssh_unsupported_on_windows")
     host = str(raw.get("host") or "").strip()
     if not host or host.startswith("-") or not HOST.match(host):
         raise RemoteError("invalid_host")
@@ -64,10 +67,10 @@ def check_path(path: str) -> str:
     return path.rstrip("/") or "/"
 
 
-def ssh_line(r: dict, path: str = "~", shell: str = "") -> str:
+def ssh_line(r: dict, path: str = "~") -> str:
     """The command typed into the terminal's shell. Values were validated; only the key path may need quotes.
-    With a folder, ssh -t runs `cd <folder> && exec $SHELL -l` there: single quotes keep $SHELL for the remote in
-    pwsh, bash, zsh and fish; cmd has no single quotes but doesn't expand $ either, so it gets double quotes."""
+    With a folder, ssh -t runs `cd <folder> && exec $SHELL -l` there; single quotes keep $SHELL for the remote
+    (bash, zsh, fish and the other POSIX shells; SSH isn't offered on Windows)."""
     path = check_path(path)
     parts = ["ssh"]
     if path != "~":
@@ -78,12 +81,10 @@ def ssh_line(r: dict, path: str = "~", shell: str = "") -> str:
         parts += ["-i", f'"{r["identity"]}"' if " " in r["identity"] else r["identity"]]
     if r.get("user"):
         user = r["user"]
-        # a backslash is an escape in bash/zsh/fish: single-quote it there (pwsh too); cmd passes it as is
-        parts += ["-l", user if "\\" not in user or shell == "cmd" else f"'{user}'"]
+        parts += ["-l", f"'{user}'" if "\\" in user else user]  # a backslash is an escape in POSIX shells
     parts.append(r["host"])
     if path != "~":
-        q = '"' if shell == "cmd" else "'"
-        parts.append(f"{q}cd {path} && exec $SHELL -l{q}")
+        parts.append(f"'cd {path} && exec $SHELL -l'")
     return " ".join(parts)
 
 
@@ -126,7 +127,7 @@ def clients() -> dict:
         rdp = rdp_argv({"host": "x", "port": 3389})[0]
     except RemoteError:
         rdp = None
-    return {"ssh": bool(shutil.which("ssh")), "rdp": rdp and ("mstsc" if sys.platform == "win32" else rdp.replace("\\", "/").rsplit("/", 1)[-1])}
+    return {"ssh_supported": SSH_SUPPORTED, "ssh": SSH_SUPPORTED and bool(shutil.which("ssh")), "rdp": rdp and ("mstsc" if sys.platform == "win32" else rdp.replace("\\", "/").rsplit("/", 1)[-1])}
 
 
 def test_ssh(r: dict, timeout: float = 8) -> dict:
@@ -143,7 +144,7 @@ def test_ssh(r: dict, timeout: float = 8) -> dict:
     if not shutil.which("ssh"):
         return {"ok": False, "step": "network", "message": "The port answers, but ssh isn't installed on this machine."}
     target = host
-    nul = "NUL" if sys.platform == "win32" else "/dev/null"
+    nul = "/dev/null"
     argv = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}", "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={nul}", "-o", "LogLevel=ERROR", "-p", str(int(r["port"]))]
     if r.get("identity"):
@@ -151,8 +152,7 @@ def test_ssh(r: dict, timeout: float = 8) -> dict:
     if r.get("user"):
         argv += ["-l", r["user"]]  # argv, no shell: CORP\jdoe needs no quoting here
     try:
-        out = subprocess.run([*argv, "--", target, "exit"], capture_output=True, text=True, timeout=timeout + 4, stdin=subprocess.DEVNULL,
-                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        out = subprocess.run([*argv, "--", target, "exit"], capture_output=True, text=True, timeout=timeout + 4, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return {"ok": False, "step": "auth", "message": "The port answers, but ssh timed out logging in."}
     err = (out.stderr or "").strip().splitlines()[-1:] or [""]

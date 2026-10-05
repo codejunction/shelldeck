@@ -27,9 +27,9 @@ def test_validate_rejects_anything_that_could_reach_a_shell():
     assert ok["name"] == "dev@srv.example.com" and ok["port"] == 2222
     assert remotes.ssh_line(ok) == "ssh -p 2222 -l dev srv.example.com"
     assert remotes.ssh_line(remotes.validate({"host": "10.0.0.5", "identity": "~/keys/my key"})) == 'ssh -i "~/keys/my key" 10.0.0.5'
-    # LDAP / NTID style accounts: CORP\\jdoe is single-quoted for bash/pwsh/fish, bare for cmd
+    # LDAP / NTID style accounts: CORP\\jdoe is single-quoted (a backslash escapes in POSIX shells)
     ntid = remotes.validate({"host": "vm1", "user": "CORP\\jdoe"})
-    assert remotes.ssh_line(ntid, "~", "pwsh") == "ssh -l 'CORP\\jdoe' vm1" and remotes.ssh_line(ntid, "~", "cmd") == "ssh -l CORP\\jdoe vm1"
+    assert remotes.ssh_line(ntid) == "ssh -l 'CORP\\jdoe' vm1"
     assert remotes.ssh_line(remotes.validate({"host": "vm1", "user": "jdoe@corp.example.com"})) == "ssh -l jdoe@corp.example.com vm1"
     for bad, code in [({"host": "h", "user": "CORP\\j;d"}, "invalid_user"), ({"host": "h", "user": "a@b@c"}, "invalid_user"),
                       ({"host": "-oProxyCommand=x"}, "invalid_host"), ({"host": "a;rm -rf ~"}, "invalid_host"), ({"host": "h", "user": "a b"}, "invalid_user"),
@@ -38,6 +38,14 @@ def test_validate_rejects_anything_that_could_reach_a_shell():
         with pytest.raises(remotes.RemoteError) as e:
             remotes.validate(bad)
         assert str(e.value) == code
+
+
+def test_ssh_is_refused_on_windows(monkeypatch):
+    monkeypatch.setattr(remotes, "SSH_SUPPORTED", False)
+    with pytest.raises(remotes.RemoteError) as e:
+        remotes.validate({"kind": "ssh", "host": "h"})
+    assert str(e.value) == "ssh_unsupported_on_windows"
+    assert remotes.validate({"kind": "rdp", "host": "h"})["kind"] == "rdp"  # RDP stays
 
 
 def test_rdp_argv_per_os(monkeypatch):
@@ -71,9 +79,8 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     assert client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app; rm -rf /"}).json()["error"] == "invalid_remote_path"
     app = client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app/"}).json()
     assert app["name"] == "app" and app["remote_path"] == "/srv/app" and app["id"] != pid
-    sess = {**client.post("/api/sessions", json={"project_id": app["id"]}).json(), "shell": "bash"}  # bash isn't a kind on Windows
+    sess = client.post("/api/sessions", json={"project_id": app["id"]}).json()
     assert server._remote_line(sess) == "ssh -t -l dev srv 'cd /srv/app && exec $SHELL -l'"
-    assert server._remote_line({**sess, "shell": "cmd"}) == 'ssh -t -l dev srv "cd /srv/app && exec $SHELL -l"'
     assert server._remote_line(client.post("/api/sessions", json={"project_id": pid}).json()) is None  # local project
     assert client.get("/api/remotes").json()["remotes"][0]["last_used_at"]
     rdp = client.post("/api/remotes", json={"kind": "rdp", "host": "win"}).json()
@@ -87,16 +94,17 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
 
 
 def test_end_only_ends_processes_inside_the_terminal():
-    # a stand-in shell with a child (and grandchild) that would run forever
-    code = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); time.sleep(60)"
-    shell = subprocess.Popen([sys.executable, "-c", f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{code!r}]); time.sleep(60)"])
+    # a stand-in shell with a child (and grandchild) that would run forever. On Windows a venv python.exe is a
+    # launcher that starts the real interpreter as one more process, so use the base interpreter: one process a level
+    py = getattr(sys, "_base_executable", sys.executable)
+    code = f"import subprocess,time; subprocess.Popen([{py!r},'-c','import time; time.sleep(60)']); time.sleep(60)"
+    shell = subprocess.Popen([py, "-c", f"import subprocess,time; subprocess.Popen([{py!r},'-c',{code!r}]); time.sleep(60)"])
     try:
         for _ in range(50):
             kids = psutil.Process(shell.pid).children(recursive=True)
             if len(kids) >= 2:
                 break
             time.sleep(0.1)
-        # Windows: a venv python.exe is a launcher, so each level may be two processes; any direct child will do
         child = psutil.Process(shell.pid).children()[0].pid
         listed = {p["pid"] for p in stats.processes(shell.pid)}
         assert child in listed and shell.pid not in listed
@@ -107,6 +115,8 @@ def test_end_only_ends_processes_inside_the_terminal():
         assert not left  # its child went too (zombies: this stand-in shell doesn't reap, a real one does)
         assert shell.poll() is None  # the shell keeps running
     finally:
+        for p in psutil.Process(shell.pid).children(recursive=True) if shell.poll() is None else []:
+            p.kill()
         shell.kill()
 
 

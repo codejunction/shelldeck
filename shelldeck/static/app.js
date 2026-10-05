@@ -25,6 +25,7 @@ export const S = {
   order: store.get("order", []),
   machine: store.get("machine", "local"), // "local" or a remote id: which machine's projects the sidebar shows
   remotes: [], // saved SSH machines (/api/remotes)
+  sshSupported: true, // false on a Windows host: no SSH machines yet
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
@@ -1416,9 +1417,11 @@ export function orderedProjects() {
 
 export async function refreshProjects() {
   try {
-    const [{ projects }, { remotes }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: S.remotes }))]);
+    const [{ projects }, { remotes, clients }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: S.remotes, clients: { ssh_supported: S.sshSupported } }))]);
+    S.sshSupported = clients?.ssh_supported !== false;
     S.projects = projects;
     S.remotes = remotes.filter((r) => r.kind === "ssh");
+    $("#machine").hidden = !S.sshSupported; // SSH machines: Linux/macOS only for now
     if (S.machine !== "local" && !S.remotes.some((r) => r.id === S.machine)) setMachine("local");
     renderMachine();
     setOnline(true);
