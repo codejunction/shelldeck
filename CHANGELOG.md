@@ -4,6 +4,14 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added
+
+- Git changes at a glance: a `±N` chip on git projects in the sidebar, and a *Changes* tab in the git dialog with branch, ahead/behind, each changed file's added/removed lines and its diff.
+- Remote systems (*More › Remote systems*): save SSH hosts (open as shelldeck terminals) and RDP desktops (mstsc on Windows, xfreerdp or Remmina on Linux). No passwords are stored.
+- Replay the last command: `Ctrl+Alt+P`, the pane's replay button or the palette.
+- Background terminals: the pane's eye button and `Ctrl+Alt+W` keep a terminal running off screen (marked *running* in the sidebar while busy); closing a terminal with a running command offers to keep it in the background.
+- `sd notes list|add|append|show|replace|delete` for the Scratchpad (open pages update at once), and `sd top`, `sd ps`, `sd kill` for the Task manager (only processes inside shelldeck terminals). The agent skill teaches both.
+
 ## [0.0.8] - 2026-10-05
 
 ### Fixed

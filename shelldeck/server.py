@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import agent_commands, detection, smart_recall
 from . import agent_state as lifecycle
-from . import agents, auth, context, db, gitgraph, integrations, share, shells, stats, team
+from . import agents, auth, context, db, gitgraph, integrations, remotes, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -812,6 +812,29 @@ async def get_stats():
     return await asyncio.to_thread(stats.collect, _shell_pids())
 
 
+@app.get("/api/sessions/{session_id}/processes")
+async def session_processes(session_id: str):
+    """The processes running in one terminal (below its shell), for sd ps."""
+    proc = manager.get(session_id)
+    if not proc or not proc.isalive():
+        return err("not_running", 409)
+    return {"shell_pid": proc.pid, "processes": await asyncio.to_thread(stats.processes, proc.pid)}
+
+
+@app.post("/api/sessions/{session_id}/processes/{pid}/end")
+async def end_process(session_id: str, pid: int, payload: dict | None = None):
+    """End a process inside one terminal (and its children): terminate, then kill after 3s; `force` kills at once.
+    Only that terminal's descendants qualify (use sd close for the terminal itself)."""
+    proc = manager.get(session_id)
+    if not proc or not proc.isalive():
+        return err("not_running", 409)
+    result = await asyncio.to_thread(stats.end, proc.pid, pid, bool((payload or {}).get("force")))
+    if result in ("not_in_terminal", "gone"):
+        return err(result, 404)
+    log.info("process %s in %s %s", pid, session_id, result)
+    return {"status": result}
+
+
 def _shell_pids() -> dict[str, int]:
     return {sid: proc.pid for sid, proc in list(manager.procs.items()) if proc.isalive()}
 
@@ -900,6 +923,24 @@ async def list_shells():
 # ---------------------------------------------------------------------------
 
 
+_git_counts: dict[str, tuple[float, int | None]] = {}  # path -> (checked at, changed files)
+GIT_COUNT_S = 10  # the sidebar polls every 5s; git status at most every 10s per project
+
+
+async def _git_count(path: str) -> int | None:
+    """Changed files in a project's work tree for the sidebar, cached; None when git fails."""
+    at, n = _git_counts.get(path, (0, None))
+    if time.monotonic() - at < GIT_COUNT_S:
+        return n
+    _git_counts[path] = (time.monotonic(), n)  # one check at a time
+    try:
+        n = len((await asyncio.to_thread(gitgraph.changes, path))["files"])
+    except gitgraph.GitError:
+        n = None
+    _git_counts[path] = (time.monotonic(), n)
+    return n
+
+
 @app.get("/api/projects")
 async def list_projects():
     alive = set(manager.list_alive())
@@ -907,6 +948,7 @@ async def list_projects():
     for p in projects:
         p["exists"] = Path(p["path"]).is_dir()
         p["has_git"] = p["exists"] and gitgraph.has_git(p["path"])
+        p["git_changes"] = await _git_count(p["path"]) if p["has_git"] else None
         p["sessions"] = db.list_sessions(p["id"])
         for s in p["sessions"]:
             s["alive"] = s["id"] in alive
@@ -924,6 +966,30 @@ async def project_git_log(project_id: str, limit: int = 300):
         return err(f"git_log_failed:{e}")
 
 
+@app.get("/api/projects/{project_id}/git/changes")
+async def project_git_changes(project_id: str):
+    """Uncommitted changes: branch, ahead/behind and changed files with line counts."""
+    project = db.get_project(project_id)
+    if not project:
+        return err("project_not_found", 404)
+    try:
+        return await asyncio.to_thread(gitgraph.changes, project["path"])
+    except gitgraph.GitError as e:
+        return err(f"git_status_failed:{e}")
+
+
+@app.get("/api/projects/{project_id}/git/diff")
+async def project_git_diff(project_id: str, file: str):
+    """One changed file's diff (only files git status reports)."""
+    project = db.get_project(project_id)
+    if not project:
+        return err("project_not_found", 404)
+    try:
+        return await asyncio.to_thread(gitgraph.diff, project["path"], file)
+    except gitgraph.GitError as e:
+        return err(f"git_diff_failed:{e}")
+
+
 @app.post("/api/projects/{project_id}/git/checkout")
 async def project_git_checkout(project_id: str, payload: dict):
     project = db.get_project(project_id)
@@ -936,6 +1002,76 @@ async def project_git_checkout(project_id: str, payload: dict):
     if not ok:
         return err(f"git_checkout_failed:{message}")
     return {"status": "ok", "message": message}
+
+
+# ------------------------------------------------------------- remote systems
+
+
+@app.get("/api/remotes")
+async def list_remotes():
+    return {"remotes": db.list_remotes(), "clients": await asyncio.to_thread(remotes.clients)}
+
+
+@app.post("/api/remotes")
+async def add_remote(payload: dict):
+    try:
+        return db.save_remote(remotes.validate(payload, lambda pid: bool(db.get_project(pid))))
+    except remotes.RemoteError as e:
+        return err(str(e))
+
+
+@app.put("/api/remotes/{remote_id}")
+async def update_remote(remote_id: str, payload: dict):
+    if not db.get_remote(remote_id):
+        return err("remote_not_found", 404)
+    try:
+        return db.save_remote(remotes.validate(payload, lambda pid: bool(db.get_project(pid))), remote_id)
+    except remotes.RemoteError as e:
+        return err(str(e))
+
+
+@app.delete("/api/remotes/{remote_id}")
+async def delete_remote(remote_id: str):
+    return {"status": "ok"} if db.delete_remote(remote_id) else err("remote_not_found", 404)
+
+
+@app.post("/api/remotes/{remote_id}/connect")
+async def connect_remote(request: Request, remote_id: str, payload: dict | None = None):
+    """SSH: a new terminal (in the remote's project, else the given or first one) that runs ssh after its first prompt.
+    RDP: the desktop client opens on the host machine, so only the host may ask for it."""
+    r = db.get_remote(remote_id)
+    if not r:
+        return err("remote_not_found", 404)
+    try:
+        r = {**r, **remotes.validate(r)}  # re-check stored values before they reach a shell or a process
+    except remotes.RemoteError as e:
+        return err(str(e))
+    if r["kind"] == "rdp":
+        if not _host(request):
+            return err("host_only", 403)
+        try:
+            argv = await asyncio.to_thread(remotes.open_rdp, r)
+        except remotes.RemoteError as e:
+            return err(str(e), 409)
+        db.touch_remote(remote_id)
+        return {"kind": "rdp", "command": " ".join(argv)}
+    pid = r.get("project_id") or str((payload or {}).get("project_id") or "")
+    project = db.get_project(pid) if pid else None
+    project = project or next(iter(db.list_projects()), None)
+    if not project or not Path(project["path"]).is_dir():
+        return err("project_required", 409)
+    session = db.add_session(project["id"], cwd=project["path"], shell="", name=r["name"])
+    try:
+        _attach(session, 30, 120)
+    except Exception:  # noqa: BLE001 - spawn failures come from winpty/OS
+        log.exception("remote terminal failed for %s", remote_id)
+        return err("spawn_failed", 500)
+    line = remotes.ssh_line(r)
+    starter = asyncio.create_task(_start_agent(session["id"], line))
+    background.add(starter)
+    starter.add_done_callback(background.discard)
+    db.touch_remote(remote_id)
+    return {"kind": "ssh", "session": session, "command": line}
 
 
 @app.post("/api/projects")
@@ -1280,15 +1416,30 @@ async def list_scratch():
     return {"notes": db.list_scratch()}
 
 
+async def _scratch_changed(request: Request, note_id: str) -> None:
+    """A note written by the CLI (an agent or a script) shows up in open Scratchpad pages; the page's own autosave doesn't echo."""
+    if auth.cli_ok(request.headers.get(auth.TOKEN_HEADER)):
+        await _broadcast({"type": "scratch", "id": note_id})
+
+
+@app.get("/api/scratch/{note_id}")
+async def get_scratch(note_id: str):
+    note = next((n for n in db.list_scratch() if n["id"] == note_id), None)
+    return note or err("note_not_found", 404)
+
+
 @app.post("/api/scratch")
-async def add_scratch(payload: dict):
-    return db.add_scratch(str(payload.get("body") or "")[:MAX_EDIT])
+async def add_scratch(request: Request, payload: dict):
+    note = db.add_scratch(str(payload.get("body") or "")[:MAX_EDIT])
+    await _scratch_changed(request, note["id"])
+    return note
 
 
 @app.put("/api/scratch/{note_id}")
-async def save_scratch(note_id: str, payload: dict):
+async def save_scratch(request: Request, note_id: str, payload: dict):
     if not db.update_scratch(note_id, str(payload.get("body") or "")[:MAX_EDIT]):
         return err("note_not_found", 404)
+    await _scratch_changed(request, note_id)
     return {"status": "ok"}
 
 

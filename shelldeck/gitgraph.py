@@ -8,6 +8,7 @@ add lanes for their extra parents, reusing freed columns to keep the
 graph narrow.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -148,3 +149,83 @@ def checkout(path: str, ref: str) -> tuple[bool, str]:
 
 def has_git(path: str) -> bool:
     return (Path(path) / ".git").exists()
+
+
+# ------------------------------------------------------------------ working-tree changes
+
+MAX_DIFF = 200_000  # bytes of diff text sent to the UI
+STATUS_NAME = {"M": "modified", "A": "added", "D": "deleted", "R": "renamed", "C": "copied", "U": "conflict", "?": "untracked", "T": "type changed"}
+
+
+def changes(path: str) -> dict:
+    """Uncommitted changes at a glance: branch, ahead/behind and each changed file with its line counts."""
+    out = _run(path, ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"], timeout=10)
+    branch, ahead, behind, files = "", 0, 0, []
+    entries = out.split("\0")
+    i = 0
+    while i < len(entries):
+        e = entries[i]
+        i += 1
+        if not e:
+            continue
+        if e.startswith("## "):
+            head = e[3:]
+            branch = head.split("...")[0].replace("No commits yet on ", "")
+            ahead = int(m[1]) if (m := re.search(r"ahead (\d+)", head)) else 0
+            behind = int(m[1]) if (m := re.search(r"behind (\d+)", head)) else 0
+            continue
+        x, y, name = e[0], e[1], e[3:]
+        old = None
+        if "R" in (x, y) or "C" in (x, y):
+            old, i = entries[i], i + 1  # -z puts the rename source in the next entry
+        code = "?" if x == "?" else "U" if "U" in (x, y) or (x, y) in (("A", "A"), ("D", "D")) else (x if x != " " else y)
+        files.append({"path": name, "old_path": old, "status": STATUS_NAME.get(code, "modified"), "staged": x not in (" ", "?"),
+                      "unstaged": y not in (" ",), "added": None, "deleted": None})
+    if files:
+        counts: dict[str, tuple[int | None, int | None]] = {}
+        try:
+            numstat = _run(path, ["diff", "HEAD", "--numstat", "-z", "--no-renames"], timeout=10)
+        except GitError:  # no commits yet: compare the index with the empty tree
+            numstat = _run(path, ["diff", "--cached", "--numstat", "-z", "--no-renames"], timeout=10)
+        for rec in numstat.split("\0"):
+            parts = rec.split("\t")
+            if len(parts) == 3:
+                counts[parts[2]] = (None if parts[0] == "-" else int(parts[0]), None if parts[1] == "-" else int(parts[1]))
+        for f in files:
+            if f["path"] in counts:
+                f["added"], f["deleted"] = counts[f["path"]]
+            elif f["status"] == "untracked":
+                f["added"], f["deleted"] = _line_count(Path(path) / f["path"]), 0
+    return {"branch": branch, "ahead": ahead, "behind": behind, "files": files}
+
+
+def _line_count(file: Path) -> int | None:
+    try:
+        data = file.read_bytes()[:MAX_DIFF]
+    except OSError:
+        return None
+    return None if b"\0" in data else data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
+def diff(path: str, file: str) -> dict:
+    """One changed file's diff against HEAD (staged and unstaged together); an untracked file shows as all added.
+    Only paths `git status` reports are accepted, so nothing outside the repo's changes is read."""
+    entry = next((f for f in changes(path)["files"] if f["path"] == file), None)
+    if not entry:
+        return {"file": file, "diff": "", "binary": False, "truncated": False, "missing": True}
+    if entry["status"] == "untracked":
+        target = Path(path) / file
+        try:
+            data = target.read_bytes()
+        except OSError:
+            data = b""
+        if b"\0" in data[:8000]:
+            return {"file": file, "diff": "", "binary": True, "truncated": False}
+        text = data[:MAX_DIFF].decode("utf-8", "replace")
+        body = "".join(f"+{line}\n" for line in text.splitlines())
+        return {"file": file, "diff": f"--- /dev/null\n+++ b/{file}\n{body}", "binary": False, "truncated": len(data) > MAX_DIFF}
+    try:
+        out = _run(path, ["diff", "HEAD", "--no-color", "--no-ext-diff", "--", file], timeout=10)
+    except GitError:
+        out = _run(path, ["diff", "--cached", "--no-color", "--no-ext-diff", "--", file], timeout=10)
+    return {"file": file, "diff": out[:MAX_DIFF], "binary": "Binary files" in out[:2000] and "@@" not in out, "truncated": len(out) > MAX_DIFF}

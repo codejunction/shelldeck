@@ -163,6 +163,20 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_commands_started ON commands(started_at);
 
+            -- remote systems: ssh terminals (typed into a local shell) and rdp desktops (mstsc / xfreerdp)
+            CREATE TABLE IF NOT EXISTS remotes (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                host TEXT NOT NULL,
+                user TEXT NOT NULL DEFAULT '',
+                port INTEGER,
+                identity TEXT NOT NULL DEFAULT '',
+                project_id TEXT,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            );
+
             -- scratchpad: one markdown body per note, the title is its first line
             CREATE TABLE IF NOT EXISTS scratch (
                 id TEXT PRIMARY KEY,
@@ -1019,3 +1033,46 @@ def get_agent_session(session_id: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM agent_sessions WHERE session_id = ?", (session_id,)).fetchone()
         return dict(row) if row else None
+
+
+REMOTE_FIELDS = ("name", "kind", "host", "user", "port", "identity", "project_id")
+
+
+def list_remotes() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM remotes ORDER BY COALESCE(last_used_at, created_at) DESC")]
+
+
+def get_remote(remote_id: str) -> dict | None:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        r = conn.execute("SELECT * FROM remotes WHERE id = ?", (remote_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def save_remote(fields: dict, remote_id: str | None = None) -> dict:
+    """Insert, or update an existing remote; `fields` is already validated."""
+    with _connect() as conn:
+        if remote_id:
+            conn.execute(f"UPDATE remotes SET {', '.join(f'{k} = ?' for k in REMOTE_FIELDS)} WHERE id = ?",
+                         (*[fields.get(k) for k in REMOTE_FIELDS], remote_id))
+        else:
+            remote_id = short_id()
+            conn.execute(f"INSERT INTO remotes (id, created_at, {', '.join(REMOTE_FIELDS)}) VALUES (?, ?, {', '.join('?' * len(REMOTE_FIELDS))})",
+                         (remote_id, _now(), *[fields.get(k) for k in REMOTE_FIELDS]))
+        conn.commit()
+    return get_remote(remote_id)
+
+
+def touch_remote(remote_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE remotes SET last_used_at = ? WHERE id = ?", (_now(), remote_id))
+        conn.commit()
+
+
+def delete_remote(remote_id: str) -> bool:
+    with _connect() as conn:
+        n = conn.execute("DELETE FROM remotes WHERE id = ?", (remote_id,)).rowcount
+        conn.commit()
+    return n > 0

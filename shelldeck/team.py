@@ -170,6 +170,23 @@ Ask the user only when the decision is really theirs.
 When a sub-agent's hand-off is done and you checked its work, ask the user whether to close it, and run
 `sd close <name>` only after they agree (or when they tell you to close it).
 
+## Scratchpad notes (the user's Scratchpad page)
+
+Use notes for things the user should read or keep: a summary, a checklist, findings, a draft. Not for durable
+project facts (use `sd remember`) and never for secrets.
+- `sd notes add "text" --title "Title"` creates a note (markdown; `-` reads stdin for several lines); it appears
+  on the Scratchpad page at once, signed with your name.
+- `sd notes list`, `sd notes show <id>`, `sd notes append <id> "more"`, `sd notes replace <id> "text"`,
+  `sd notes delete <id>` (delete only notes you created, or when the user asks).
+
+## Task manager (CPU, memory, processes per terminal)
+
+- `sd top` shows the machine's CPU/RAM/GPU and every running terminal's usage, busiest process and ports.
+- `sd ps [name]` lists the processes in a terminal (yours by default): pid, CPU, memory, command.
+- `sd kill <name> <pid> [--force]` ends a process inside a terminal and its children (a stuck dev server, a
+  runaway test). Only processes inside shelldeck terminals qualify. Ask the user before ending anything you did
+  not start yourself, and never end another agent.
+
 ## Shared context (it outlives you; the next agent continues from it)
 
 At startup run `sd context`: it shows the active task, current state and next action, project memory,

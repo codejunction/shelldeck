@@ -102,3 +102,39 @@ def test_checkout_reports_git_error(repo):
     ok, message = gitgraph.checkout(str(repo), "no-such-branch")
     assert not ok
     assert message
+
+
+def test_changes_and_diff(tmp_path):
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "a.txt").write_text("one\ntwo\n")
+    (tmp_path / "gone.txt").write_text("x\n")
+    (tmp_path / "old.txt").write_text("r\n" * 20)
+    git("add", ".")
+    git("commit", "-qm", "init")
+    (tmp_path / "a.txt").write_text("one\nTWO\nthree\n")
+    (tmp_path / "gone.txt").unlink()
+    (tmp_path / "new file.txt").write_text("n1\nn2\n")
+    git("mv", "old.txt", "moved.txt")
+    got = gitgraph.changes(str(tmp_path))
+    by = {f["path"]: f for f in got["files"]}
+    assert got["branch"] == "main"
+    assert by["a.txt"]["status"] == "modified" and (by["a.txt"]["added"], by["a.txt"]["deleted"]) == (2, 1)
+    assert by["gone.txt"]["status"] == "deleted"
+    assert by["new file.txt"]["status"] == "untracked" and by["new file.txt"]["added"] == 2
+    assert by["moved.txt"]["status"] == "renamed" and by["moved.txt"]["old_path"] == "old.txt" and by["moved.txt"]["staged"]
+    d = gitgraph.diff(str(tmp_path), "a.txt")
+    assert "+TWO" in d["diff"] and "-two" in d["diff"]
+    assert gitgraph.diff(str(tmp_path), "new file.txt")["diff"].endswith("+n1\n+n2\n")
+    assert gitgraph.diff(str(tmp_path), "../etc/passwd")["missing"]  # only files git reports
+
+
+def test_changes_before_first_commit(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    (tmp_path / "x.py").write_text("print(1)\n")
+    got = gitgraph.changes(str(tmp_path))
+    assert got["branch"] == "main" and got["files"][0]["status"] == "untracked"
