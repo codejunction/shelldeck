@@ -1,7 +1,7 @@
 // Command history page and search across every terminal's output.
 import { S, findSession, orderedProjects, projectColor, sessionTitle, showSession } from "./app.js";
 import { runBookmarks } from "./views.js";
-import { $, api, confirmDialog, dialog, esc, fmtTime, icon, toast, toastError } from "./ui.js";
+import { $, api, confirmDialog, dialog, esc, fmtTime, icon, loadingHTML, toast, toastError } from "./ui.js";
 
 function fmtMs(ms) {
   if (ms == null) return "";
@@ -142,6 +142,7 @@ export function searchAllDialog() {
         return;
       }
       let results;
+      out.innerHTML = loadingHTML("Searching…");
       try {
         results = (await api(`/api/search?q=${encodeURIComponent(q)}`)).results;
       } catch (e) {

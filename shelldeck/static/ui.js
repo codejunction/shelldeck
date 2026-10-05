@@ -9,7 +9,40 @@ export function esc(s) {
 
 export const bus = new EventTarget();
 
-export async function api(path, { method = "GET", body } = {}) {
+// The control the person just clicked (or pressed Enter in) shows a spinner while the request it started runs.
+let trigger = null;
+for (const type of ["click", "keydown"]) {
+  document.addEventListener(type, (e) => {
+    if (type === "keydown" && e.key !== "Enter") return;
+    const el = e.target.closest?.("button, [data-action], [data-act], .menu-item, input, select");
+    if (el) trigger = { el, at: performance.now() };
+  }, true);
+}
+
+function busyOn() {
+  const t = trigger;
+  trigger = null;
+  if (!t || performance.now() - t.at > 400 || !t.el.isConnected) return () => {};
+  const el = t.el;
+  const timer = setTimeout(() => { el.classList.add("busy"); el.setAttribute("aria-busy", "true"); }, 150); // skip a flash on fast replies
+  return () => { clearTimeout(timer); el.classList.remove("busy"); el.removeAttribute("aria-busy"); };
+}
+
+/** Markup for an inline "working on it" row. */
+export function loadingHTML(text = "Loading…") {
+  return `<div class="loading-row" role="status"><span class="spinner sm"></span><span>${esc(text)}</span></div>`;
+}
+
+export async function api(path, opts = {}) {
+  const done = busyOn();
+  try {
+    return await request(path, opts);
+  } finally {
+    done();
+  }
+}
+
+async function request(path, { method = "GET", body } = {}) {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },

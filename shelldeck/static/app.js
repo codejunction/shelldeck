@@ -422,7 +422,7 @@ class Term {
       this.retry = 0;
       this.size = null;
       this.fit(true);
-      if (!this.gotOutput) this.status("Starting shell…");
+      if (!this.gotOutput) this.status("Starting shell…", true);
       this.readyWaiters.splice(0).forEach((r) => r());
     };
     ws.onmessage = (ev) => {
@@ -463,7 +463,7 @@ class Term {
       if (this.closed) return;
       if (ev.code === 4404 || ev.code === 1000) return this.exited();
       if (ev.code === 1008 || ev.code === 4423) return bus.dispatchEvent(new Event("locked")); // logging in reloads the page
-      this.status("Reconnecting…");
+      this.status("Reconnecting…", true);
       const delay = Math.min(10000, 500 * 2 ** this.retry++);
       clearTimeout(this.retryTimer);
       this.retryTimer = setTimeout(() => this.connect(), delay);
@@ -485,7 +485,7 @@ class Term {
     this.connect();
   }
 
-  status(text) {
+  status(text, loading = false) {
     let el = this.el.querySelector(".pane-status");
     if (!text) return el?.remove();
     if (!el) {
@@ -493,7 +493,8 @@ class Term {
       el.className = "pane-status";
       this.el.append(el);
     }
-    el.textContent = text;
+    el.innerHTML = loading ? `<span class="spinner sm"></span>` : "";
+    el.append(text);
   }
 
   send(msg) {

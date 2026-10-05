@@ -17,6 +17,17 @@ export async function renderAgents(el) {
     el.dataset.wired = "1";
     el.addEventListener("click", (e) => onClick(e, el));
     el.addEventListener("change", (e) => onCommand(e, el));
+    el.addEventListener("input", (e) => {
+      const key = e.target.dataset?.tq;
+      if (!key) return;
+      Object.assign(tables[key], { q: e.target.value, limit: PAGE });
+      redrawTable(el, key, 0);
+    });
+    // lazy loading: scrolling near the end of a history table shows the next page
+    el.addEventListener("scroll", (e) => {
+      const box = e.target.closest?.("[data-tbl]");
+      if (box && box.scrollTop + box.clientHeight > box.scrollHeight - 40 && box.querySelector("[data-more]")) moreRows(el, box.dataset.tbl);
+    }, true);
   }
   const kept = keep(el);
   try {
@@ -103,9 +114,13 @@ export async function renderAgents(el) {
 /** Tasks handed between terminals (sd spawn / handoff / done), newest first. */
 function handoffSection() {
   if (!data.handoffs?.length) return "";
-  const rows = data.handoffs
-    .slice(0, 30)
-    .map((h) => {
+  return pagedTable("handoffs", {
+    title: "Hand-offs",
+    sub: "Also in each project's .shelldeck/handoff.md",
+    cols: ["ID", "Status", "From → to", "Task", "Result"],
+    items: data.handoffs,
+    text: (h) => [h.id, h.status, h.from_nick, h.to_nick, h.model, h.task, h.result, S.projects.find((x) => x.id === h.project_id)?.name].join(" "),
+    row: (h) => {
       const p = S.projects.find((x) => x.id === h.project_id);
       return `<tr ${h.to_sid && S.projects.some((x) => x.sessions.some((s) => s.id === h.to_sid)) ? `data-sid="${h.to_sid}" title="Open ${esc(h.to_nick)}'s terminal"` : ""}>
         <td class="mono">${esc(h.id)}</td>
@@ -114,10 +129,8 @@ function handoffSection() {
         <td class="ag-clip" title="${esc(h.task)}">${esc(h.task)}</td>
         <td class="ag-clip" title="${esc(h.result || "")}">${esc(h.result || "") || '<span class="faint">pending</span>'}</td>
       </tr>`;
-    })
-    .join("");
-  return `<div class="ag-head"><h2>Hand-offs</h2><span class="faint">Also in each project's .shelldeck/handoff.md</span></div>
-    <div class="card mon-table"><table><thead><tr><th>ID</th><th>Status</th><th>From → to</th><th>Task</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    },
+  });
 }
 
 /** Agents found elsewhere on this machine: desktop apps, other terminal windows. */
@@ -140,18 +153,21 @@ const SESSION_ID = /^[\w.-]+$/;
 /** Every Devin session (CLI, or hosted by an app), resumable in a terminal in its folder. */
 function devinSection() {
   if (!data.devin_sessions?.length) return "";
-  const rows = data.devin_sessions
-    .map((d) => `<tr>
+  return pagedTable("devin", {
+    title: "Devin sessions",
+    sub: "From Devin's own session store, newest first",
+    cols: ["Session", "Model", "Folder", "Backend", "Last active", ""],
+    items: data.devin_sessions,
+    text: (d) => [d.title, d.id, d.model, d.cwd, d.backend].join(" "),
+    row: (d) => `<tr>
       <td class="ag-clip" title="${esc(d.title || "")}">${esc(d.title || "Untitled")}<br><span class="faint mono">${esc(d.id)}</span></td>
       <td class="mono">${esc(d.model || "")}</td>
       <td class="mono">${esc(d.cwd || "")}</td>
       <td class="faint">${esc(d.backend || "")}</td>
       <td class="faint">${new Date(d.last_activity_at * 1000).toLocaleString()}</td>
       <td>${SESSION_ID.test(d.id) ? `<button class="btn sm" data-resume="${esc(d.id)}">${icon("play")}Resume</button>` : ""}</td>
-    </tr>`)
-    .join("");
-  return `<div class="ag-head"><h2>Devin sessions</h2><span class="faint">From Devin's own session store, newest first</span></div>
-    <div class="card mon-table"><table><thead><tr><th>Session</th><th>Model</th><th>Folder</th><th>Backend</th><th>Last active</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    </tr>`,
+  });
 }
 
 // the page re-renders every 5s: keep picked models, the project and open model lists
@@ -160,6 +176,8 @@ function keep(el) {
     project: el.querySelector("[data-project]")?.value,
     models: Object.fromEntries([...el.querySelectorAll(".ag-card")].map((c) => [c.dataset.key, c.querySelector("[data-model]")?.value])),
     open: new Set([...el.querySelectorAll(".ag-card details[open]")].map((d) => d.closest(".ag-card").dataset.key)),
+    search: el.contains(document.activeElement) && document.activeElement.dataset.tq ? [document.activeElement.dataset.tq, document.activeElement.selectionStart] : null,
+    scroll: Object.fromEntries([...el.querySelectorAll("[data-tbl]")].map((b) => [b.dataset.tbl, b.scrollTop])),
   };
 }
 
@@ -171,6 +189,12 @@ function restore(el, k) {
     if (sel && k.models[c.dataset.key]) sel.value = k.models[c.dataset.key];
     const det = c.querySelector("details");
     if (det && k.open.has(c.dataset.key)) det.open = true;
+  }
+  for (const b of el.querySelectorAll("[data-tbl]")) b.scrollTop = k.scroll[b.dataset.tbl] || 0;
+  const input = k.search && el.querySelector(`[data-tq="${k.search[0]}"]`);
+  if (input) {
+    input.focus();
+    input.setSelectionRange(k.search[1], k.search[1]);
   }
 }
 
@@ -260,6 +284,8 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  const more = e.target.closest("[data-more]")?.dataset.more;
+  if (more) return moreRows(el, more);
   const resume = e.target.closest("[data-resume]")?.dataset.resume;
   if (resume) return resumeDevin(data.devin_sessions.find((d) => d.id === resume));
   const key = e.target.closest("[data-launch]")?.dataset.launch;
@@ -337,13 +363,55 @@ function resumeSection() {
   const sessions = S.projects.flatMap((p) => p.sessions.map((s) => ({ ...s, project: p })));
   const rows = (data.stored || []).filter((r) => !r.running && sessions.some((s) => s.id === r.session_id));
   if (!rows.length) return "";
-  const body = rows
-    .map((r) => {
-      const s = sessions.find((x) => x.id === r.session_id);
+  const of = (r) => sessions.find((x) => x.id === r.session_id);
+  return pagedTable("resume", {
+    title: "Resumable sessions",
+    sub: "Agent conversations shelldeck can start again in their terminal (Settings: resume ask / auto / never).",
+    cols: ["Name", "Agent", "Last state", "Project", ""],
+    items: rows,
+    text: (r) => [of(r).nick, r.agent, r.last_state, of(r).project.name].join(" "),
+    row: (r) => {
+      const s = of(r);
       const action = r.can_resume ? `<button class="btn sm" data-resume-agent="${r.session_id}">Resume</button>` : `<span class="faint">${esc(RESUME_WHY[r.error] || r.error || "")}</span>`;
       return `<tr><td><b>${esc(s.nick || "")}</b></td><td>${esc(r.agent)}</td><td>${esc(r.last_state)}</td><td>${esc(s.project.name)}</td><td>${action}</td></tr>`;
-    })
-    .join("");
-  return `<div class="ag-head"><h2>Resumable sessions</h2><span class="faint">Agent conversations shelldeck can start again in their terminal (Settings: resume ask / auto / never).</span></div>
-    <div class="card mon-table"><table><thead><tr><th>Name</th><th>Agent</th><th>Last state</th><th>Project</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
+    },
+  });
+}
+
+// History tables: fixed height, searchable, PAGE rows at a time (more on scroll or "Load more").
+const PAGE = 25;
+const tables = {}; // key -> { q, limit }, kept across the 5s re-render
+const specs = {}; // key -> { cols, items, row, text } from the latest render
+
+function pagedTable(key, { title, sub = "", ...spec }) {
+  specs[key] = spec;
+  const t = (tables[key] ||= { q: "", limit: PAGE });
+  return `<div class="ag-head"><h2>${title}</h2>${sub ? `<span class="faint tbl-sub">${sub}</span>` : ""}
+      <input type="search" class="tbl-search" data-tq="${key}" value="${esc(t.q)}" placeholder="Search" aria-label="Search ${esc(title)}" /></div>
+    <div class="card mon-table tbl-fixed" data-tbl="${key}">${tableBody(key)}</div>`;
+}
+
+function tableBody(key) {
+  const { cols, items, row, text } = specs[key];
+  const t = tables[key];
+  const q = t.q.trim().toLowerCase();
+  const hits = q ? items.filter((x) => text(x).toLowerCase().includes(q)) : items;
+  const shown = hits.slice(0, t.limit);
+  const rows = shown.map(row).join("") || `<tr><td colspan="${cols.length}" class="faint empty-row">Nothing matches "${esc(t.q.trim())}".</td></tr>`;
+  const foot = hits.length > shown.length
+    ? `<div class="tbl-more"><span class="faint">${shown.length} of ${hits.length}</span><button class="btn sm" data-more="${key}">Load more</button></div>`
+    : hits.length > PAGE ? `<div class="tbl-more faint">All ${hits.length} shown</div>` : "";
+  return `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>${foot}`;
+}
+
+function redrawTable(el, key, top) {
+  const box = el.querySelector(`[data-tbl="${key}"]`);
+  if (!box) return;
+  box.innerHTML = tableBody(key);
+  box.scrollTop = top;
+}
+
+function moreRows(el, key) {
+  tables[key].limit += PAGE;
+  redrawTable(el, key, el.querySelector(`[data-tbl="${key}"]`)?.scrollTop || 0);
 }
