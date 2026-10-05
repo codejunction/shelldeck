@@ -66,7 +66,7 @@ def test_remote_crud_and_ssh_connect(client, tmp_path, monkeypatch):
     assert client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app; rm -rf /"}).json()["error"] == "invalid_remote_path"
     app = client.post("/api/projects", json={"remote_id": r["id"], "path": "/srv/app/"}).json()
     assert app["name"] == "app" and app["remote_path"] == "/srv/app" and app["id"] != pid
-    sess = client.post("/api/sessions", json={"project_id": app["id"], "shell": "bash"}).json()
+    sess = {**client.post("/api/sessions", json={"project_id": app["id"]}).json(), "shell": "bash"}  # bash isn't a kind on Windows
     assert server._remote_line(sess) == "ssh -t -l dev srv 'cd /srv/app && exec $SHELL -l'"
     assert server._remote_line({**sess, "shell": "cmd"}) == 'ssh -t -l dev srv "cd /srv/app && exec $SHELL -l"'
     assert server._remote_line(client.post("/api/sessions", json={"project_id": pid}).json()) is None  # local project
@@ -91,13 +91,14 @@ def test_end_only_ends_processes_inside_the_terminal():
             if len(kids) >= 2:
                 break
             time.sleep(0.1)
+        # Windows: a venv python.exe is a launcher, so each level may be two processes; any direct child will do
         child = psutil.Process(shell.pid).children()[0].pid
         listed = {p["pid"] for p in stats.processes(shell.pid)}
         assert child in listed and shell.pid not in listed
         assert stats.end(shell.pid, shell.pid) == "not_in_terminal"  # never the shell itself
         assert stats.end(shell.pid, psutil.Process().pid) == "not_in_terminal"  # nor anything outside it
         assert stats.end(shell.pid, child) == "ended"
-        left = [p for p in psutil.Process(shell.pid).children(recursive=True) if p.status() != psutil.STATUS_ZOMBIE]
+        left = [p for p in psutil.Process(shell.pid).children(recursive=True) if stats._running(p)]  # gone or zombie: ended
         assert not left  # its child went too (zombies: this stand-in shell doesn't reap, a real one does)
         assert shell.poll() is None  # the shell keeps running
     finally:
