@@ -4,6 +4,18 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-05
+
+### Fixed
+
+- AI agents page: clicking an agent or hand-off row, *Open next*, *Copy team prompt* and *Install skill* did nothing (their handlers were lost in 0.0.7).
+- An integration's first report, sent before the 2s watcher had seen the agent, was dropped when the watcher caught up, so a fresh agent showed the screen guess until its next hook event. `sd agent prompt/wait/cmd/extract` right after a launch no longer fail with `no_agent_running`.
+- Resume runs the stored executable (`cursor-agent`, `agy`), with Claude Code's per-run `--settings` before the resume arguments.
+- A stored agent session kept the state from before each report and never updated it, so *Resumable sessions* showed a stale "last" state.
+- Claude Code's `AskUserQuestion` and `ExitPlanMode` count as blocked (question / approval), not working.
+- "Done, not seen" now also marks agents that finish while the tab is hidden or on another page, and focusing the pane clears it.
+- Devin's `notebook_edit` is captured as a file edit. Installing into a config with comments or trailing commas says so instead of only "not plain JSON".
+
 ## [0.0.7] - 2026-10-04
 
 ### Added
@@ -149,7 +161,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.8
 [0.0.7]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.7
 [0.0.6]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.6
 [0.0.5]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.5
