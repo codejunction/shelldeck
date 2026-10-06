@@ -2,7 +2,7 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.0.10] - 2026-10-06
 
 ### Added
 
@@ -179,6 +179,7 @@ First public release.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
 [Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.9...HEAD
+[0.0.10]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.10
 [0.0.9]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.9
 [0.0.8]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.8
 [0.0.7]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.7
