@@ -4,6 +4,7 @@ import { startMonitor } from "./monitor.js";
 import { searchAllDialog } from "./history.js";
 import { showGitGraph } from "./gitgraph.js";
 import { openFile } from "./editor.js";
+import { scratchChanged } from "./scratch.js";
 import { canShare, initShare, setShareState, shareDialog } from "./share.js";
 
 // ------------------------------------------------------------------ state
@@ -22,6 +23,9 @@ export const S = {
   view: "terminals",
   collapsed: new Set(store.get("collapsed", [])),
   order: store.get("order", []),
+  machine: store.get("machine", "local"), // "local" or a remote id: which machine's projects the sidebar shows
+  remotes: [], // saved SSH (Linux) machines (/api/remotes)
+  desktops: [], // saved RDP (Windows) machines
   unread: new Set(),
   ports: {}, // sid -> listening TCP ports, from the stats poller
   agents: {}, // sid -> {key, label, model, context}: AI coding agent running in it, from the stats poller
@@ -68,7 +72,71 @@ export function sessionTitle(s) {
 
 function focusedProject() {
   const s = S.focused && findSession(S.focused);
-  return s?.project || orderedProjects()[0] || null;
+  return (s && onMachine(s.project) ? s.project : null) || machineProjects()[0] || null;
+}
+
+// ------------------------------------------------------------------ machines
+
+/** Does a project belong to the machine picked in the sidebar? */
+export function onMachine(p) {
+  return (p?.remote_id || "local") === S.machine;
+}
+
+/** Is this terminal in a project of the picked machine? (agents list, counts) */
+export function sessionOnMachine(sid) {
+  return onMachine(findSession(sid)?.project);
+}
+
+export function machineProjects() {
+  return orderedProjects().filter(onMachine);
+}
+
+function machineName(id = S.machine) {
+  return id === "local" ? "Local" : S.remotes.find((r) => r.id === id)?.name || "Machine";
+}
+
+function renderMachine() {
+  const b = $("#machine");
+  if (!b) return;
+  const r = S.remotes.find((x) => x.id === S.machine);
+  b.querySelector(".m-name").textContent = machineName();
+  b.querySelector(".m-sub").textContent = r ? `${r.user ? `${r.user}@` : ""}${r.host}` : "this computer";
+  b.classList.toggle("remote", !!r);
+}
+
+export function setMachine(id) {
+  S.machine = id === "local" || S.remotes.some((r) => r.id === id) ? id : "local";
+  store.set("machine", S.machine);
+  renderMachine();
+  renderSidebar();
+  if (S.view === "agents") views.show("agents", $("#view-agents"));
+}
+
+async function machineMenu(anchor) {
+  const { addMachineDialog, connect } = await import("./remotes.js");
+  menu(anchor, [
+    { label: "Local (this computer)", icon: S.machine === "local" ? "play" : "terminal", onClick: () => setMachine("local") },
+    ...S.remotes.map((r) => ({ label: r.name, hint: `${r.user ? `${r.user}@` : ""}${r.host}`, icon: S.machine === r.id ? "play" : "share", onClick: () => setMachine(r.id) })),
+    ...(S.desktops.length ? ["sep", ...S.desktops.map((r) => ({ label: `${r.name} (remote desktop)`, hint: r.host, icon: "external", onClick: () => connect(r.id) }))] : []),
+    "sep",
+    { label: "Add machine…", icon: "plus", onClick: () => addMachineDialog(async (r) => { await refreshProjects(); setMachine(r.id); toast({ title: `${r.name} added`, body: "Its root folder (/) is a project; New terminal opens a shell there. Add more folders with the folder button." }); }) },
+    { label: "Manage machines", icon: "settings", onClick: () => switchView("remotes") },
+  ]);
+}
+
+/** Add project: a local folder (folder browser), or a folder path on the picked remote machine. */
+async function addProject() {
+  if (S.machine === "local") return views.addProjectDialog();
+  const path = await promptDialog(`Add a folder on ${machineName()}`, "~/", { label: "Folder on the remote machine (e.g. ~/code/app or /srv/app)", ok: "Add" });
+  if (!path) return;
+  try {
+    const p = await api("/api/projects", { method: "POST", body: { remote_id: S.machine, path } });
+    await refreshProjects();
+    S.collapsed.delete(p.id);
+    renderSidebar();
+  } catch (e) {
+    toastError(e);
+  }
 }
 
 // ------------------------------------------------------------------ theme
@@ -915,9 +983,11 @@ function buildPane(sid) {
   pane.dataset.sid = sid;
   pane.innerHTML = `<div class="pane-head" draggable="true" title="Drag to move or split">
       ${icon("terminal")}
-      <span class="title">${s?.nick ? `<b class="nick" title="Terminal name: sd peek/tell ${esc(s.nick)}">${esc(s.nick)}</b>` : ""}${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}</small></span>
+      <span class="title">${s?.nick ? `<b class="nick" title="Terminal name: sd peek/tell ${esc(s.nick)}">${esc(s.nick)}</b>` : ""}${esc(s ? sessionTitle(s) : sid)}<span class="cmd${S.terms.get(sid)?.exit ? " fail" : ""}" title="${esc(S.terms.get(sid)?.cmd || "")}">${esc(shortCmd(S.terms.get(sid)?.cmd))}</span><small>${esc(s?.project.name || "")}${s?.project.remote_id ? ` · ${esc(machineName(s.project.remote_id))}` : ""}</small></span>
       <span class="agent">${agentChip(sid)}</span>
       <span class="ports">${portChips(sid)}</span>
+      <button class="icon-btn sm" data-pane="replay" title="Replay last command (Ctrl+Alt+P)" aria-label="Replay last command">${icon("refresh")}</button>
+      <button class="icon-btn sm" data-pane="bg" title="Send to background: keeps running, reopen from the sidebar (Ctrl+Alt+W)" aria-label="Send to background">${icon("eye-off")}</button>
       <button class="icon-btn sm" data-pane="max" title="Maximize (Ctrl+Alt+Enter)" aria-label="Maximize">${icon($("#app").classList.contains("maximized") ? "minimize" : "maximize")}</button>
       <button class="icon-btn sm" data-pane="menu" title="More" aria-label="More">${icon("more")}</button>
       <button class="icon-btn sm danger" data-pane="kill" title="Close terminal (Ctrl+Alt+Q)" aria-label="Close terminal">${icon("x")}</button>
@@ -930,8 +1000,10 @@ function buildPane(sid) {
     setFocus(sid);
     if (!b) return;
     if (b.dataset.pane === "max") toggleMaximize();
-    if (b.dataset.pane === "kill") killSession(sid);
+    if (b.dataset.pane === "kill") closeTerminal(sid);
     if (b.dataset.pane === "menu") paneMenu(b, sid);
+    if (b.dataset.pane === "replay") replayLast(sid);
+    if (b.dataset.pane === "bg") hidePane(sid);
   });
   head.addEventListener("dblclick", (e) => {
     if (!e.target.closest("button")) toggleMaximize();
@@ -1078,7 +1150,8 @@ function paneMenu(anchor, sid) {
     { label: "Rename", icon: "pencil", onClick: () => renameSession(sid) },
     { label: "Split right", icon: "split-h", hint: "Ctrl+Alt+\\", onClick: () => splitNew("row", sid) },
     { label: "Split down", icon: "split-v", hint: "Ctrl+Alt+-", onClick: () => splitNew("col", sid) },
-    { label: "Hide pane (keep running)", icon: "eye", onClick: () => hidePane(sid) },
+    { label: "Replay last command", icon: "refresh", hint: "Ctrl+Alt+P", onClick: () => replayLast(sid) },
+    { label: "Send to background (keep running)", icon: "eye-off", hint: "Ctrl+Alt+W", onClick: () => hidePane(sid) },
     { label: "Paste shared clipboard", icon: "clipboard", onClick: () => S.terms.get(sid)?.send({ type: "clipboard_get" }) },
     { label: "Copy selection to shared clipboard", icon: "clipboard", onClick: () => copyToShared(sid) },
     "sep",
@@ -1207,6 +1280,15 @@ function autoSplitDir() {
 
 export async function newTerminal(projectId, shell = "", { split } = {}) {
   const project = S.projects.find((p) => p.id === projectId) || focusedProject();
+  if (!project && S.machine !== "local") {  // a machine with no folders yet: a shell in its home
+    try {
+      const r = await api(`/api/remotes/${S.machine}/connect`, { method: "POST", body: {} });
+      await refreshProjects();
+      return showSession(r.session.id, { split: split === undefined ? autoSplitDir() : split });
+    } catch (e) {
+      return toastError(e);
+    }
+  }
   if (!project) return views.addProjectDialog();
   try {
     const s = await api("/api/sessions", { method: "POST", body: { project_id: project.id, shell } });
@@ -1224,9 +1306,49 @@ function splitNew(dir, sid = S.focused) {
   return newTerminal(s?.project.id, s?.shell || "", { split: dir });
 }
 
+/** Take a pane off the screen; its shell and whatever runs in it keep going. The sidebar row brings it back. */
 function hidePane(sid) {
+  const t = S.terms.get(sid);
   removeLeaf(sid);
   renderLayout();
+  renderSidebar();
+  const s = findSession(sid);
+  toast({ title: t?.running ? `Running in background: ${shortCmd(t.running.cmd)}` : "Sent to background", body: `${s?.nick || ""} stays in the sidebar; click it to bring it back.`,
+    actions: [{ label: "Show", onClick: () => showSession(sid) }] });
+}
+
+/** Run the terminal's last command again (refused while one is running or an agent owns the terminal). */
+function replayLast(sid) {
+  const t = S.terms.get(sid);
+  if (!t?.cmd) return toast({ title: "No command to replay yet" });
+  if (t.running) return toast({ title: "A command is still running", body: shortCmd(t.running.cmd), kind: "warn" });
+  if (S.agents[sid]) return toast({ title: "An AI agent runs here", body: "Replaying would type into it.", kind: "warn" });
+  t.send({ type: "input", data: `${t.cmd}\r` });
+  t.focus();
+}
+
+/** Close, or offer the background when a command is still running in it. */
+async function closeTerminal(sid) {
+  const t = S.terms.get(sid);
+  if (!t?.running || S.agents[sid]) return killSession(sid);
+  const choice = await new Promise((resolve) => {
+    let picked = null;
+    const d = dialog({
+      title: "A command is still running",
+      body: `<p class="muted" style="margin:0"><code>${esc(shortCmd(t.running.cmd))}</code> is running. Keep it going in the background, or stop it and close the terminal?</p>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn danger" data-pick="kill">Stop and close</button><button class="btn primary" data-pick="bg">Keep in background</button>`,
+      onClose: () => resolve(picked),
+    });
+    d.el.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-pick]");
+      if (!b) return;
+      picked = b.dataset.pick;
+      d.close();
+    });
+    setTimeout(() => $("[data-pick=bg]", d.el)?.focus(), 0);
+  });
+  if (choice === "bg") hidePane(sid);
+  if (choice === "kill") killSession(sid);
 }
 
 async function killSession(sid) {
@@ -1297,8 +1419,12 @@ export function orderedProjects() {
 
 export async function refreshProjects() {
   try {
-    const { projects } = await api("/api/projects");
+    const [{ projects }, { remotes }] = await Promise.all([api("/api/projects"), api("/api/remotes").catch(() => ({ remotes: [...S.remotes, ...S.desktops] }))]);
     S.projects = projects;
+    S.remotes = remotes.filter((r) => r.kind === "ssh"); // Linux machines: their projects and terminals
+    S.desktops = remotes.filter((r) => r.kind === "rdp"); // Windows machines: a remote desktop, opened from the picker
+    if (S.machine !== "local" && !S.remotes.some((r) => r.id === S.machine)) setMachine("local");
+    renderMachine();
     setOnline(true);
   } catch (e) {
     if (e.message !== "locked") setOnline(false);
@@ -1330,9 +1456,11 @@ export function renderSidebar() {
   const nav = $("#projects");
   if (!firstSidebar) nav.classList.add("settled");
   const visible = new Set(leaves());
-  const projects = orderedProjects();
+  const projects = machineProjects();
   if (!projects.length) {
-    nav.innerHTML = `<div class="sb-empty">No projects yet. Add a folder to get started.</div>`;
+    nav.innerHTML = S.machine === "local"
+      ? `<div class="sb-empty">No projects yet. Add a folder to get started.</div>`
+      : `<div class="sb-empty">No folders on ${esc(machineName())} yet. <b>New terminal</b> opens a shell in its home; the folder button adds a project there.</div>`;
     return;
   }
   nav.innerHTML = projects
@@ -1343,9 +1471,10 @@ export function renderSidebar() {
         <span class="proj-dot" style="background:${projectColor(p)}"></span>
         <span class="name">${esc(p.name)}</span>
         ${rollupChip(p)}
+        ${p.git_changes ? `<button class="git-chg" data-act="changes" title="${p.git_changes} changed file${p.git_changes > 1 ? "s" : ""}: show changes" aria-label="Show git changes">±${p.git_changes}</button>` : ""}
         <span class="count">${p.sessions.length || ""}</span>
         <span class="row-actions">
-          ${p.has_git ? `<button class="icon-btn sm" data-act="git" title="Git graph" aria-label="Git graph">${icon("git-branch")}</button>` : ""}
+          ${p.has_git ? `<button class="icon-btn sm" data-act="git" title="Git: changes and history" aria-label="Git">${icon("git-branch")}</button>` : ""}
           <button class="icon-btn sm" data-act="new" title="New ${esc(shellLabel(""))} terminal" aria-label="New terminal">${icon("plus")}</button>
           <button class="icon-btn sm" data-act="menu" title="More" aria-label="Project actions">${icon("more")}</button>
         </span>
@@ -1356,6 +1485,7 @@ export function renderSidebar() {
             (s) => `<div class="sess-row ${S.unread.has(s.id) ? "unread" : ""} ${visible.has(s.id) ? "visible" : ""} ${s.id === S.focused && S.view === "terminals" ? "active" : ""}" data-sid="${s.id}" draggable="true" data-act="open" title="${esc(s.cwd || "")}">
               ${sessionMark(s)}
               <span class="name">${s.nick ? `<b class="nick">${esc(s.nick)}</b>` : ""}${esc(sessionTitle(s))}</span>
+              ${!visible.has(s.id) && S.terms.get(s.id)?.running ? `<span class="bg-chip" title="Running in the background: ${esc(S.terms.get(s.id).running.cmd)}">running</span>` : ""}
               <span class="badge">${esc(shellLabel(s.shell))}</span>
               <span class="row-actions">
                 <button class="icon-btn sm" data-act="smenu" title="More" aria-label="Terminal actions">${icon("more")}</button>
@@ -1483,6 +1613,10 @@ function wireSidebar() {
         e.stopPropagation();
         showGitGraph(p);
         break;
+      case "changes":
+        e.stopPropagation();
+        showGitGraph(p, "changes");
+        break;
       case "menu":
         e.stopPropagation();
         projectMenu(act, p);
@@ -1501,7 +1635,7 @@ function wireSidebar() {
         break;
       case "kill":
         e.stopPropagation();
-        killSession(sid);
+        closeTerminal(sid);
         break;
     }
   });
@@ -1600,12 +1734,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", agents: "AI agents", scratch: "Scratchpad", context: "Context" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", remotes: "Remote systems", agents: "AI agents", scratch: "Scratchpad", context: "Context" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "remotes", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   if ($("#sb-more .sb-link.active")) $("#sb-more").open = true; // a view inside "More" keeps it open
   $("#term-actions").hidden = view !== "terminals";
@@ -1745,6 +1879,10 @@ function commandPalette() {
     ["Split right", "split-h", () => splitNew("row"), "Ctrl+Alt+\\"],
     ["Split down", "split-v", () => splitNew("col"), "Ctrl+Alt+-"],
     ["Toggle maximize pane", "maximize", () => toggleMaximize(), "Ctrl+Alt+Enter"],
+    ["Replay last command", "refresh", () => S.focused && replayLast(S.focused), "Ctrl+Alt+P"],
+    ["Send terminal to background", "eye-off", () => S.focused && hidePane(S.focused), "Ctrl+Alt+W"],
+    ["Git changes", "git-branch", () => gitOfFocused()],
+    ["Remote systems", "share", () => switchView("remotes")],
     ["Layout: tiled (fit window)", "split-h", () => views.saveSettings({ layout_mode: "tiled" })],
     ["Layout: free windows", "grid", () => views.saveSettings({ layout_mode: "free" })],
     ["Tile all windows", "grid", () => (isFree() ? tileAll() : toast({ title: "Tiling applies to the free layout" }))],
@@ -1771,6 +1909,12 @@ function commandPalette() {
   palette({ items, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
 }
 
+function gitOfFocused() {
+  const p = findSession(S.focused)?.project || orderedProjects().find((x) => x.has_git);
+  if (!p?.has_git) return toast({ title: "No git project here" });
+  showGitGraph(p, "changes");
+}
+
 async function openFileDialog() {
   const path = await promptDialog("Open file", "", { label: "Path (relative to the focused terminal's folder)", ok: "Open" });
   if (path) openFile(path, { sid: S.focused || "" });
@@ -1784,7 +1928,9 @@ function shortcutsDialog() {
     ["Ctrl+Alt+Arrows", "Focus pane in direction"],
     ["Ctrl+Alt+1…9", "Focus pane 1–9"],
     ["Ctrl+Alt+Enter", "Maximize / restore pane"],
-    ["Ctrl+Alt+Q", "Close focused terminal"],
+    ["Ctrl+Alt+Q", "Close focused terminal (offers the background if a command runs)"],
+    ["Ctrl+Alt+P", "Replay the last command"],
+    ["Ctrl+Alt+W", "Send terminal to background (keeps running)"],
     ["Ctrl+Alt+B", "Bookmark picker (Space selects several)"],
     ["Ctrl+Alt+E", "Toggle sidebar"],
     ["Ctrl+Alt+S  /  Ctrl+Alt+T", "Scheduler / Tasks"],
@@ -1812,7 +1958,7 @@ function shortcutsDialog() {
 function isAppShortcut(e) {
   const k = e.key.toLowerCase();
   if (e.ctrlKey && e.shiftKey && !e.altKey && (k === "p" || k === "f")) return true;
-  if (e.ctrlKey && e.altKey && !e.shiftKey) return /^(n|b|e|s|t|m|r|l|h|q|,|\\|-|enter|arrow(left|right|up|down)|[1-9])$/.test(k);
+  if (e.ctrlKey && e.altKey && !e.shiftKey) return /^(n|b|e|s|t|m|r|l|h|q|p|w|,|\\|-|enter|arrow(left|right|up|down)|[1-9])$/.test(k);
   return false;
 }
 
@@ -1839,7 +1985,9 @@ function onKey(e) {
     r: () => switchView(S.view === "history" ? "terminals" : "history"),
     l: () => lockNow(),
     h: () => shortcutsDialog(),
-    q: () => S.focused && killSession(S.focused),
+    q: () => S.focused && closeTerminal(S.focused),
+    p: () => S.focused && replayLast(S.focused),
+    w: () => S.focused && hidePane(S.focused),
     ",": () => views.settingsDialog(),
     "\\": () => splitNew("row"),
     "-": () => splitNew("col"),
@@ -1943,6 +2091,7 @@ function connectAlarms() {
     if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
     if (msg.type === "spawned") openSpawned(msg.session_id);
     if (msg.type === "share_state") setShareState(msg.state);
+    if (msg.type === "scratch") scratchChanged();
     if (msg.type === "agent_state") {
       S.serverAgentState[msg.session_id] = msg.state;
       if (msg.status) {
@@ -2023,7 +2172,8 @@ function wireGlobal() {
     if (act === "toggle-sidebar") toggleSidebar();
     else if (act === "new-terminal") newTerminal();
     else if (act === "palette") commandPalette();
-    else if (act === "add-project") views.addProjectDialog();
+    else if (act === "add-project") addProject();
+    else if (act === "machine") machineMenu(a);
     else if (act === "view") switchView(S.view === a.dataset.view ? "terminals" : a.dataset.view);
     else if (act === "settings") views.settingsDialog();
     else if (act === "split") splitNew(a.dataset.dir);

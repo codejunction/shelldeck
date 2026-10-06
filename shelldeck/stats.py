@@ -135,3 +135,61 @@ def collect(sessions: dict[str, int]) -> dict:
         },
         "sessions": per,
     }
+
+
+def processes(shell_pid: int) -> list[dict]:
+    """Every process a terminal's shell started (not the shell): pid, parent, name, CPU, memory, a short command line."""
+    try:
+        kids = _proc(shell_pid).children(recursive=True)
+    except psutil.Error:
+        return []
+    out = []
+    for p in kids:
+        try:
+            p = _proc(p.pid)
+            with p.oneshot():
+                cmd = " ".join(p.cmdline())
+                out.append({"pid": p.pid, "ppid": p.ppid(), "name": p.name(), "cpu": round(p.cpu_percent(None) / NCPU, 1),
+                            "mem": p.memory_info().rss, "started": p.create_time(), "cmd": cmd[:300]})
+        except psutil.Error:
+            continue
+    return out
+
+
+def end(shell_pid: int, pid: int, force: bool = False) -> str:
+    """Stop one process under a terminal's shell, and its children. 'ended' | 'killed' | 'not_in_terminal' | 'gone'.
+    Only descendants of that shell qualify: never the shell itself, shelldeck, or anything else on the machine."""
+    try:
+        shell = psutil.Process(shell_pid)
+        if pid not in {p.pid for p in shell.children(recursive=True)}:
+            return "not_in_terminal"
+        target = psutil.Process(pid)
+        group = [*target.children(recursive=True), target]
+    except psutil.NoSuchProcess:
+        return "gone"
+    except psutil.Error:
+        return "not_in_terminal"
+    for p in group:
+        try:
+            p.kill() if force else p.terminate()
+        except psutil.Error:
+            pass
+    deadline = time.monotonic() + 3
+    while (alive := [p for p in group if _running(p)]) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if alive and not force:
+        for p in alive:
+            try:
+                p.kill()
+            except psutil.Error:
+                pass
+        return "killed"
+    return "killed" if force else "ended"
+
+
+def _running(p: psutil.Process) -> bool:
+    """A stopped process its parent hasn't reaped yet (a zombie) counts as ended."""
+    try:
+        return p.status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False

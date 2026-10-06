@@ -1,5 +1,5 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
-import { ATTENTION, S, attentionOf, orderedProjects, projectColor, refreshProjects, showSession } from "./app.js";
+import { ATTENTION, S, attentionOf, machineProjects, projectColor, refreshProjects, sessionOnMachine, showSession } from "./app.js";
 import { api, esc, icon, promptDialog, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
@@ -40,7 +40,8 @@ export async function renderAgents(el) {
     return toastError(e);
   }
   const rank = (r) => ATTENTION.indexOf(attentionOf(r.session_id) || r.status?.state || "unknown");
-  const ordered = [...data.running].sort((a, b) => rank(a) - rank(b));
+  // the machine picked in the sidebar: its terminals' agents only
+  const ordered = data.running.filter((r) => sessionOnMachine(r.session_id)).sort((a, b) => rank(a) - rank(b));
   const blocked = ordered.filter((r) => attentionOf(r.session_id) === "blocked");
   const done = ordered.filter((r) => attentionOf(r.session_id) === "done");
   const banner = blocked.length || done.length
@@ -63,9 +64,11 @@ export async function renderAgents(el) {
           </tr>`;
         })
         .join("")
-    : `<tr><td colspan="7" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`;
+    : S.machine === "local"
+      ? `<tr><td colspan="7" class="faint empty-row">No agent is running. Launch one below, or run claude, codex, devin... in any terminal.</td></tr>`
+      : `<tr><td colspan="7" class="faint empty-row">No agent detected on this machine. Agents running inside an SSH session aren't detected yet (process detection only sees this computer).</td></tr>`;
 
-  const projects = orderedProjects();
+  const projects = machineProjects().filter((p) => !p.remote_id); // launching is local-only for now
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
   const projectOpts = projects.map((p) => `<option value="${p.id}" ${p === current ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   const known = [...data.agents].sort((a, b) => b.installed - a.installed);

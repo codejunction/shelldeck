@@ -33,6 +33,7 @@
           <div class="brand"><img src="/static/icon.svg" alt="" width="18" height="18" /> shelldeck</div>
           <button class="icon-btn" data-action="toggle-sidebar" title="Hide sidebar (Ctrl+Alt+E)" aria-label="Hide sidebar"><i data-icon="panel"></i></button>
         </div>
+        <button id="machine" class="sb-machine" data-action="machine" title="Machine: its projects, terminals and agents" aria-haspopup="menu"><i data-icon="terminal"></i><span class="m-text"><span class="m-name">Local</span><span class="m-sub">this computer</span></span><i data-icon="chevron"></i></button>
         <button class="sb-new" data-action="new-terminal"><i data-icon="plus"></i><span>New terminal</span><kbd>Ctrl Alt N</kbd></button>
         <button class="sb-search" data-action="palette"><i data-icon="search"></i><span>Search</span><kbd>Ctrl K</kbd></button>
         <div class="sb-section">
@@ -52,6 +53,7 @@
               <button class="sb-link" data-action="view" data-view="tasks"><i data-icon="kanban"></i>Tasks</button>
               <button class="sb-link" data-action="view" data-view="history"><i data-icon="history"></i>History</button>
               <button class="sb-link" data-action="view" data-view="monitor"><i data-icon="activity"></i>Task manager</button>
+              <button class="sb-link" data-action="view" data-view="remotes"><i data-icon="share"></i>Remote systems</button>
               <button class="sb-link" data-action="view" data-view="devices"><i data-icon="devices"></i>Devices</button>
               <button class="sb-link" data-action="view" data-view="scratch"><i data-icon="note"></i>Scratchpad</button>
             </div>
@@ -100,6 +102,7 @@
         <section id="view-monitor" class="view page" hidden></section>
         <section id="view-history" class="view page" hidden></section>
         <section id="view-devices" class="view page" hidden></section>
+        <section id="view-remotes" class="view page" hidden></section>
         <section id="view-agents" class="view page" hidden></section>
         <section id="view-scratch" class="view page" hidden></section>
         <section id="view-context" class="view page" hidden></section>

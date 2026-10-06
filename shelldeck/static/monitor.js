@@ -1,5 +1,5 @@
 // Resource usage: top-bar meters and the Task manager page. One poller feeds both.
-import { S, agentChip, ctxPct, findSession, fmtTokens, isSubAgent, portChips, projectColor, renderSidebar, sessionTitle, shellLabel, showSession, updateAgentStates } from "./app.js";
+import { S, agentChip, ctxPct, findSession, fmtTokens, isSubAgent, portChips, projectColor, renderSidebar, sessionTitle, shellLabel, showSession, updateAgentStates, sessionOnMachine } from "./app.js";
 import { $, api, esc } from "./ui.js";
 
 const POLL_MS = 2000;
@@ -50,9 +50,10 @@ function updateAgents() {
   if (JSON.stringify([S.agents, S.agentState]) === before) return;
   // AI agents nav link: how many run, amber when one needs you
   const count = $(".sb-agents .sb-count");
-  const needs = Object.keys(next).filter((sid) => S.agentState[sid] === "approval" && !isSubAgent(sid)).length;
-  count.hidden = !Object.keys(next).length;
-  count.textContent = needs ? `${needs} need${needs > 1 ? "" : "s"} you` : Object.keys(next).length;
+  const here = Object.keys(next).filter(sessionOnMachine); // the machine picked in the sidebar
+  const needs = here.filter((sid) => S.agentState[sid] === "approval" && !isSubAgent(sid)).length;
+  count.hidden = !here.length;
+  count.textContent = needs ? `${needs} need${needs > 1 ? "" : "s"} you` : here.length;
   count.classList.toggle("needs", !!needs);
   for (const pane of document.querySelectorAll(".pane[data-sid]")) {
     pane.classList.toggle("ai", !!next[pane.dataset.sid]);
