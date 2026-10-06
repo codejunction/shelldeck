@@ -218,19 +218,19 @@ export function confirmDialog(message, { ok = "Confirm", danger = false } = {}) 
   });
 }
 
-export function promptDialog(title, value = "", { label = "Name", ok = "Save" } = {}) {
+export function promptDialog(title, value = "", { label = "Name", ok = "Save", optional = false } = {}) {
   return new Promise((resolve) => {
     let result = null;
     const d = dialog({
       title,
-      body: `<form><label class="field"><span>${esc(label)}</span><input type="text" name="v" value="${esc(value)}" autofocus required /></label></form>`,
+      body: `<form><label class="field"><span>${esc(label)}</span><input type="text" name="v" value="${esc(value)}" autofocus ${optional ? "" : "required"} /></label></form>`,
       foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-ok>${esc(ok)}</button>`,
       onClose: () => resolve(result),
     });
     const submit = (e) => {
       e?.preventDefault();
       const v = $("input", d.el).value.trim();
-      if (!v) return;
+      if (!v && !optional) return;
       result = v;
       d.close();
     };

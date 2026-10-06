@@ -130,7 +130,7 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 
 ### Plugins
 
-A plugin is a Python package that adds commands. Its commands show up in the `?` menu (`?docker ps`, `?docker logs web`) and in the CLI (`sd docker ps`). A command either returns text, which shelldeck shows, or a command line, which shelldeck types at the prompt without pressing Enter. Plugins can also react to shelldeck's events (`agent.*`, `handoff.*`, ...).
+A plugin is a Python package that adds commands. Its commands show up in the `?` menu (`?docker ps`, `?docker logs web`) and in the CLI (`sd docker ps`). A command either returns text, which shelldeck shows, or a command line, which shelldeck types at the prompt without pressing Enter. Plugins can also react to shelldeck's events (`agent.*`, `handoff.*`, ...). Ask knows the installed plugin commands too: "follow the logs of the web container" can come back as the plugin's `docker logs web`.
 
 ```python
 # pyproject.toml: [project.entry-points."shelldeck.plugins"]  docker = "shelldeck_docker:plugin"
@@ -138,12 +138,12 @@ from shelldeck.plugins import Plugin
 
 plugin = Plugin("docker", "0.1.0")
 
-@plugin.command("logs", "Follow a container's logs")
+@plugin.command("logs", "Follow a container's logs", usage="<container>")
 def logs(args, ctx):  # ctx: session_id, cwd, shell, project
     return {"input": "docker logs -f " + " ".join(args)}
 ```
 
-Install a plugin into shelldeck's environment, for example `uv tool install shelldeck --with ./examples/shelldeck-docker` (the reference plugin), then restart shelldeck. `sd plugin list` shows what loaded (or why not), and `sd plugin disable NAME` stops loading one. Plugins run inside the server with your permissions, like any package you install, so only install ones you trust.
+Install a plugin into shelldeck's environment, for example `uv tool install shelldeck --with ./examples/shelldeck-docker` (the reference plugin), then restart shelldeck. The *Plugins* page (sidebar, *More*) shows each plugin's status (or why it failed to load), its commands with a *Run* button and the events it listens to, and turns plugins on or off; `sd plugin list` and `sd plugin disable NAME` do the same from the CLI. Plugins run inside the server with your permissions, like any package you install, so only install ones you trust. [Writing a plugin](docs/plugins.md) covers the API, arguments (`usage="<container>"`), results, events and troubleshooting.
 
 ### Secure by default
 

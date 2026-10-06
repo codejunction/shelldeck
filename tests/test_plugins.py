@@ -25,6 +25,11 @@ def boom(args, ctx):
     raise RuntimeError("nope")
 
 
+@demo.command("quit")
+def quit_(args, ctx):
+    raise SystemExit(3)  # a plugin's sys.exit must not stop the server
+
+
 @demo.on("handoff.")
 def on_handoff(event):
     seen.append(event["type"])
@@ -32,7 +37,7 @@ def on_handoff(event):
 
 @demo.on("handoff.")
 def broken_handler(event):
-    raise ValueError("a bad handler must not stop the others")
+    raise SystemExit("a bad handler must not stop the others")
 
 
 class EP:
@@ -40,14 +45,15 @@ class EP:
         self.name, self.obj = name, obj
 
     def load(self):
-        if isinstance(self.obj, Exception):
+        if isinstance(self.obj, BaseException):
             raise self.obj
         return self.obj
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    eps = [EP("demo", demo), EP("broken", ImportError("missing dep")), EP("wrong", object()), EP("off", Plugin("off"))]
+    eps = [EP("demo", demo), EP("broken", ImportError("missing dep")), EP("wrong", object()), EP("exits", SystemExit(1)),
+           EP("other-name", Plugin("demo2")), EP("off", Plugin("off"))]
     monkeypatch.setattr(plugins, "entry_points", lambda group: eps)
     monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(server, "ALLOWED_HOSTS", {"testserver"})
@@ -58,16 +64,19 @@ def client(tmp_path, monkeypatch):
 
 def test_plugins(client):
     out = client.post("/api/plugins/off", json={"enabled": False}).json()
-    status = {p["name"]: p["status"] for p in out["plugins"]}
-    assert status["demo"] == "loaded" and status["off"] == "disabled"
-    assert status["broken"] == "ImportError: missing dep" and status["wrong"].startswith("TypeError")
-    assert [c["name"] for c in out["commands"]] == ["demo boom", "demo hi", "demo type"]
+    by = {p["name"]: p for p in out["plugins"]}
+    assert by["demo"]["status"] == "loaded" and by["demo"]["version"] == "1.0" and by["demo"]["events"] == ["handoff."]
+    assert by["off"]["status"] == "disabled" and by["off"]["commands"] == []
+    assert by["broken"]["error"] == "ImportError: missing dep" and by["exits"]["error"] == "SystemExit: 1"
+    assert by["wrong"]["status"] == by["other-name"]["status"] == "error"
+    assert [c["name"] for c in out["commands"]] == ["demo boom", "demo hi", "demo quit", "demo type"]
 
     run = lambda *w: client.post("/api/plugins/run", json={"words": list(w)})  # noqa: E731
     assert run("demo", "hi", "a", "b").json() == {"text": "hi a b from ?"}
     assert run("demo", "type").json() == {"input": "echo one"}  # one printable line: no CR, no escapes
     assert run("demo", "nope").status_code == 404 and run("other", "hi").status_code == 404
     assert run("demo", "boom").json() == {"error": "plugin_failed", "detail": "RuntimeError: nope"}
+    assert run("demo", "quit").json() == {"error": "plugin_failed", "detail": "SystemExit: 3"}
     assert client.post("/api/plugins/run", json={"words": "demo hi"}).status_code == 400
 
     server._emit("handoff.created", {"id": "h1"})
@@ -78,4 +87,20 @@ def test_plugins(client):
     assert seen == ["handoff.created"]
 
     assert client.post("/api/plugins/nope", json={"enabled": True}).status_code == 404
-    assert client.post("/api/plugins/off", json={"enabled": True}).json()["plugins"][-2]["status"] == "loaded"
+    out = client.post("/api/plugins/off", json={"enabled": True}).json()
+    assert {p["name"]: p["status"] for p in out["plugins"]}["off"] == "loaded"
+
+
+def test_ask_can_answer_with_a_plugin_command(client, monkeypatch):
+    from shelldeck import smart_recall
+    prompts, reply = [], ["?demo hi Ada"]
+    monkeypatch.setattr(smart_recall, "pick", lambda setting: "claude")
+    monkeypatch.setattr(smart_recall, "argv", lambda agent, q, model, prompt: prompts.append(prompt) or ["x"])
+    monkeypatch.setattr(smart_recall, "_run", lambda cmd: reply[0])
+    out = client.post("/api/ask", json={"q": "greet Ada"}).json()
+    assert out["plugin"] == ["demo", "hi", "Ada"] and out["command"] == ""
+    assert "?demo hi  - Say hi" in prompts[0]  # plugin commands are offered to the model
+    reply[0] = "?nope run"  # a made-up plugin command doesn't count
+    assert client.post("/api/ask", json={"q": "x"}).json()["error"] == "no_answer"
+    reply[0] = "Get-Date"
+    assert client.post("/api/ask", json={"q": "date"}).json() == {"command": "Get-Date", "plugin": None, "agent": "claude"}

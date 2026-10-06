@@ -109,11 +109,21 @@ def command_line(text: str) -> str:
     return ""
 
 
-def ask(question: str, shell: str, where: str, cwd: str, agent: str, model: str | None = None) -> str:
-    """One shell command for a plain-language question, written for this terminal's shell and OS. Never run here."""
+MAX_PLUGIN_LINES = 40
+
+
+def ask(question: str, shell: str, where: str, cwd: str, agent: str, model: str | None = None,
+        plugins: list[dict] | None = None) -> str:
+    """One shell command for a plain-language question, written for this terminal's shell and OS. Never run here.
+    With `plugins` (shelldeck plugin commands) the reply may instead be `?<plugin> <command> <args>`."""
     q = " ".join(context.redact(question).split())[:500]
     prompt = (f"Write one {shell} command for {where}, run from the folder {cwd or 'unknown'}, that does this: {q}\n"
               "Reply with the command only, on one line: no explanation, no code fences.")
+    if plugins:
+        # ponytail: the first MAX_PLUGIN_LINES commands only; pick by relevance if people install many plugins
+        lines = [f"?{c['name']} {c.get('usage') or ''}".rstrip() + f"  - {c.get('description') or ''}" for c in plugins[:MAX_PLUGIN_LINES]]
+        prompt += ("\nThese shelldeck plugin commands are also available. If one of them does exactly this, reply with it"
+                   " instead, on one line, starting with ? and with its arguments filled in:\n" + "\n".join(lines))
     return command_line(_run(argv(agent, q, model, prompt)) or "")
 
 

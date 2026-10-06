@@ -1457,7 +1457,7 @@ def ask(
     """Print one command for this terminal's shell and OS. It is never run."""
     out = _api("/api/ask", "POST", {"q": question, "session_id": os.environ.get("SHELLDECK_SESSION_ID", ""),
                                     "agent": agent, "model": model}, timeout=45)
-    typer.echo(out["command"])
+    typer.echo(out["command"] or "sd " + " ".join(out["plugin"]))
 
 
 @app.command()
@@ -1638,10 +1638,11 @@ def plugin_list():
     out = _api("/api/plugins")
     if not out["plugins"]:
         typer.echo('no plugins installed (a plugin is a package with a "shelldeck.plugins" entry point)')
+    w = max([len(f"{c['name']} {c['usage']}") for p in out["plugins"] for c in p["commands"]] or [0])
     for p in out["plugins"]:
-        typer.echo(f"{p['name']:<16} {p['version'] or '-':<10} {p['status']}")
-    for c in out["commands"]:
-        typer.echo(f"  sd {c['name']:<24} {c['description']}")
+        typer.echo(f"{p['name']:<16} {p['version'] or '-':<10} {p['status']}{': ' + p['error'] if p['error'] else ''}")
+        for c in p["commands"]:
+            typer.echo(f"  sd {(c['name'] + ' ' + c['usage']).strip():<{w}}  {c['description']}")
 
 
 @plugin_app.command("enable")

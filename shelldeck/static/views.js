@@ -2,6 +2,7 @@ import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedPro
 import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
+import { renderPlugins } from "./plugins.js";
 import { renderRemotes } from "./remotes.js";
 import { renderAgents } from "./agents.js";
 import { renderScratch } from "./scratch.js";
@@ -17,9 +18,9 @@ export function init() {}
 export function show(view, el) {
   current = view;
   clearInterval(pollTimer);
-  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, remotes: renderRemotes, agents: renderAgents, scratch: renderScratch, context: renderContext }[view];
+  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, remotes: renderRemotes, agents: renderAgents, scratch: renderScratch, context: renderContext, plugins: renderPlugins }[view];
   render(el);
-  if (!["bookmarks", "monitor", "history", "scratch", "context"].includes(view)) { // monitor refreshes from its own 2s poller
+  if (!["bookmarks", "monitor", "history", "scratch", "context", "plugins"].includes(view)) { // monitor refreshes from its own 2s poller
     pollTimer = setInterval(() => {
       if (current === view && !el.hidden && !document.querySelector(".dialog-bg")) render(el);
       else if (el.hidden) clearInterval(pollTimer);

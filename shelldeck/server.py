@@ -74,6 +74,9 @@ alarm_sockets: set[WebSocket] = set()
 clipboard = {"data": ""}
 socket_owner: dict[WebSocket, str | None] = {}  # open socket -> login session hash
 last_cwd: dict[str, str] = {}
+# sid -> the shell is at its prompt (shell integration's 133;B seen, no Enter since). Sent to a browser on connect:
+# replayed scrollback has no prompt marks, so a page that just loaded can't tell by itself (the `?` menu needs it)
+at_prompt: dict[str, bool] = {}
 # sub-agent terminal -> its output since the last question check, and when it last printed
 ask_buf: dict[str, str] = {}
 last_out_at: dict[str, float] = {}
@@ -1904,8 +1907,14 @@ async def ask(payload: dict):
     kind = s.get("shell") or settings["default_shell"]
     where = "Linux (WSL)" if kind == "wsl" else {"win32": "Windows", "darwin": "macOS"}.get(sys.platform, "Linux")
     model = str(payload.get("model") or "") or (None if payload.get("agent") else settings["ask_model"] or None)
-    cmd = await asyncio.to_thread(smart_recall.ask, q, ASK_SHELL.get(kind, shells.label(kind)), where, s.get("cwd") or "", agent, model)
-    return {"command": cmd, "agent": agent} if cmd else err("no_answer", 502)
+    cmd = await asyncio.to_thread(smart_recall.ask, q, ASK_SHELL.get(kind, shells.label(kind)), where, s.get("cwd") or "", agent, model,
+                                  plugins.commands())
+    if cmd.startswith("?"):  # the model picked a plugin command: only one that exists counts
+        words = cmd[1:].split()
+        if any(c["name"] == " ".join(words[:2]) for c in plugins.commands()):
+            return {"command": "", "plugin": words, "agent": agent}
+        cmd = ""
+    return {"command": cmd, "plugin": None, "agent": agent} if cmd else err("no_answer", 502)
 
 
 def _plugins_off() -> set[str]:
@@ -1914,10 +1923,8 @@ def _plugins_off() -> set[str]:
 
 @app.get("/api/plugins")
 async def plugin_list():
-    """Installed plugins (loaded, disabled or the load error) and the commands of the loaded ones."""
-    info = {p.name: p.version for p in plugins.loaded.values()}
-    return {"plugins": [{"name": n, "status": st, "version": info.get(n, "")} for n, st in sorted(plugins.found.items())],
-            "commands": plugins.commands()}
+    """Installed plugins (status, package, commands, events) and the commands of the loaded ones."""
+    return {"plugins": plugins.listing(), "commands": plugins.commands()}
 
 
 @app.post("/api/plugins/run")
@@ -1934,9 +1941,9 @@ async def plugin_run(payload: dict):
         return await asyncio.to_thread(plugins.run, words, ctx)
     except KeyError:
         return err("unknown_command", 404)
-    except Exception as e:  # noqa: BLE001 - the plugin's own error, shown to whoever ran it
-        log.warning("plugin command %s failed", " ".join(words[:2]), exc_info=True)
-        return JSONResponse({"error": "plugin_failed", "detail": f"{type(e).__name__}: {e}"}, status_code=500)
+    except plugins.PluginError as e:  # the plugin's own error, shown to whoever ran it
+        log.warning("plugin command %s failed: %s", " ".join(words[:2]), e)
+        return JSONResponse({"error": "plugin_failed", "detail": str(e)}, status_code=500)
 
 
 @app.post("/api/plugins/{name}")
@@ -2664,11 +2671,14 @@ async def _pump(session_id: str) -> None:
             if session_id in ask_buf:
                 ask_buf[session_id] = (ask_buf[session_id] + data)[-16000:]
                 last_out_at[session_id] = time.monotonic()
+            if "\x1b]133;B" in data:  # ponytail: a mark split across two reads is missed until the next prompt
+                at_prompt[session_id] = True
             if (m := CWD_REPORT.findall(data)) and m[-1] != last_cwd.get(session_id):
                 last_cwd[session_id] = m[-1]
                 db.update_session_cwd(session_id, m[-1])
             await _send_all(session_id, {"type": "output", "data": data})
         log.info("session %s exited", session_id)
+        at_prompt.pop(session_id, None)
         await _send_all(session_id, {"type": "exit"})
         for ws in list(sockets.pop(session_id, ())):
             await _close(ws)
@@ -2786,6 +2796,8 @@ async def terminal_ws(ws: WebSocket, session_id: str):
     try:
         if history := manager.history(session_id):
             await ws.send_text(json.dumps({"type": "output", "data": history, "replay": True}))
+        if session_id in at_prompt:
+            await ws.send_text(json.dumps({"type": "prompt", "at": at_prompt[session_id]}))
         while True:
             raw = await ws.receive_text()
             if login and not auth.session_hash(ws.cookies.get(auth.COOKIE)):
@@ -2810,7 +2822,10 @@ async def terminal_ws(ws: WebSocket, session_id: str):
                     log.exception("spawn failed for session %s", session_id)
                     await ws.send_text(json.dumps({"type": "error", "message": "failed to start shell"}))
             elif mtype == "input":
-                manager.write(session_id, str(msg.get("data", "")))
+                data = str(msg.get("data", ""))
+                if "\r" in data and session_id in at_prompt:
+                    at_prompt[session_id] = False
+                manager.write(session_id, data)
             elif mtype == "snapshot":
                 manager.snapshot(session_id, str(msg.get("data", "")))
             elif mtype == "command":

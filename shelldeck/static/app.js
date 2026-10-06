@@ -379,7 +379,7 @@ class Term {
     } else if (kind === "D") {
       const r = this.running;
       this.running = null;
-      if (!r || this.replaying) return true;
+      if (!r || this.replaying || r.restored) return true; // restored: started before this page loaded
       this.exit = code ? +code || 0 : null;
       this.paintCmd();
       this.send({ type: "command", cmd: this.cmd || r.cmd, exit: this.exit, ms: Date.now() - r.at, at: new Date(r.at).toISOString() });
@@ -504,6 +504,7 @@ class Term {
       this.size = null;
       this.fit(true);
       if (!this.gotOutput) this.status("Starting shell…", true);
+      for (const m of (this.queued || []).splice(0)) this.send(m);
       this.readyWaiters.splice(0).forEach((r) => r());
     };
     ws.onmessage = (ev) => {
@@ -532,6 +533,11 @@ class Term {
         }
       }
       else if (msg.type === "exit") this.exited();
+      else if (msg.type === "prompt") {
+        // the server saw this shell's prompt marks (a replayed screen has none): at a prompt, or running something
+        this.integrated = true;
+        this.running = msg.at ? null : this.running || { cmd: "", at: Date.now(), restored: true };
+      }
       else if (msg.type === "snapshot") { // another terminal's agent is reading this screen (sd peek)
         this.changed = true;
         this.lastSnapshot = null;
@@ -580,6 +586,7 @@ class Term {
 
   send(msg) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    else if (msg.type === "input") (this.queued ||= []).push(msg); // typed while (re)connecting: sent once open
   }
 
   fit(force = false) {
@@ -1749,12 +1756,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", remotes: "Remote systems", agents: "AI agents", scratch: "Scratchpad", context: "Context" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", remotes: "Remote systems", agents: "AI agents", scratch: "Scratchpad", context: "Context", plugins: "Plugins" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "remotes", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "remotes", "agents", "scratch", "context", "plugins"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   if ($("#sb-more .sb-link.active")) $("#sb-more").open = true; // a view inside "More" keeps it open
   $("#term-actions").hidden = view !== "terminals";
@@ -1843,7 +1850,15 @@ export function palette({ placeholder = "Type a command or search…", items, mu
         render();
         return true;
       };
-      return picked[0].run(e, { show, close: d.close });
+      // fill: put text in the box to keep typing (a plugin command that still needs its arguments)
+      const fill = (text) => {
+        input.value = text;
+        override = null;
+        sel = 0;
+        render();
+        input.focus();
+      };
+      return picked[0].run(e, { show, fill, close: d.close });
     }
     d.close();
     if (multi) multi(picked, e);
@@ -1937,9 +1952,12 @@ function inlineCommands(term, { askOnly = false } = {}) {
     extra: (q, shown) => {
       if (!q) return shown;
       const words = q.split(/\s+/);
-      const plugin = !askOnly && (S.pluginCommands || []).find((c) => c.name === words.slice(0, 2).join(" "));
-      if (plugin) return [pluginItem(plugin, words.slice(2)), ...shown]; // `docker logs web`: the command with its arguments
+      const plugin = !askOnly && pluginMatch(q);
+      if (plugin) return [plugin, ...shown];
       const ask = { group: "Ask", label: `Ask: ${q}`, hint: askWho(), icon: "sparkle", stay: true, run: (e, ctl) => askInto(term, q, ctl) };
+      // a name being typed (`docker restart`) keeps its command first; otherwise a sentence goes to Ask
+      const named = shown.findIndex((it) => it.label.toLowerCase().startsWith(q.toLowerCase()));
+      if (named >= 0) return [shown[named], ...shown.filter((_, i) => i !== named), ask];
       return q.includes(" ") || !shown.length ? [ask, ...shown] : [...shown, ask];
     },
     onClose: () => term.focus(),
@@ -1980,6 +1998,7 @@ function paletteItems() {
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
     ["Devices", "devices", () => switchView("devices")],
+    ["Plugins", "grid", () => switchView("plugins")],
     ...(canShare() ? [["Share…", "share", () => shareDialog()]] : []),
     ["AI agents", "sparkle", () => switchView("agents")],
     ["Scratchpad", "note", () => switchView("scratch")],
@@ -2000,17 +2019,30 @@ function paletteItems() {
   return items;
 }
 
+/** A plugin command as a menu item. One whose usage names a required `<argument>` and has none yet fills the
+ * box with `docker logs ` instead of running, so the arguments are typed right there. */
 function pluginItem(c, args = []) {
-  const label = [c.name, ...args].join(" ");
-  return { group: "Plugins", label, hint: c.description, icon: "grid", run: () => runPlugin(label.split(" ")) };
+  const words = [...c.name.split(" "), ...args];
+  if (!args.length && c.usage?.includes("<")) {
+    return { group: "Plugins", label: `${c.name} ${c.usage}`, hint: c.description, icon: "grid", stay: true, run: (e, ctl) => ctl.fill(`${c.name} `) };
+  }
+  return { group: "Plugins", label: words.join(" "), hint: c.usage && !args.length ? `${c.usage} · ${c.description}` : c.description, icon: "grid", run: () => runPlugin(words) };
+}
+
+/** `docker logs web` typed in a menu: that plugin command with its arguments, ready to run. */
+function pluginMatch(q) {
+  const words = q.split(/\s+/);
+  const c = (S.pluginCommands || []).find((x) => x.name === words.slice(0, 2).join(" "));
+  return c && words.length > 2 ? pluginItem(c, words.slice(2)) : null;
 }
 
 /** A plugin command for the focused terminal: `input` is typed at its prompt (never run), text is shown. */
-async function runPlugin(words) {
+export async function runPlugin(words) {
   const term = S.terms.get(S.focused);
   try {
     const out = await api("/api/plugins/run", { method: "POST", body: { words, session_id: term?.sid || "" } });
     if (out.input && term) {
+      switchView("terminals"); // run from the Plugins page: show where it was typed
       term.send({ type: "input", data: out.input });
       term.line += out.input;
       return term.focus();
@@ -2024,7 +2056,11 @@ async function runPlugin(words) {
 }
 
 function commandPalette() {
-  palette({ items: paletteItems(), footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+  const extra = (q, shown) => {
+    const plugin = q && pluginMatch(q);
+    return plugin ? [plugin, ...shown] : shown;
+  };
+  palette({ items: paletteItems(), extra, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
 }
 
 /** Ask inside the open menu: a spinner while the agent writes, then the command to accept (Enter types it,
@@ -2032,7 +2068,8 @@ function commandPalette() {
 async function askInto(term, q, ctl) {
   ctl.show([{ label: `Asking ${askWho()}…`, hint: q, busy: true }]);
   try {
-    const { command } = await api("/api/ask", { method: "POST", body: { q, session_id: term.sid } });
+    const { command, plugin } = await api("/api/ask", { method: "POST", body: { q, session_id: term.sid } });
+    if (plugin) return ctl.show([{ label: plugin.join(" "), mono: true, icon: "grid", hint: "Plugin command · Enter runs it", run: () => runPlugin(plugin) }]);
     const insert = (e) => {
       term.send({ type: "input", data: command + (e?.shiftKey ? "\r" : "") }); // typed; it runs only on Shift+Enter
       if (!e?.shiftKey) term.line += command; // a later `?` on this line is text, not Ask

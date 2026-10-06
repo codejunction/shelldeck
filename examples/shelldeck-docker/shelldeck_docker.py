@@ -24,7 +24,7 @@ def _docker(*args: str) -> str:
     return (r.stdout + r.stderr).strip() or "(no output)"
 
 
-@plugin.command("ps", "Running containers")
+@plugin.command("ps", "Running containers", usage="[-a] [--format ...]")
 def ps(args, ctx):
     return _docker("ps", *args)
 
@@ -34,16 +34,16 @@ def images(args, ctx):
     return _docker("images", *args)
 
 
-@plugin.command("logs", "Follow a container's logs in this terminal")
+@plugin.command("logs", "Follow a container's logs in this terminal", usage="<container>")
 def logs(args, ctx):
-    return {"input": "docker logs -f " + " ".join(args or ["<container>"])}
+    return {"input": "docker logs -f " + " ".join(args)}
 
 
-@plugin.command("restart", "Restart a container (typed, you press Enter)")
+@plugin.command("restart", "Restart a container (typed, you press Enter)", usage="<container>")
 def restart(args, ctx):
-    return {"input": "docker restart " + " ".join(args or ["<container>"])}
+    return {"input": "docker restart " + " ".join(args)}
 
 
-@plugin.command("compose", "docker compose in this project")
+@plugin.command("compose", "docker compose in this project", usage="[up -d | down | logs ...]")
 def compose(args, ctx):
     return {"input": "docker compose " + " ".join(args or ["up -d"])}
