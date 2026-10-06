@@ -54,18 +54,99 @@ function renderCommits(commits, lanes) {
 const PAGE = 300;
 const SCROLL_MARGIN = 120; // px from the bottom that triggers loading the next page
 
-export function showGitGraph(project) {
+const STATUS_MARK = { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", conflict: "!", untracked: "U", "type changed": "T" };
+
+/** Unified diff as lines coloured by kind; text is escaped. */
+function renderDiff(d) {
+  if (d.missing) return `<div class="placeholder">No longer changed.</div>`;
+  if (d.binary) return `<div class="placeholder">Binary file</div>`;
+  if (!d.diff.trim()) return `<div class="placeholder">No line changes (mode or whitespace only).</div>`;
+  const rows = d.diff
+    .split("\n")
+    .filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|rename (from|to) )/.test(l))
+    .map((l) => `<div class="${l.startsWith("@@") ? "dl-hunk" : l.startsWith("+") ? "dl-add" : l.startsWith("-") ? "dl-del" : "dl-ctx"}">${esc(l) || " "}</div>`)
+    .join("");
+  return `<div class="git-diff mono">${rows}${d.truncated ? `<div class="placeholder">Diff cut off (too large).</div>` : ""}</div>`;
+}
+
+function renderChanges(c) {
+  const sync = [c.ahead ? `${c.ahead} ahead` : "", c.behind ? `${c.behind} behind` : ""].filter(Boolean).join(", ");
+  const head = `<div class="git-sub faint">On <strong>${esc(c.branch || "(detached)")}</strong>${sync ? ` · ${sync}` : ""} · ${c.files.length || "no"} changed file${c.files.length === 1 ? "" : "s"}${
+    c.files.length ? ` · <span class="dl-add">+${c.files.reduce((n, f) => n + (f.added || 0), 0)}</span> <span class="dl-del">−${c.files.reduce((n, f) => n + (f.deleted || 0), 0)}</span>` : ""
+  }</div>`;
+  if (!c.files.length) return `${head}<div class="placeholder">Working tree clean.</div>`;
+  const rows = c.files
+    .map((f) => {
+      const slash = f.path.lastIndexOf("/");
+      const counts = f.added == null ? `<span class="faint">bin</span>` : `<span class="dl-add">+${f.added}</span> <span class="dl-del">−${f.deleted}</span>`;
+      return `<div class="git-file" data-file="${esc(f.path)}" tabindex="0" role="button" aria-expanded="false">
+          <span class="git-st st-${esc(f.status.replace(" ", "-"))}" title="${esc(f.status)}${f.staged ? " (staged)" : ""}">${STATUS_MARK[f.status] || "M"}</span>
+          <span class="git-fname" title="${esc(f.old_path ? `${f.old_path} → ${f.path}` : f.path)}"><b>${esc(f.path.slice(slash + 1))}</b> <span class="faint">${esc(slash >= 0 ? f.path.slice(0, slash) : "")}</span></span>
+          <span class="git-counts mono">${counts}</span>
+        </div><div class="git-file-diff" hidden></div>`;
+    })
+    .join("");
+  return `${head}<div class="git-rows">${rows}</div>`;
+}
+
+/** Git dialog: uncommitted changes (with per-file diffs) and the commit graph. */
+export function showGitGraph(project, tab = project.git_changes ? "changes" : "history") {
   let limit = PAGE;
   let hasMore = false;
   let loadingMore = false;
-  const d = dialog({ title: `Git \u2014 ${project.name}`, cls: "git-dialog", wide: true, body: `<div class="placeholder">Loading\u2026</div>` });
-  const body = $(".dialog-body", d.el);
+  const d = dialog({
+    title: `Git \u2014 ${project.name}`,
+    cls: "git-dialog",
+    wide: true,
+    body: `<div class="git-head">
+        <div class="seg" role="tablist">
+          <button role="tab" data-tab="changes">Changes</button>
+          <button role="tab" data-tab="history">History</button>
+        </div>
+        <button class="icon-btn sm" data-git="refresh" title="Refresh" aria-label="Refresh">${icon("refresh")}</button>
+      </div><div class="git-body"><div class="placeholder">Loading\u2026</div></div>`,
+  });
+  const body = $(".git-body", d.el);
+  $(".git-head", d.el).addEventListener("click", (e) => {
+    const t = e.target.closest("[data-tab]")?.dataset.tab;
+    if (t) {
+      tab = t;
+      return load();
+    }
+    if (e.target.closest("[data-git=refresh]")) load();
+  });
+  body.addEventListener("click", (e) => toggleFile(e.target.closest(".git-file")));
+  body.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches(".git-file")) {
+      e.preventDefault();
+      toggleFile(e.target);
+    }
+  });
+
+  async function toggleFile(row) {
+    if (!row) return;
+    const box = row.nextElementSibling;
+    const open = box.hidden;
+    box.hidden = !open;
+    row.setAttribute("aria-expanded", String(open));
+    row.classList.toggle("open", open);
+    if (!open || box.dataset.loaded) return;
+    box.innerHTML = `<div class="placeholder">Loading\u2026</div>`;
+    try {
+      box.innerHTML = renderDiff(await api(`/api/projects/${project.id}/git/diff?file=${encodeURIComponent(row.dataset.file)}`));
+      box.dataset.loaded = "1";
+    } catch (err) {
+      box.innerHTML = `<div class="placeholder">${esc(err.message.replaceAll("_", " "))}</div>`;
+    }
+  }
 
   async function load() {
+    for (const b of $$("[data-tab]", d.el)) b.classList.toggle("on", b.dataset.tab === tab), b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     limit = PAGE;
     body.innerHTML = `<div class="placeholder">Loading\u2026</div>`;
     try {
-      render(await api(`/api/projects/${project.id}/git/log?limit=${limit}`));
+      if (tab === "changes") body.innerHTML = renderChanges(await api(`/api/projects/${project.id}/git/changes`));
+      else render(await api(`/api/projects/${project.id}/git/log?limit=${limit}`));
     } catch (e) {
       body.innerHTML = `<div class="placeholder">${esc(e.message.replaceAll("_", " "))}</div>`;
     }
@@ -92,13 +173,8 @@ export function showGitGraph(project) {
       return;
     }
     const lanes = 1 + Math.max(0, ...log.commits.flatMap((c) => [c.column, ...c.through.map((t) => t.col), ...c.enter.map((e) => e.from_col), ...c.exit.map((x) => x.to_col)]));
-    body.innerHTML = `<div class="git-head">
-        <span class="faint">On <strong>${esc(log.current_branch)}</strong></span>
-        <button class="icon-btn sm" data-git="refresh" title="Refresh" aria-label="Refresh">${icon("refresh")}</button>
-      </div>
+    body.innerHTML = `<div class="git-sub faint">On <strong>${esc(log.current_branch)}</strong></div>
       <div class="git-rows">${renderCommits(log.commits, lanes)}</div>`;
-
-    $("[data-git=refresh]", body).onclick = load;
     const rows = $(".git-rows", body);
     rows.scrollTop = scrollTop;
     rows.addEventListener("scroll", () => {

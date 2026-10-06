@@ -163,6 +163,20 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_commands_started ON commands(started_at);
 
+            -- remote systems: ssh terminals (typed into a local shell) and rdp desktops (mstsc / xfreerdp)
+            CREATE TABLE IF NOT EXISTS remotes (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                host TEXT NOT NULL,
+                user TEXT NOT NULL DEFAULT '',
+                port INTEGER,
+                identity TEXT NOT NULL DEFAULT '',
+                project_id TEXT,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            );
+
             -- scratchpad: one markdown body per note, the title is its first line
             CREATE TABLE IF NOT EXISTS scratch (
                 id TEXT PRIMARY KEY,
@@ -227,6 +241,9 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         if "color" not in cols:
             conn.execute("ALTER TABLE projects ADD COLUMN color INTEGER")
+        for col in ("remote_id", "remote_path"):  # a folder on a remote machine (remotes table); NULL = this machine
+            if col not in cols:
+                conn.execute(f"ALTER TABLE projects ADD COLUMN {col} TEXT")
         missing = conn.execute("SELECT id FROM projects WHERE color IS NULL ORDER BY created_at").fetchall()
         for (pid,) in missing:
             conn.execute("UPDATE projects SET color = ? WHERE id = ?", (_next_color(conn), pid))
@@ -257,6 +274,27 @@ def ensure_project(path: str) -> dict:
         )
         conn.commit()
         return {"id": pid, "path": path, "name": name, "created_at": _now(), "color": color}
+
+
+def ensure_remote_project(remote_id: str, path: str, name: str | None = None) -> dict:
+    """A folder on a remote machine. `path` stays unique by keying it as ssh://<remote>/<folder>."""
+    key = f"ssh://{remote_id}/{path}"
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM projects WHERE path = ?", (key,)).fetchone()
+        if row:
+            return dict(row)
+        pid = short_id()
+        color = _next_color(conn)
+        name = name or (path.rstrip("/").rsplit("/", 1)[-1] or path)
+        conn.execute("INSERT INTO projects (id, path, name, created_at, color, remote_id, remote_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (pid, key, name, _now(), color, remote_id, path))
+        conn.commit()
+        return {"id": pid, "path": key, "name": name, "created_at": _now(), "color": color, "remote_id": remote_id, "remote_path": path}
+
+
+def remote_projects(remote_id: str) -> list[dict]:
+    return [p for p in list_projects() if p.get("remote_id") == remote_id]
 
 
 def list_projects() -> list[dict]:
@@ -1019,3 +1057,46 @@ def get_agent_session(session_id: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM agent_sessions WHERE session_id = ?", (session_id,)).fetchone()
         return dict(row) if row else None
+
+
+REMOTE_FIELDS = ("name", "kind", "host", "user", "port", "identity", "project_id")
+
+
+def list_remotes() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM remotes ORDER BY COALESCE(last_used_at, created_at) DESC")]
+
+
+def get_remote(remote_id: str) -> dict | None:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        r = conn.execute("SELECT * FROM remotes WHERE id = ?", (remote_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def save_remote(fields: dict, remote_id: str | None = None) -> dict:
+    """Insert, or update an existing remote; `fields` is already validated."""
+    with _connect() as conn:
+        if remote_id:
+            conn.execute(f"UPDATE remotes SET {', '.join(f'{k} = ?' for k in REMOTE_FIELDS)} WHERE id = ?",
+                         (*[fields.get(k) for k in REMOTE_FIELDS], remote_id))
+        else:
+            remote_id = short_id()
+            conn.execute(f"INSERT INTO remotes (id, created_at, {', '.join(REMOTE_FIELDS)}) VALUES (?, ?, {', '.join('?' * len(REMOTE_FIELDS))})",
+                         (remote_id, _now(), *[fields.get(k) for k in REMOTE_FIELDS]))
+        conn.commit()
+    return get_remote(remote_id)
+
+
+def touch_remote(remote_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE remotes SET last_used_at = ? WHERE id = ?", (_now(), remote_id))
+        conn.commit()
+
+
+def delete_remote(remote_id: str) -> bool:
+    with _connect() as conn:
+        n = conn.execute("DELETE FROM remotes WHERE id = ?", (remote_id,)).rowcount
+        conn.commit()
+    return n > 0

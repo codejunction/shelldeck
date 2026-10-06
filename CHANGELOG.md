@@ -2,7 +2,17 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.0.10] - 2026-10-06
+
+### Added
+
+- The machine picker (Local / remote machines) is back: it shipped in 0.0.9rc3 but was left out of 0.0.9.
+- Git changes at a glance: a `±N` chip on git projects in the sidebar, and a *Changes* tab in the git dialog with branch, ahead/behind, each changed file's added/removed lines and its diff.
+- Machines: a picker above *New terminal* on every host (SSH to Linux machines; Windows machines open as RDP desktops from the same menu) (Local, your SSH machines, *Add machine…* with *Test connection*). Projects, terminals and the AI agents list follow the picked machine. A machine starts with a project for `/`; more folders can be added. LDAP/NTID usernames (`CORP\jdoe`, `jdoe@corp.com`) and password logins work; key files are optional.
+- Remote systems (*More › Remote systems*): save SSH hosts (open as shelldeck terminals) and RDP desktops (mstsc on Windows, xfreerdp or Remmina on Linux). No passwords are stored.
+- Replay the last command: `Ctrl+Alt+P`, the pane's replay button or the palette.
+- Background terminals: the pane's eye button and `Ctrl+Alt+W` keep a terminal running off screen (marked *running* in the sidebar while busy); closing a terminal with a running command offers to keep it in the background.
+- `sd notes list|add|append|show|replace|delete` for the Scratchpad (open pages update at once), and `sd top`, `sd ps`, `sd kill` for the Task manager (only processes inside shelldeck terminals). The agent skill teaches both.
 
 ## [0.0.9] - 2026-10-05
 
@@ -169,6 +179,7 @@ First public release.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
 [Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.9...HEAD
+[0.0.10]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.10
 [0.0.9]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.9
 [0.0.8]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.8
 [0.0.7]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.7

@@ -731,6 +731,155 @@ def handoffs(all_: bool = typer.Option(False, "--all", "-a", help="Every project
             typer.echo(f"         result: {' '.join(h['result'].split())[:100]}")
 
 
+notes_app = typer.Typer(help="Scratchpad notes (the Scratchpad page): quick markdown notes for you or other agents.")
+app.add_typer(notes_app, name="notes")
+
+
+def _note_body(text: str) -> str:
+    """'-' reads the text from stdin (multi-line notes)."""
+    return sys.stdin.read() if text == "-" else text
+
+
+def _note_title(body: str) -> str:
+    return next((x.lstrip("#>-* ").strip() for x in body.splitlines() if x.lstrip("#>-* ").strip()), "Empty note")
+
+
+def _note(note_id: str) -> dict:
+    notes = _api("/api/scratch")["notes"]
+    found = [n for n in notes if n["id"] == note_id] or [n for n in notes if n["id"].startswith(note_id)]
+    if len(found) != 1:
+        typer.echo(f"error: no single note matches {note_id!r} (sd notes list)", err=True)
+        raise typer.Exit(1)
+    return found[0]
+
+
+@notes_app.command("list")
+def notes_list(json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")):
+    """Notes, newest first: id, title, last change."""
+    notes = _api("/api/scratch")["notes"]
+    if json_:
+        typer.echo(json.dumps(notes, indent=2))
+        return
+    if not notes:
+        typer.echo("no notes")
+    for n in notes:
+        typer.echo(f"{n['id']}  {n['updated_at'][:16].replace('T', ' ')}  {_note_title(n['body'])[:70]}")
+
+
+@notes_app.command("add")
+def notes_add(
+    text: str = typer.Argument(..., help="Markdown; the first line is the title. '-' reads stdin."),
+    title: str = typer.Option("", "--title", "-t", help="Title line to put first (# Title)."),
+):
+    """Create a note on the Scratchpad (open pages show it at once)."""
+    body = _note_body(text).strip()
+    if title:
+        body = f"# {title.strip()}\n\n{body}"
+    if nick := os.environ.get("SHELLDECK_NICK"):
+        body += f"\n\n_by {nick}_"
+    n = _api("/api/scratch", "POST", {"body": body + "\n"})
+    typer.echo(f"note {n['id']}: {_note_title(n['body'])}")
+
+
+@notes_app.command("append")
+def notes_append(note_id: str = typer.Argument(..., help="Note id (or prefix)."), text: str = typer.Argument(..., help="Text to add at the end; '-' reads stdin.")):
+    """Add text to the end of a note."""
+    n = _note(note_id)
+    body = n["body"].rstrip("\n") + "\n\n" + _note_body(text).strip() + "\n"
+    _api(f"/api/scratch/{n['id']}", "PUT", {"body": body})
+    typer.echo(f"appended to {n['id']}")
+
+
+@notes_app.command("show")
+def notes_show(note_id: str = typer.Argument(..., help="Note id (or prefix).")):
+    """Print a note's markdown."""
+    sys.stdout.reconfigure(errors="replace")
+    typer.echo(_note(note_id)["body"].rstrip("\n"))
+
+
+@notes_app.command("replace")
+def notes_replace(note_id: str = typer.Argument(..., help="Note id (or prefix)."), text: str = typer.Argument(..., help="New markdown; '-' reads stdin.")):
+    """Replace a note's whole text."""
+    n = _note(note_id)
+    _api(f"/api/scratch/{n['id']}", "PUT", {"body": _note_body(text).rstrip("\n") + "\n"})
+    typer.echo(f"replaced {n['id']}")
+
+
+@notes_app.command("delete")
+def notes_delete(note_id: str = typer.Argument(..., help="Note id (or prefix).")):
+    """Delete a note."""
+    n = _note(note_id)
+    _api(f"/api/scratch/{n['id']}", "DELETE")
+    typer.echo(f"deleted {n['id']}")
+
+
+def _size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+@app.command()
+def top(json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON.")):
+    """Task manager: machine CPU/RAM/GPU and each running terminal's usage (shell plus everything it started)."""
+    st = _api("/api/stats")
+    if json_:
+        typer.echo(json.dumps(st, indent=2))
+        return
+    sysm = st["system"]
+    gpu = f"  GPU {sysm['gpu']['util']:.0f}%" if sysm.get("gpu") else ""
+    typer.echo(f"machine: CPU {sysm['cpu']:.0f}%  RAM {_size(sysm['mem_used'])} / {_size(sysm['mem_total'])}{gpu}")
+    names = {x["id"]: x for x in _api("/api/sessions")["sessions"]}
+    rows = sorted(st["sessions"].items(), key=lambda kv: (-kv[1]["cpu"], -kv[1]["mem"]))
+    if not rows:
+        typer.echo("no running terminals")
+    for sid, u in rows:
+        s = names.get(sid, {})
+        busiest = (u.get("agent") or {}).get("label") or (u.get("top") or "-")
+        ports = f"  ports {','.join(map(str, u['ports']))}" if u.get("ports") else ""
+        typer.echo(f"{(s.get('nick') or sid):<10} CPU {u['cpu']:>5.1f}%  RAM {_size(u['mem']):>9}  {u['procs']:>3} procs  {busiest}{ports}")
+
+
+@app.command()
+def ps(
+    target: str = typer.Argument("", help="Terminal nick, id or name (default: this terminal)."),
+    json_: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Processes running in a terminal (below its shell): pid, CPU, memory, command. End one with sd kill."""
+    sid = _session(target)["id"] if target else _me()
+    r = _api(f"/api/sessions/{sid}/processes")
+    if json_:
+        typer.echo(json.dumps(r, indent=2))
+        return
+    if not r["processes"]:
+        typer.echo("nothing running besides the shell")
+    for p in sorted(r["processes"], key=lambda p: p["started"]):
+        typer.echo(f"{p['pid']:>7}  CPU {p['cpu']:>5.1f}%  {_size(p['mem']):>9}  {p['cmd'] or p['name']}"[:200])
+
+
+@app.command()
+def kill(
+    target: str = typer.Argument(..., help="Terminal nick, id or name."),
+    pid: int = typer.Argument(..., help="Process id from sd ps."),
+    force: bool = typer.Option(False, "--force", "-f", help="Kill at once instead of asking it to stop first."),
+):
+    """End a process running in a terminal, and its children (only processes inside that terminal; never yourself)."""
+    import psutil  # noqa: PLC0415 - only this command needs it
+
+    sid = _session(target)["id"]
+    try:
+        mine = {p.pid for p in psutil.Process().parents()} | {os.getpid()}
+    except psutil.Error:
+        mine = {os.getpid()}
+    if pid in mine:
+        typer.echo("error: that process runs you (or your shell); it was not ended", err=True)
+        raise typer.Exit(1)
+    r = _api(f"/api/sessions/{sid}/processes/{pid}/end", "POST", {"force": force})
+    typer.echo(f"{pid} {r['status']}")
+
+
 @app.command("install-skill")
 def install_skill(
     agents_: list[str] = typer.Argument(None, metavar="[AGENT]...", help="Agents to set up (default: every agent CLI on PATH)."),
@@ -1485,7 +1634,27 @@ def _main() -> None:
         i += 2 if args[i] in ("--port", "-p") else 1
     if i < len(args) and args[i] not in COMMANDS:
         sys.argv.insert(i + 1, "open")
+    elif args[i:i + 2] in (["notes", "add"], ["notes", "append"], ["notes", "replace"]):
+        sys.argv[i + 3:] = _text_args(args[i + 2:])
     app()
+
+
+def _text_args(rest: list[str]) -> list[str]:
+    """Markdown often starts with '-' ("- step one"): keep the known options, pass everything else after `--`
+    so click doesn't read a bullet as an option."""
+    opts, words, j = [], [], 0
+    while j < len(rest):
+        a = rest[j]
+        if a in ("--title", "-t") and j + 1 < len(rest):
+            opts += rest[j:j + 2]
+            j += 2
+            continue
+        if a.startswith("--title=") or a == "--help":
+            opts.append(a)
+        elif a != "--":
+            words.append(a)
+        j += 1
+    return [*opts, "--", *words] if words else opts
 
 
 if __name__ == "__main__":

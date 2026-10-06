@@ -63,12 +63,15 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Tiled layout.** Split right or down, drag titles onto edges to split or onto a pane to swap, drag gutters to resize, double-click a title to maximize.
 - **Free layout.** Every terminal becomes a floating window on a scrolling canvas. **Tile all** puts them back in a grid.
 - **Nothing gets lost.** Closing the tab keeps terminals running, and reopening replays their output. After a restart or reboot, each terminal reopens in its last folder with its history above a "restored" marker.
+- **Replay the last command** with `Ctrl+Alt+P` or the pane's replay button (refused while a command runs, or when an AI agent owns the terminal).
+- **Run in the background.** The pane's eye button (`Ctrl+Alt+W`) takes a terminal off the screen while it keeps running; it stays in the sidebar, marked *running* while a command is busy, and a click brings it back. Closing a terminal with a running command asks whether to keep it in the background instead.
 - **Shell integration** for pwsh, PowerShell, cmd, bash, zsh and fish. Each pane's title shows the last command (red if it failed), `Ctrl+Shift+Up`/`Down` jumps between prompts, and your own prompt (oh-my-posh, starship, …) still loads.
 
 ### Projects first
 
 - **Projects sidebar.** Add folders with the built-in folder browser, then drag to reorder. Each project gets its own color on its sidebar dot, pane border and a subtle background tint.
-- **Git graph.** A branch icon on every git project opens its full commit graph, with branches, merges and tags drawn as colored lanes. Click a branch or tag, or right-click a commit, to check it out.
+- **Git changes at a glance.** A git project with uncommitted work shows a `±N` chip in the sidebar. Click it (or *Git changes* in the palette) to see the branch, ahead/behind, and every changed file with its added/removed lines; click a file for its diff.
+- **Git graph.** The branch icon on every git project also opens its full commit graph, with branches, merges and tags drawn as colored lanes. Click a branch or tag, or right-click a commit, to check it out.
 - **Clickable paths.** `src/app.py:12:5`, `C:\x\y.ts(3,4)` and Python tracebacks become links that open in VS Code at that line, or in the built-in editor.
 - **Built-in editor and viewer.** `sd edit FILE` and `sd view FILE` open a file in shelldeck: line numbers, `Ctrl+S` to save (CRLF and BOM kept, and it won't overwrite a file that changed on disk without asking), rendered markdown and images. *Open file…* in the command palette does the same.
 - **Open in editor.** A project's menu opens its folder in VS Code (or the file manager).
@@ -84,7 +87,9 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Scheduler** for cron jobs that run in a project folder, with run history and logs.
 - **Task board** with due dates and reminder alarms.
 - **Task manager** with live CPU, RAM and GPU (NVIDIA) usage for the machine and for each terminal's process tree.
-- **Scratchpad** for quick markdown notes that belong to no project, with a preview, saved as you type.
+- **Scratchpad** for quick markdown notes that belong to no project, with a preview, saved as you type. Agents (and scripts) add to it with `sd notes`.
+- **Machines.** The picker above *New terminal* (on Windows and Linux alike) switches the sidebar between **Local** and your SSH machines; projects, terminals and the AI agents list follow it. *Add machine…* asks for host, user (plain, or LDAP/NTID like `CORP\jdoe` or `jdoe@corp.com`), port and an optional key file, with **Test connection** (network, then a real login with your key/agent, or with the password you type in the dialog for that test; it is never saved). Each machine starts with a project for its root folder `/`; the folder button adds more (`~/code/app`, `/srv/app`). Its terminals run `ssh -t ... 'cd <folder> && exec $SHELL -l'`, so a password is typed in the terminal and never stored. SSH machines are Linux targets (from Windows it uses the built-in OpenSSH client); Windows targets are RDP desktops, listed in the same picker and opened in mstsc. Agents inside an SSH session aren't detected yet.
+- **Remote systems.** Save Linux servers (SSH) and Windows machines (RDP) under *More › Remote systems*. *Connect* opens an SSH host as a shelldeck terminal (exit ssh and you're back in a local shell), or a desktop in `mstsc` on Windows (xfreerdp or Remmina on Linux) on the host machine. Passwords are never stored: ssh asks in the terminal (keys and ssh-agent work), the RDP client asks in its window.
 
 ### AI agents, working as a team
 
@@ -140,7 +145,9 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 | `Ctrl+Alt+Arrows` | Focus the pane in that direction |
 | `Ctrl+Alt+1…9` | Focus pane 1–9 |
 | `Ctrl+Alt+Enter` | Maximize / restore the pane |
-| `Ctrl+Alt+Q` | Close the focused terminal |
+| `Ctrl+Alt+Q` | Close the focused terminal (offers the background when a command runs) |
+| `Ctrl+Alt+P` | Replay the last command |
+| `Ctrl+Alt+W` | Send the terminal to the background (keeps running) |
 | `Ctrl+Alt+B` | Bookmark picker (Space selects several, Shift+Enter runs) |
 | `Ctrl+Alt+E` | Toggle the sidebar |
 | `Ctrl+Alt+S` / `Ctrl+Alt+T` | Scheduler / Tasks |
@@ -222,6 +229,10 @@ sd knowledge verify ID [--status S]  mark knowledge VERIFIED, REVIEWED, STALE or
 sd switch AGENT [--note TEXT]        checkpoint this project's task and continue it with another agent in a new terminal
 sd projects / sd project NAME / sd relate PROJECT   known projects, one project, link related projects
 sd install-skill [AGENT...] [--remove]   teach agent CLIs the sd team commands (automatic on server start)
+sd notes list|add|append|show|replace|delete   Scratchpad notes ("- bullets" are fine; - reads stdin)
+sd top [--json]                      Task manager: machine CPU/RAM/GPU and each terminal's usage
+sd ps [TERMINAL] [--json]            processes running in a terminal (default: this one)
+sd kill TERMINAL PID [--force]       end a process inside a terminal, and its children
 sd edit FILE / sd view FILE          open a file in shelldeck's editor / viewer
 sd search QUERY [--root DIR]         LLM-free code search with ranked, highlighted snippets
 sd render FILE                       pretty-print code or markdown

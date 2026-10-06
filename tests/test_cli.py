@@ -217,3 +217,12 @@ def test_agent_explain_file(tmp_path):
     assert "blocked (approval)" in out and "permission.allow-once" in out and "hunter2" not in out
     f.write_text("all good\n")
     assert "no question found" in CliRunner().invoke(cli.app, ["agent", "explain", "--file", str(f)]).output
+
+
+def test_note_text_may_start_with_a_dash():
+    from shelldeck.cli import _text_args
+
+    assert _text_args(["- step one", "--title", "T"]) == ["--title", "T", "--", "- step one"]
+    assert _text_args(["abc1", "-- x"]) == ["--", "abc1", "-- x"]
+    assert _text_args(["--", "- a", "-t", "T"]) == ["-t", "T", "--", "- a"]
+    assert _text_args(["--help"]) == ["--help"]

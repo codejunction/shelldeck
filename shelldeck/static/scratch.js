@@ -115,3 +115,9 @@ async function onClick(e, el) {
     renderScratch(el);
   }
 }
+
+/** A note changed outside this page (sd notes): reload unless you are mid-edit. */
+export function scratchChanged() {
+  const el = document.getElementById("view-scratch");
+  if (el && !el.hidden && el.dataset.wired && !pending) renderScratch(el);
+}
