@@ -1705,6 +1705,21 @@ textarea:focus {
   max-height: 260px;
 }
 
+/* a generated command: shown whole (wrapped) so it can be read before it is accepted */
+.palette-item:has(.label.mono) {
+  flex-wrap: wrap;
+}
+
+.palette-item .label.mono {
+  flex: 1 1 calc(100% - 30px);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.palette-item:has(.label.mono) .hint {
+  margin-left: 26px;
+}
+
 .palette-foot {
   padding: 8px 12px;
   border-top: 1px solid var(--border);

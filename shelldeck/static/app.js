@@ -290,6 +290,11 @@ class Term {
     if (e.type !== "keydown") return true;
     const k = e.key.toLowerCase();
     if (isAppShortcut(e)) return false;
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && k === "i" && this.atPrompt()) {
+      e.preventDefault();
+      inlineCommands(this, { askOnly: true }); // Ctrl+I: Ask, like Devin's terminal Command (elsewhere it stays Tab)
+      return false;
+    }
     if (e.ctrlKey && !e.altKey && !e.shiftKey && k === "f") {
       e.preventDefault();
       this.openFind();
@@ -324,11 +329,11 @@ class Term {
 
   // ponytail: heuristic command tracking from keystrokes; shell integration (OSC 633) if it proves flaky.
   track(data) {
+    data = data.replace(TERM_REPLIES, ""); // xterm answering the shell (a new ConPTY asks for the cursor), not typing
     for (const part of data.split(/(\r)/)) {
       if (part === "\r") this.commit();
       else if (part === "\x03") (this.line = ""), (this.edited = false);
       else if (part === "\x7f" || part === "\b") this.line = this.line.slice(0, -1);
-      else if (/^\x1b\[[IO]$/.test(part)) continue; // focus in/out reports
       else if (part.startsWith("\x1b") || part.includes("\t")) this.edited = true;
       else if (part >= " ") this.line += part;
     }
@@ -743,6 +748,8 @@ export function updateAgentStates() {
 }
 
 const CMD_MAX = 32;
+// replies xterm sends on its own: cursor position, device attributes, focus in/out, OSC color answers
+const TERM_REPLIES = /\x1b\[[?>]?[\d;]*[RcIO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const LONG_CMD_MS = 10000; // commands at least this long notify when they finish out of view
 // search decorations must be #rrggbb
 const FIND_DECORATIONS = { matchBackground: "#3f3f46", activeMatchBackground: "#7c3aed", matchOverviewRuler: "#71717a", activeMatchColorOverviewRuler: "#a78bfa" };
@@ -1800,14 +1807,15 @@ export function palette({ placeholder = "Type a command or search…", items, mu
   const checked = new Set();
   let shown = [];
   let sel = 0;
+  let override = null; // what a `stay` item shows instead of the matches (a spinner, then its result) until the input changes
   const render = () => {
     const q = input.value.trim();
-    shown = items
+    shown = override || items
       .map((it) => ({ it, score: fuzzy(q, `${it.label} ${it.hint || ""} ${it.group || ""}`) }))
       .filter((x) => x.score > 0)
       .sort((a, b) => (q ? b.score - a.score : 0))
       .map((x) => x.it);
-    if (extra) shown = extra(q, shown);
+    if (extra && !override) shown = extra(q, shown);
     sel = Math.min(sel, Math.max(0, shown.length - 1));
     let group = null;
     list.innerHTML = shown.length
@@ -1816,21 +1824,34 @@ export function palette({ placeholder = "Type a command or search…", items, mu
             const head = !q && it.group && it.group !== group ? `<div class="palette-group">${esc((group = it.group))}</div>` : "";
             return `${head}<div class="palette-item ${i === sel ? "sel" : ""}" data-i="${i}" role="option">
               ${multi ? `<input type="checkbox" tabindex="-1" ${checked.has(it) ? "checked" : ""} />` : ""}
-              ${icon(it.icon || "terminal")}<span class="label">${esc(it.label)}</span><span class="hint">${esc(it.hint || "")}</span></div>`;
+              ${it.busy ? `<span class="spinner sm"></span>` : icon(it.icon || "terminal")}<span class="label ${it.mono ? "mono" : ""}">${esc(it.label)}</span><span class="hint">${esc(it.hint || "")}</span></div>`;
           })
           .join("")
-      : `<div class="placeholder">No matches</div>`;
+      : q ? `<div class="placeholder">No matches</div>` : "";
     list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
   };
   const run = (e) => {
     const picked = multi && checked.size ? [...checked] : shown[sel] ? [shown[sel]] : [];
-    if (!picked.length) return;
+    if (!picked.length || !picked[0].run) return;
+    if (picked[0].stay) {
+      // stays open: the item swaps the list for its progress and result; editing the input goes back to matching
+      const asked = input.value;
+      const show = (list) => {
+        if (!d.el.isConnected || input.value !== asked) return false;
+        override = list;
+        sel = 0;
+        render();
+        return true;
+      };
+      return picked[0].run(e, { show, close: d.close });
+    }
     d.close();
     if (multi) multi(picked, e);
     else picked[0].run(e);
   };
   input.addEventListener("input", () => {
     sel = 0;
+    override = null;
     render();
   });
   input.addEventListener("keydown", (e) => {
@@ -1840,7 +1861,7 @@ export function palette({ placeholder = "Type a command or search…", items, mu
       render();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      run(e);
+      run(e); // Ctrl+Enter too (Devin's accept); Shift+Enter is passed on (runs a bookmark or a generated command)
     } else if (e.key === " " && multi && !input.value) {
       e.preventDefault();
       const it = shown[sel];
@@ -1900,27 +1921,35 @@ function popover(at, body, onClose) {
 }
 
 /** `?` at an empty shell prompt: shelldeck's commands right at the cursor, plus Ask for anything typed. */
-function inlineCommands(term) {
-  const who = [S.settings.ask_agent && S.settings.ask_agent !== "auto" ? S.settings.ask_agent : "", S.settings.ask_model].filter(Boolean).join(" · ");
-  // xterm keeps its input textarea at the cursor (it is taller than a row, so measure one row)
-  const r = term.xterm.textarea.getBoundingClientRect();
-  const row = term.xterm.element.querySelector(".xterm-screen").clientHeight / term.xterm.rows;
+/** `?` at an empty prompt: the command menu at the cursor. `askOnly` (Ctrl+I) is just the Ask box, like Devin's. */
+function inlineCommands(term, { askOnly = false } = {}) {
+  // the cursor cell on screen (xterm's own textarea lags behind in a pane that was just opened)
+  const x = term.xterm;
+  const screen = x.element.querySelector(".xterm-screen").getBoundingClientRect();
+  const row = screen.height / x.rows;
+  const b = x.buffer.active;
+  const top = screen.top + (b.baseY + b.cursorY - b.viewportY) * row;
   palette({
-    at: { left: r.left, top: r.top, bottom: r.top + row },
-    placeholder: "Ask, or pick a command…",
-    items: paletteItems().filter((it) => it.group !== "Terminals"),
+    at: { left: screen.left + b.cursorX * (screen.width / x.cols), top, bottom: top + row },
+    placeholder: askOnly ? `Describe a ${shellLabel(findSession(term.sid)?.shell)} command…` : "Ask, or pick a command…",
+    items: askOnly ? [] : paletteItems().filter((it) => it.group !== "Terminals"),
     // ponytail: a space means a sentence, so Ask goes first; one word prefers a matching command
     extra: (q, shown) => {
       if (!q) return shown;
       const words = q.split(/\s+/);
-      const plugin = (S.pluginCommands || []).find((c) => c.name === words.slice(0, 2).join(" "));
+      const plugin = !askOnly && (S.pluginCommands || []).find((c) => c.name === words.slice(0, 2).join(" "));
       if (plugin) return [pluginItem(plugin, words.slice(2)), ...shown]; // `docker logs web`: the command with its arguments
-      const ask = { group: "Ask", label: `Ask: ${q}`, hint: who || "AI", icon: "sparkle", run: () => askCommand(term, q) };
+      const ask = { group: "Ask", label: `Ask: ${q}`, hint: askWho(), icon: "sparkle", stay: true, run: (e, ctl) => askInto(term, q, ctl) };
       return q.includes(" ") || !shown.length ? [ask, ...shown] : [...shown, ask];
     },
     onClose: () => term.focus(),
-    footer: "Type to ask or filter · ↑↓ · Enter · Esc",
+    footer: askOnly ? "Enter asks, then inserts the answer · Shift+Enter runs it · Esc" : "Type to ask or filter · ↑↓ · Enter · Esc",
   });
+}
+
+function askWho() {
+  const a = S.settings.ask_agent && S.settings.ask_agent !== "auto" ? S.settings.ask_agent : "";
+  return [a, S.settings.ask_model].filter(Boolean).join(" · ") || "AI";
 }
 
 function paletteItems() {
@@ -1998,15 +2027,21 @@ function commandPalette() {
   palette({ items: paletteItems(), footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
 }
 
-async function askCommand(term, q) {
+/** Ask inside the open menu: a spinner while the agent writes, then the command to accept (Enter types it,
+ * Shift+Enter runs it). Editing the question drops the answer, so a new Enter asks again. */
+async function askInto(term, q, ctl) {
+  ctl.show([{ label: `Asking ${askWho()}…`, hint: q, busy: true }]);
   try {
     const { command } = await api("/api/ask", { method: "POST", body: { q, session_id: term.sid } });
-    term.send({ type: "input", data: command }); // typed, never run: Enter is the user's
-    term.line += command; // a later `?` on this line is text, not Ask
+    const insert = (e) => {
+      term.send({ type: "input", data: command + (e?.shiftKey ? "\r" : "") }); // typed; it runs only on Shift+Enter
+      if (!e?.shiftKey) term.line += command; // a later `?` on this line is text, not Ask
+    };
+    ctl.show([{ label: command, mono: true, icon: "terminal", hint: "Enter inserts · Shift+Enter runs", run: insert }]);
   } catch (e) {
-    toast({ title: "No command", body: { no_agent_installed: "Install Claude, Codex, Gemini or Devin first.", no_answer: "The agent gave no command." }[e.message] || e.message, kind: "error" });
+    const why = { no_agent_installed: "Install Claude, Codex, Gemini or Devin first.", no_answer: "The agent gave no command." }[e.message] || e.message;
+    ctl.show([{ label: why, icon: "x", hint: "Edit the question to try again" }]);
   }
-  term.focus();
 }
 
 function gitOfFocused() {

@@ -92,7 +92,7 @@ def _run(cmd: list[str] | None) -> str | None:
         return None
     env = {k: v for k, v in os.environ.items() if k not in ("SHELLDECK_AGENT_REPORT_TOKEN", "SHELLDECK_SESSION_ID")}
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, stdin=subprocess.DEVNULL, env=env,
+        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S, stdin=subprocess.DEVNULL, env=env,
                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     except (OSError, subprocess.SubprocessError):
         return None
