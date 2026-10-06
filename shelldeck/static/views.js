@@ -627,6 +627,15 @@ export async function settingsDialog() {
           ${[["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]]
             .map(([v, l]) => `<option value="${v}" ${(s.recall_agent || "off") === v ? "selected" : ""}>${l}</option>`).join("")}
         </select></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Ask agent (? and sd ask)</span><select name="ask_agent">
+          ${[["auto", "First installed agent"], ["claude", "Claude Code"], ["codex", "Codex"], ["gemini", "Gemini CLI"], ["devin", "Devin CLI"]]
+            .map(([v, l]) => `<option value="${v}" ${(s.ask_agent || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Ask model</span><input name="ask_model" list="ask-models" placeholder="Default (its smallest)" value="${esc(s.ask_model || "")}" /><datalist id="ask-models"></datalist></label>
+      </div>
+      <div class="field-row">
         <label class="field"><span>Resume agent sessions after a restart</span><select name="agent_resume">
           <option value="ask" ${(s.agent_resume || "ask") === "ask" ? "selected" : ""}>Ask (a Resume button on AI agents)</option>
           <option value="auto" ${s.agent_resume === "auto" ? "selected" : ""}>Automatically</option>
@@ -663,6 +672,8 @@ export async function settingsDialog() {
       editor: form.editor.value,
       agent_resume: form.agent_resume.value,
       recall_agent: form.recall_agent.value,
+      ask_agent: form.ask_agent.value,
+      ask_model: form.ask_model.value.trim(),
       font_family: form.font_family.value,
     });
     if (ok) {
@@ -671,6 +682,20 @@ export async function settingsDialog() {
     }
   };
   form.onsubmit = save;
+  // the model list follows the picked agent (installed agents only, from smart recall's pickers)
+  const askModels = (choices) => {
+    const a = choices.find((c) => c.agent === form.ask_agent.value) || (form.ask_agent.value === "auto" ? choices[0] : null);
+    $("#ask-models", d.el).innerHTML = (a?.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
+  };
+  api("/api/context/recall-agents")
+    .then(({ agents }) => {
+      askModels(agents);
+      form.ask_agent.addEventListener("change", () => {
+        form.ask_model.value = "";
+        askModels(agents);
+      });
+    })
+    .catch(() => {});
   d.el.addEventListener("click", async (e) => {
     const a = e.target.closest("[data-a]")?.dataset.a;
     if (a === "save") save(e);

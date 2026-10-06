@@ -1449,6 +1449,18 @@ def switch(
 
 
 @app.command()
+def ask(
+    question: str = typer.Argument(..., help="What you want to do, e.g. \"how many docker containers are running\"."),
+    agent: str = typer.Option("", "--agent", help="Who writes it: claude, codex, gemini, devin (default: first installed)."),
+    model: str = typer.Option("", "--model", "-m", help="With --agent: the model to use (default: its smallest)."),
+):
+    """Print one command for this terminal's shell and OS. It is never run."""
+    out = _api("/api/ask", "POST", {"q": question, "session_id": os.environ.get("SHELLDECK_SESSION_ID", ""),
+                                    "agent": agent, "model": model}, timeout=45)
+    typer.echo(out["command"])
+
+
+@app.command()
 def recall(
     query: str = typer.Argument(..., help="What you're looking for, e.g. \"authentication architecture\"."),
     project: str = typer.Option("", "--project", "-p", help="Rank this project first (default: this folder's)."),
@@ -1617,6 +1629,45 @@ def relate(
 
 
 
+plugin_app = typer.Typer(help="Plugins: installed packages that add `sd <plugin> <command>` and `?` commands.")
+
+
+@plugin_app.command("list")
+def plugin_list():
+    """Installed plugins and their commands."""
+    out = _api("/api/plugins")
+    if not out["plugins"]:
+        typer.echo('no plugins installed (a plugin is a package with a "shelldeck.plugins" entry point)')
+    for p in out["plugins"]:
+        typer.echo(f"{p['name']:<16} {p['version'] or '-':<10} {p['status']}")
+    for c in out["commands"]:
+        typer.echo(f"  sd {c['name']:<24} {c['description']}")
+
+
+@plugin_app.command("enable")
+def plugin_enable(name: str):
+    """Load an installed plugin again."""
+    _api(f"/api/plugins/{urllib.parse.quote(name)}", "POST", {"enabled": True})
+    typer.echo(f"enabled {name}")
+
+
+@plugin_app.command("disable")
+def plugin_disable(name: str):
+    """Stop loading an installed plugin (its code no longer runs)."""
+    _api(f"/api/plugins/{urllib.parse.quote(name)}", "POST", {"enabled": False})
+    typer.echo(f"disabled {name}")
+
+
+@plugin_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def plugin_run(words: list[str] = typer.Argument(..., help="Plugin, command and its arguments, e.g. docker ps -a.")):
+    """Run a plugin command (`sd docker ps` is short for `sd plugin run docker ps`)."""
+    out = _api("/api/plugins/run", "POST", {"words": words, "session_id": os.environ.get("SHELLDECK_SESSION_ID", "")}, timeout=120)
+    typer.echo(out.get("input") or out.get("text") or "", nl=bool(out.get("input") or out.get("text")))
+
+
+app.add_typer(plugin_app, name="plugin")
+
+
 def _commands() -> set[str]:
     """Registered command names (so the folder shorthand never shadows a new command)."""
     names = {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
@@ -1633,7 +1684,8 @@ def _main() -> None:
     while i < len(args) and args[i].startswith("-"):
         i += 2 if args[i] in ("--port", "-p") else 1
     if i < len(args) and args[i] not in COMMANDS:
-        sys.argv.insert(i + 1, "open")
+        # a folder opens; anything else is a plugin command (`sd docker ps` -> `sd plugin run -- docker ps`)
+        sys.argv[i + 1:i + 1] = ["open"] if Path(args[i]).expanduser().is_dir() or i + 1 == len(args) else ["plugin", "run", "--"]
     elif args[i:i + 2] in (["notes", "add"], ["notes", "append"], ["notes", "replace"]):
         sys.argv[i + 3:] = _text_args(args[i + 2:])
     app()

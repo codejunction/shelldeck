@@ -58,3 +58,17 @@ def test_chosen_model_and_choices(monkeypatch):
     rows = {r["agent"]: r for r in smart_recall.choices()}
     assert set(rows) == {"claude", "gemini"} and rows["claude"]["default"] == "haiku" and rows["gemini"]["default"] == "flash-lite"
     assert rows["claude"]["models"][0] == "haiku"
+
+
+def test_ask_returns_one_safe_line(monkeypatch):
+    monkeypatch.setattr(smart_recall.shutil, "which", lambda exe: f"/bin/{exe}")
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, "```powershell\ndocker ps -q | Measure-Object\x1b[2J\r\n```\nexplanation", "")
+
+    monkeypatch.setattr(smart_recall.subprocess, "run", run)
+    assert smart_recall.ask("count containers token=abc123", "PowerShell 7", "Windows", "C:/x", "claude") == "docker ps -q | Measure-Object[2J"
+    assert "PowerShell 7" in seen[0] and "abc123" not in seen[0]
+    assert smart_recall.command_line("") == ""

@@ -276,6 +276,7 @@ class Term {
     this.xterm.onData((data) => {
       if (this.replaying) return;
       data = withCtrl(data);
+      if (data === "?" && this.atPrompt()) return inlineCommands(this);
       this.track(data);
       this.send({ type: "input", data });
     });
@@ -313,6 +314,12 @@ class Term {
     // let the browser fire a paste event; xterm handles it
     if ((e.ctrlKey && !e.altKey && k === "v") || (e.shiftKey && k === "insert")) return false;
     return true;
+  }
+
+  /** An empty line at a shell prompt: `?` there opens Ask instead of reaching the shell. Needs shell
+   * integration (no WSL), so vim, less, ssh and agents' own input always get the key. */
+  atPrompt() {
+    return this.integrated && !this.running && !this.line && !this.edited && !S.agents[this.sid] && this.xterm.buffer.active.type === "normal";
   }
 
   // ponytail: heuristic command tracking from keystrokes; shell integration (OSC 633) if it proves flaky.
@@ -360,6 +367,7 @@ class Term {
     const [kind, code] = data.split(";");
     this.integrated = true;
     if (kind === "A") {
+      this.running = null; // a prompt means nothing runs (an empty Enter sets running but gets no D)
       const m = this.xterm.registerMarker(0);
       if (m) this.prompts.push(m);
       if (this.prompts.length > 500) this.prompts.shift().dispose();
@@ -1782,12 +1790,11 @@ function fuzzy(q, text) {
 }
 
 /** Generic palette. items: {group, label, hint, icon, run(e)} ; multi: allow checking several. */
-export function palette({ placeholder = "Type a command or search…", items, multi = null, footer = "" }) {
-  const d = dialog({
-    cls: "palette",
-    body: `<input type="search" placeholder="${esc(placeholder)}" autofocus aria-label="Search" /><div class="palette-list" role="listbox"></div>${footer ? `<div class="palette-foot">${footer}</div>` : ""}`,
-  });
-  d.el.querySelector(".dialog-body").style.padding = "0";
+export function palette({ placeholder = "Type a command or search…", items, multi = null, footer = "", at = null, extra = null, onClose = null }) {
+  const body = `<input type="search" placeholder="${esc(placeholder)}" autofocus aria-label="Search" /><div class="palette-list" role="listbox"></div>${footer ? `<div class="palette-foot">${footer}</div>` : ""}`;
+  const d = at ? popover(at, body, onClose) : dialog({ cls: "palette", body, onClose });
+  const dbody = d.el.querySelector(".dialog-body");
+  if (dbody) dbody.style.padding = "0";
   const input = $("input", d.el);
   const list = $(".palette-list", d.el);
   const checked = new Set();
@@ -1800,6 +1807,7 @@ export function palette({ placeholder = "Type a command or search…", items, mu
       .filter((x) => x.score > 0)
       .sort((a, b) => (q ? b.score - a.score : 0))
       .map((x) => x.it);
+    if (extra) shown = extra(q, shown);
     sel = Math.min(sel, Math.max(0, shown.length - 1));
     let group = null;
     list.innerHTML = shown.length
@@ -1863,7 +1871,59 @@ export function palette({ placeholder = "Type a command or search…", items, mu
   return d;
 }
 
-function commandPalette() {
+/** The palette as a small menu at a point (the terminal cursor) instead of a dialog. */
+function popover(at, body, onClose) {
+  const el = document.createElement("div");
+  el.className = "palette inline";
+  el.innerHTML = body;
+  el.style.left = `${Math.max(8, Math.min(at.left, innerWidth - 428))}px`;
+  if (at.bottom + 340 < innerHeight) el.style.top = `${at.bottom + 4}px`;
+  else el.style.bottom = `${innerHeight - at.top + 4}px`; // no room below: grow upward from the cursor
+  document.body.append(el);
+  const close = () => {
+    if (!el.isConnected) return;
+    el.remove();
+    removeEventListener("mousedown", outside, true);
+    onClose?.();
+  };
+  const outside = (e) => !el.contains(e.target) && close();
+  addEventListener("mousedown", outside, true);
+  const input = $("input", el);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || (e.key === "Backspace" && !input.value)) {
+      e.preventDefault();
+      close();
+    }
+  });
+  setTimeout(() => input.focus(), 0);
+  return { el, close };
+}
+
+/** `?` at an empty shell prompt: shelldeck's commands right at the cursor, plus Ask for anything typed. */
+function inlineCommands(term) {
+  const who = [S.settings.ask_agent && S.settings.ask_agent !== "auto" ? S.settings.ask_agent : "", S.settings.ask_model].filter(Boolean).join(" · ");
+  // xterm keeps its input textarea at the cursor (it is taller than a row, so measure one row)
+  const r = term.xterm.textarea.getBoundingClientRect();
+  const row = term.xterm.element.querySelector(".xterm-screen").clientHeight / term.xterm.rows;
+  palette({
+    at: { left: r.left, top: r.top, bottom: r.top + row },
+    placeholder: "Ask, or pick a command…",
+    items: paletteItems().filter((it) => it.group !== "Terminals"),
+    // ponytail: a space means a sentence, so Ask goes first; one word prefers a matching command
+    extra: (q, shown) => {
+      if (!q) return shown;
+      const words = q.split(/\s+/);
+      const plugin = (S.pluginCommands || []).find((c) => c.name === words.slice(0, 2).join(" "));
+      if (plugin) return [pluginItem(plugin, words.slice(2)), ...shown]; // `docker logs web`: the command with its arguments
+      const ask = { group: "Ask", label: `Ask: ${q}`, hint: who || "AI", icon: "sparkle", run: () => askCommand(term, q) };
+      return q.includes(" ") || !shown.length ? [ask, ...shown] : [...shown, ask];
+    },
+    onClose: () => term.focus(),
+    footer: "Type to ask or filter · ↑↓ · Enter · Esc",
+  });
+}
+
+function paletteItems() {
   const items = [];
   for (const s of allSessions()) {
     items.push({ group: "Terminals", label: sessionTitle(s), hint: s.project.name, icon: "terminal", run: () => showSession(s.id) });
@@ -1896,6 +1956,7 @@ function commandPalette() {
     ["Scratchpad", "note", () => switchView("scratch")],
     ["Context", "sparkle", () => switchView("context")],
     ["Open file…", "note", () => openFileDialog()],
+    ["Ask for a command…", "sparkle", () => (S.terms.get(S.focused) ? inlineCommands(S.terms.get(S.focused)) : toast({ title: "Focus a terminal first" })), "?"],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
     ["Open scheduler", "clock", () => switchView("scheduler"), "Ctrl+Alt+S"],
@@ -1906,7 +1967,46 @@ function commandPalette() {
     ["Lock", "lock", () => lockNow(), "Ctrl+Alt+L"],
   ];
   for (const [label, ic, run, hint] of cmds) items.push({ group: "Commands", label, icon: ic, run, hint });
-  palette({ items, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+  for (const c of S.pluginCommands || []) items.push(pluginItem(c));
+  return items;
+}
+
+function pluginItem(c, args = []) {
+  const label = [c.name, ...args].join(" ");
+  return { group: "Plugins", label, hint: c.description, icon: "grid", run: () => runPlugin(label.split(" ")) };
+}
+
+/** A plugin command for the focused terminal: `input` is typed at its prompt (never run), text is shown. */
+async function runPlugin(words) {
+  const term = S.terms.get(S.focused);
+  try {
+    const out = await api("/api/plugins/run", { method: "POST", body: { words, session_id: term?.sid || "" } });
+    if (out.input && term) {
+      term.send({ type: "input", data: out.input });
+      term.line += out.input;
+      return term.focus();
+    }
+    const text = out.input || out.text;
+    if (text) dialog({ title: words.join(" "), wide: true, body: `<pre class="mono plugin-out">${esc(text)}</pre>` });
+    else term?.focus();
+  } catch (e) {
+    toast({ title: `${words.slice(0, 2).join(" ")} failed`, body: e.data?.detail || e.message, kind: "error" });
+  }
+}
+
+function commandPalette() {
+  palette({ items: paletteItems(), footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+}
+
+async function askCommand(term, q) {
+  try {
+    const { command } = await api("/api/ask", { method: "POST", body: { q, session_id: term.sid } });
+    term.send({ type: "input", data: command }); // typed, never run: Enter is the user's
+    term.line += command; // a later `?` on this line is text, not Ask
+  } catch (e) {
+    toast({ title: "No command", body: { no_agent_installed: "Install Claude, Codex, Gemini or Devin first.", no_answer: "The agent gave no command." }[e.message] || e.message, kind: "error" });
+  }
+  term.focus();
 }
 
 function gitOfFocused() {
@@ -2252,6 +2352,7 @@ async function init() {
     openFile(params.get("file"), { mode: params.get("mode") === "view" ? "view" : "edit" });
   }
   views.loadBookmarks();
+  api("/api/plugins").then((r) => (S.pluginCommands = r.commands)).catch(() => {});
   if (EMBED) return setInterval(refreshProjects, 5000);
   connectAlarms();
   initShare();

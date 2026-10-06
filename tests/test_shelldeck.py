@@ -121,6 +121,8 @@ def test_team(client, tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
 
     team._selfcheck()  # tiers, model picks, spawn line, skill install
+    import yaml
+    assert yaml.safe_load(team.SKILL.split("---\n")[1])["name"] == "shelldeck"  # bad frontmatter hides the skill
     started = []
 
     async def fake_start(sid, line):

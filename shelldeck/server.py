@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import agent_commands, detection, smart_recall
 from . import agent_state as lifecycle
-from . import agents, auth, context, db, gitgraph, integrations, remotes, share, shells, stats, team
+from . import agents, auth, context, db, gitgraph, integrations, plugins, remotes, share, shells, stats, team
 from . import scheduler as sched
 from .pty import PtyManager
 
@@ -58,6 +58,8 @@ SETTINGS_DEFAULTS = {
     "font_family": "",
     "editor": "vscode",
     "agent_resume": "ask",
+    "ask_agent": "auto",  # auto | claude | codex | gemini | devin: who writes `?` / `sd ask` commands
+    "ask_model": "",  # that agent's model; empty = its smallest
     "recall_agent": "off",  # off | auto | claude | codex | gemini | devin: whose small model widens `sd recall --smart`  # never | ask | auto: start a stored agent session again when its terminal comes back
 }
 # keep in sync with TERMINAL_THEMES in static/app.js
@@ -193,6 +195,7 @@ async def lifespan(app: FastAPI):
     db.init_db()
     if code := auth.init_auth():
         log.warning("no password yet; remote setup code: %s", code)
+    await asyncio.to_thread(plugins.load, _plugins_off())
     await sched.start()
     sched.set_alarm_callback(_broadcast_alarm)
     await sched.reminder_service.sync_all()
@@ -801,6 +804,10 @@ async def write_settings(payload: dict):
             return err("invalid_agent_resume")
         if key == "recall_agent" and value not in ("off", "auto", *smart_recall.PRIORITY):
             return err("invalid_recall_agent")
+        if key == "ask_agent" and value not in ("auto", *smart_recall.PRIORITY):
+            return err("invalid_ask_agent")
+        if key == "ask_model" and value and not team.SAFE_MODEL.match(value):
+            return err("invalid_ask_model")
     for key, value in payload.items():
         db.set_setting(key, str(value).strip())
     return get_settings()
@@ -1577,6 +1584,9 @@ def _emit(type_: str, data: dict) -> None:
     for ev in _event_waiters:
         ev.set()
     _event_waiters.clear()
+    if any(p.handlers for p in plugins.loaded.values()):
+        # ponytail: a thread per event keeps slow plugin handlers off the event loop; a queue if events get busy
+        threading.Thread(target=plugins.emit, args=(type_, data), daemon=True).start()
 
 
 def _changed() -> None:
@@ -1873,6 +1883,73 @@ async def extract_facts(session_id: str):
         return err("not_running", 409)
     _emit("agent.command", {"session_id": session_id, "agent": key, "command": "extract"})
     return {"agent": key}
+
+
+ASK_SHELL = {"pwsh": "PowerShell 7", "powershell": "Windows PowerShell 5.1", "cmd": "cmd.exe", "gitbash": "Git Bash",
+             "wsl": "bash"}
+
+
+@app.post("/api/ask")
+async def ask(payload: dict):
+    """`?` in a terminal / `sd ask`: one command for the terminal's shell and OS from an installed agent's small
+    model. Only returned, never run: the UI types it without Enter."""
+    q = str(payload.get("q") or "").strip()
+    if not q:
+        return err("empty_question")
+    settings = get_settings()
+    agent = smart_recall.pick(str(payload.get("agent") or settings["ask_agent"]))
+    if not agent:
+        return err("no_agent_installed", 409)
+    s = db.get_session(str(payload.get("session_id") or "")) or {}
+    kind = s.get("shell") or settings["default_shell"]
+    where = "Linux (WSL)" if kind == "wsl" else {"win32": "Windows", "darwin": "macOS"}.get(sys.platform, "Linux")
+    model = str(payload.get("model") or "") or (None if payload.get("agent") else settings["ask_model"] or None)
+    cmd = await asyncio.to_thread(smart_recall.ask, q, ASK_SHELL.get(kind, shells.label(kind)), where, s.get("cwd") or "", agent, model)
+    return {"command": cmd, "agent": agent} if cmd else err("no_answer", 502)
+
+
+def _plugins_off() -> set[str]:
+    return {n for n in db.get_setting("plugins_disabled", "").split(",") if n}
+
+
+@app.get("/api/plugins")
+async def plugin_list():
+    """Installed plugins (loaded, disabled or the load error) and the commands of the loaded ones."""
+    info = {p.name: p.version for p in plugins.loaded.values()}
+    return {"plugins": [{"name": n, "status": st, "version": info.get(n, "")} for n, st in sorted(plugins.found.items())],
+            "commands": plugins.commands()}
+
+
+@app.post("/api/plugins/run")
+async def plugin_run(payload: dict):
+    """`?docker ps -a` / `sd docker ps -a`: a plugin command, run in the server with the terminal's context."""
+    words = payload.get("words")
+    if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+        return err("invalid_words")
+    s = db.get_session(str(payload.get("session_id") or "")) or {}
+    p = db.get_project(s["project_id"]) if s.get("project_id") else None
+    ctx = {"session_id": s.get("id", ""), "cwd": s.get("cwd") or (p or {}).get("path", ""), "shell": s.get("shell") or "",
+           "project": (p or {}).get("path", "")}
+    try:
+        return await asyncio.to_thread(plugins.run, words, ctx)
+    except KeyError:
+        return err("unknown_command", 404)
+    except Exception as e:  # noqa: BLE001 - the plugin's own error, shown to whoever ran it
+        log.warning("plugin command %s failed", " ".join(words[:2]), exc_info=True)
+        return JSONResponse({"error": "plugin_failed", "detail": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.post("/api/plugins/{name}")
+async def plugin_toggle(name: str, payload: dict, request: Request):
+    """Host only: enable or disable an installed plugin, then reload them all."""
+    if not _host(request):
+        return err("host_only", 403)
+    if name not in plugins.found:
+        return err("unknown_plugin", 404)
+    off = _plugins_off() - {name} if payload.get("enabled") else _plugins_off() | {name}
+    db.set_setting("plugins_disabled", ",".join(sorted(off)))
+    await asyncio.to_thread(plugins.load, off)
+    return await plugin_list()
 
 
 @app.post("/api/agent-prompt")
