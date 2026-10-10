@@ -105,8 +105,11 @@ def ensure_server() -> None:
         if sys.platform == "win32"
         else {"start_new_session": True}
     )
+    # the venv's shelldeck.exe launcher, so Task Manager groups the server (and its shells) under shelldeck, not Python
+    exe = Path(sys.executable).with_name("shelldeck.exe")
+    cmd = [str(exe)] if sys.platform == "win32" and exe.exists() else [sys.executable, "-m", "shelldeck"]
     subprocess.Popen(
-        [sys.executable, "-m", "shelldeck", "--port", str(CFG["port"]), "serve"],
+        [*cmd, "--port", str(CFG["port"]), "serve"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -270,9 +273,7 @@ def serve(
     key: Path = typer.Option(None, "--key", exists=True, dir_okay=False, help="TLS private key (PEM)."),
     insecure_http: bool = typer.Option(False, "--insecure-http", help="Allow plain HTTP on a non-local address (trusted network only)."),
 ):
-    """Run the server in the foreground."""
-    from .server import run
-
+    """Run the server in the foreground: sd-pty (the shells) and sd-ui (the web app)."""
     if bool(cert) != bool(key):
         typer.echo("error: --cert and --key go together", err=True)
         raise typer.Exit(2)
@@ -284,9 +285,97 @@ def serve(
             err=True,
         )
         raise typer.Exit(2)
+    _proc_name("shelldeck")
     db.init_db()
     _banner(host, "foreground, Ctrl+C stops", "https" if cert else "http")
-    run(host=host, port=CFG["port"], certfile=str(cert) if cert else None, keyfile=str(key) if key else None)
+    ui_args = ["--host", host] + (["--cert", str(cert), "--key", str(key)] if cert else []) + (["--insecure-http"] if insecure_http else [])
+    raise typer.Exit(_supervise(ui_args))
+
+
+def _proc_name(name: str) -> None:
+    """Linux: show as `name`, not python3, in top and system monitors (Windows gets it from the exe's name)."""
+    if sys.platform.startswith("linux"):
+        import ctypes
+
+        ctypes.CDLL(None).prctl(15, name.encode(), 0, 0, 0)  # PR_SET_NAME
+
+
+def _role_argv(role: str, folder: Path | None = None) -> list[str]:
+    """The program to start as sd-pty / sd-ui: the exe of that name (frozen build or installed script, so Task
+    Manager shows it), else python -m shelldeck. The caller adds the subcommand (ptyhost / ui)."""
+    exe = (folder or Path(sys.executable).parent) / (role + (".exe" if sys.platform == "win32" else ""))
+    return [str(exe)] if exe.exists() else [sys.executable, "-m", "shelldeck"]
+
+
+def _supervise(ui_args: list[str]) -> int:
+    """shelldeck = sd-pty (owns the shells, long-lived) + sd-ui (web server and app, restartable).
+    sd-ui exits 0 to stop everything, RESTART_UI after an update (the shells keep running) and
+    RESTART_ALL when it needs a new sd-pty too."""
+    import secrets
+
+    from . import frozen, ptyhost, update
+
+    if r := frozen.root():  # standalone: `sd` in the terminals (and agent hooks) runs the current version
+        frozen.ensure_shims()
+        os.environ["PATH"] = str(r) + os.pathsep + os.environ.get("PATH", "")
+    # the shells (in sd-pty) inherit these, so `sd` inside them reaches this server and its data folder
+    os.environ["SHELLDECK_PORT"] = str(CFG["port"])
+    if "SHELLDECK_HOME" in os.environ:
+        os.environ["SHELLDECK_HOME"] = str(db.config_dir().resolve())
+    # its own process group: a Ctrl+C in this console stops sd-ui, never the shells' host
+    group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+    while True:
+        token = secrets.token_urlsafe(32)
+        host = subprocess.Popen([*_role_argv("sd-pty"), "ptyhost"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                env=os.environ | {ptyhost.TOKEN_ENV: token}, **group)
+        try:
+            env = os.environ | {ptyhost.ADDR_ENV: f"127.0.0.1:{ptyhost.read_port(host)}", ptyhost.TOKEN_ENV: token}
+            while True:
+                ui = subprocess.Popen([*_role_argv("sd-ui", update.app_dir()), "--port", str(CFG["port"]), "ui", *ui_args], env=env)
+                try:
+                    code = ui.wait()
+                except KeyboardInterrupt:  # the console's Ctrl+C reached sd-ui too; let it shut down
+                    code = ui.wait()
+                if code != ptyhost.RESTART_UI:
+                    break
+        finally:
+            host.stdin.close()  # sd-pty saves scrollback and closes its shells
+            try:
+                host.wait(15)
+            except subprocess.TimeoutExpired:
+                host.kill()
+        if code != ptyhost.RESTART_ALL:
+            return code
+
+
+@app.command("ptyhost", hidden=True)
+def ptyhost_cmd():
+    """sd-pty: the long-lived process that owns the shells (started by `serve`)."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    from . import ptyhost
+
+    _proc_name("sd-pty")
+    handler = RotatingFileHandler(db.config_dir() / "sd-pty.log", maxBytes=1_000_000, backupCount=1, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.INFO)
+    ptyhost.run(db.config_dir() / "scrollback")
+
+
+@app.command("ui", hidden=True)
+def ui_cmd(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    cert: Path = typer.Option(None, "--cert"),
+    key: Path = typer.Option(None, "--key"),
+    insecure_http: bool = typer.Option(False, "--insecure-http"),
+):
+    """sd-ui: the web server and app (started by `serve`; restarts on an update)."""
+    from .server import run
+
+    _proc_name("sd-ui")
+    raise typer.Exit(run(host=host, port=CFG["port"], certfile=str(cert) if cert else None, keyfile=str(key) if key else None))
 
 
 @app.command("reset-password")
@@ -444,6 +533,25 @@ def stop():
         return
     _api("/api/shutdown", "POST", {})
     typer.echo("stopped")
+
+
+@app.command("restart")
+def restart():
+    """Restart the web app (sd-ui) only; terminals keep running. Picks up updated code."""
+    if _health() != "ok":
+        typer.echo("shelldeck is not running")
+        raise typer.Exit(1)
+    _api("/api/restart", "POST", {})
+    down = False
+    for _ in range(80):
+        time.sleep(0.25)
+        up = _health() == "ok"
+        down = down or not up  # the old sd-ui answers until it has stopped
+        if down and up:
+            typer.echo("restarted")
+            return
+    typer.echo(f"the web app did not come back; see {db.config_dir() / 'shelldeck.log'}", err=True)
+    raise typer.Exit(1)
 
 
 @app.command("open")
@@ -1667,6 +1775,20 @@ def plugin_run(words: list[str] = typer.Argument(..., help="Plugin, command and 
 
 
 app.add_typer(plugin_app, name="plugin")
+
+
+@app.command("shelldeck.hook", hidden=True, context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def hook_entry(ctx: typer.Context):
+    """Agent hooks in the standalone build (`python -m shelldeck.hook` everywhere else)."""
+    from . import hook
+
+    raise typer.Exit(hook.main(ctx.args))
+
+
+@app.command(hidden=True)
+def askpass():
+    """SSH_ASKPASS in the standalone build: print SHELLDECK_ASKPASS (set only in that ssh's environment)."""
+    sys.stdout.write(os.environ.get("SHELLDECK_ASKPASS", "") + "\n")
 
 
 def _commands() -> set[str]:

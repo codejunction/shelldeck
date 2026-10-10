@@ -22,7 +22,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-import psutil
 import segno
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -33,6 +32,7 @@ from . import agent_commands, detection, smart_recall
 from . import agent_state as lifecycle
 from . import agents, auth, context, db, gitgraph, integrations, plugins, remotes, share, shells, stats, team
 from . import scheduler as sched
+from . import ptyhost, update
 from .pty import PtyManager
 
 log = logging.getLogger("shelldeck")
@@ -67,7 +67,8 @@ TERMINAL_THEMES = ("default", "dracula", "one-dark", "nord", "gruvbox-dark", "so
 FONT_FAMILY = re.compile(r"[\w ,.'\"-]{0,120}")
 
 
-manager = PtyManager()
+manager: PtyManager = PtyManager()  # a ptyhost.PtyClient under the supervisor (lifespan)
+EXIT = {"code": 0}  # sd-ui's exit code: tells the supervisor to stop, or to restart the UI (ptyhost.RESTART_UI)
 sockets: dict[str, set[WebSocket]] = {}
 readers: dict[str, asyncio.Task] = {}
 alarm_sockets: set[WebSocket] = set()
@@ -202,12 +203,19 @@ async def lifespan(app: FastAPI):
     await sched.start()
     sched.set_alarm_callback(_broadcast_alarm)
     await sched.reminder_service.sync_all()
-    manager.store = db.config_dir() / "scrollback"
-    manager.prune({s["id"] for s in db.list_sessions()})
+    global manager
+    if addr := os.environ.get(ptyhost.ADDR_ENV):  # under the supervisor: the shells live in sd-pty
+        manager = ptyhost.PtyClient(addr, os.environ.pop(ptyhost.TOKEN_ENV, ""))
+        manager.store = db.config_dir() / "scrollback"
+        await manager.connect(_host_terminal, _host_lost)
+    else:
+        manager.store = db.config_dir() / "scrollback"
+        manager.prune({s["id"] for s in db.list_sessions()})
     saver = asyncio.create_task(_save_scrollback())
     asker = asyncio.create_task(_watch_questions())
     watcher = asyncio.create_task(_watch_share())
     agent_watch = asyncio.create_task(_watch_agents())
+    updates = asyncio.create_task(_watch_updates())
     # every start refreshes the shelldeck skill of each agent CLI on PATH (dev/test homes skip it);
     # `sd install-skill --remove` turns this off
     if "SHELLDECK_HOME" not in os.environ and db.get_setting("agent_skills", "on") == "on":
@@ -221,6 +229,7 @@ async def lifespan(app: FastAPI):
     asker.cancel()
     watcher.cancel()
     agent_watch.cancel()
+    updates.cancel()
     STOPPING.set()
     if _share:
         await asyncio.to_thread(share.stop)
@@ -229,9 +238,25 @@ async def lifespan(app: FastAPI):
     sched.shutdown()
     for task in list(readers.values()):
         task.cancel()
-    manager.save()
-    for sid in list(manager.procs):
-        manager.terminate(sid)
+    if not isinstance(manager, ptyhost.PtyClient):  # sd-pty keeps its shells; the supervisor stops it
+        manager.save()
+        for sid in list(manager.procs):
+            manager.terminate(sid)
+
+
+def _host_terminal(sid: str) -> None:
+    """A terminal already running in sd-pty when this UI started (an update restarted it): pump it again."""
+    if token := manager.env.get(sid, {}).get("SHELLDECK_AGENT_REPORT_TOKEN"):
+        report_tokens[sid] = token
+    if sid not in readers:
+        readers[sid] = asyncio.get_running_loop().create_task(_pump(sid))
+
+
+def _host_lost() -> None:
+    if not STOPPING.is_set():
+        log.error("lost the pty host; asking the supervisor for a full restart")
+        logging.shutdown()
+        os._exit(ptyhost.RESTART_ALL)
 
 
 async def _save_scrollback() -> None:
@@ -366,6 +391,66 @@ async def shutdown():
     if _server:
         _server.should_exit = True
     return {"status": "stopping"}
+
+
+@app.get("/api/update")
+async def update_status(force: bool = False):
+    """Is a newer shelldeck out? how: 'ota' (this standalone install updates in place) or 'uv' (uv tool upgrade)."""
+    try:
+        info = await asyncio.to_thread(update.check, VERSION, force)
+    except (OSError, ValueError, KeyError) as e:
+        log.warning("update check failed: %s", e)
+        return err("update_check_failed", 503)
+    # in place needs the supervisor: only then do the shells outlive a restart of this process
+    return info | {"in_place": info["how"] == "ota" and isinstance(manager, ptyhost.PtyClient)}
+
+
+@app.post("/api/update")
+async def update_apply(request: Request):
+    """Install the latest standalone release next to this one and restart sd-ui from it; the shells keep running."""
+    if not _host(request):
+        return err("host_only", 403)
+    if not isinstance(manager, ptyhost.PtyClient):
+        return err("not_supervised", 409)
+    try:
+        new = await asyncio.to_thread(update.apply, VERSION)
+    except (OSError, ValueError, KeyError, RuntimeError) as e:
+        log.warning("update failed: %s", e)
+        return JSONResponse({"error": "update_failed", "detail": str(e)}, status_code=500)
+    log.info("updated to %s; restarting the UI", new)
+    _restart_ui()
+    return {"status": "restarting", "version": new}
+
+
+@app.post("/api/restart")
+async def restart_ui(request: Request):
+    """Host only: restart sd-ui (new code, same shells)."""
+    if not _host(request):
+        return err("host_only", 403)
+    if not isinstance(manager, ptyhost.PtyClient):
+        return err("not_supervised", 409)
+    _restart_ui()
+    return {"status": "restarting"}
+
+
+def _restart_ui() -> None:
+    EXIT["code"] = ptyhost.RESTART_UI
+    asyncio.get_running_loop().call_later(0.3, lambda: setattr(_server, "should_exit", True))
+
+
+async def _watch_updates() -> None:
+    """Tell host browsers once per new version (the page offers Update, or the upgrade command)."""
+    told = ""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            info = await asyncio.to_thread(update.check, VERSION)
+        except (OSError, ValueError, KeyError):
+            info = {}
+        if info.get("available") and info["latest"] != told:
+            told = info["latest"]
+            await _broadcast({"type": "update", **info, "in_place": info["how"] == "ota" and isinstance(manager, ptyhost.PtyClient)}, host_only=True)
+        await asyncio.sleep(update.CHECK_S)
 
 
 # ---------------------------------------------------------------------------
@@ -826,7 +911,7 @@ async def get_stats():
 async def session_processes(session_id: str):
     """The processes running in one terminal (below its shell), for sd ps."""
     proc = manager.get(session_id)
-    if not proc or not proc.isalive():
+    if not proc or not proc.isalive() or not proc.pid:
         return err("not_running", 409)
     return {"shell_pid": proc.pid, "processes": await asyncio.to_thread(stats.processes, proc.pid)}
 
@@ -836,7 +921,7 @@ async def end_process(session_id: str, pid: int, payload: dict | None = None):
     """End a process inside one terminal (and its children): terminate, then kill after 3s; `force` kills at once.
     Only that terminal's descendants qualify (use sd close for the terminal itself)."""
     proc = manager.get(session_id)
-    if not proc or not proc.isalive():
+    if not proc or not proc.isalive() or not proc.pid:
         return err("not_running", 409)
     result = await asyncio.to_thread(stats.end, proc.pid, pid, bool((payload or {}).get("force")))
     if result in ("not_in_terminal", "gone"):
@@ -846,7 +931,7 @@ async def end_process(session_id: str, pid: int, payload: dict | None = None):
 
 
 def _shell_pids() -> dict[str, int]:
-    return {sid: proc.pid for sid, proc in list(manager.procs.items()) if proc.isalive()}
+    return {sid: proc.pid for sid, proc in list(manager.procs.items()) if proc.isalive() and proc.pid}
 
 
 @app.get("/api/agents")
@@ -910,10 +995,7 @@ def _tree_pids(shells: dict[str, int]) -> set[int]:
     """Every pid under a shelldeck shell (so `outside` skips them)."""
     pids = set(shells.values())
     for pid in shells.values():
-        try:
-            pids.update(p.pid for p in psutil.Process(pid).children(recursive=True))
-        except psutil.Error:
-            continue
+        pids.update(agents.descendants(pid))
     return pids
 
 
@@ -2164,7 +2246,7 @@ async def _type(session_id: str, text: str, enter: bool = True) -> bool:
 async def _agent_in(session_id: str) -> str | None:
     """The agent running in a terminal, if any."""
     proc = manager.get(session_id)
-    found = await asyncio.to_thread(agents.running, {session_id: proc.pid}) if proc else {}
+    found = await asyncio.to_thread(agents.running, {session_id: proc.pid}) if proc and proc.pid else {}
     return found[session_id][0] if session_id in found else None
 
 
@@ -2637,6 +2719,12 @@ async def _send_all(session_id: str, message: dict) -> None:
             sockets.get(session_id, set()).discard(ws)
 
 
+def _restored_msg(session_id: str) -> dict | None:
+    """The previous run's terminal text as plain lines: no cursor moves that would land in the new shell's screen."""
+    sb = manager.scrollback.get(session_id)
+    return {"type": "restored", "data": _plain(sb.restored), "when": sb.restored_at} if sb and sb.restored else None
+
+
 async def _pump(session_id: str) -> None:
     """Single reader per session; fans output out to every attached socket."""
     queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -2650,6 +2738,8 @@ async def _pump(session_id: str) -> None:
 
     manager.stream(session_id, emit)
     try:
+        if msg := _restored_msg(session_id):  # before any output: the browser puts it above the new shell
+            await _send_all(session_id, msg)
         done = False
         while not done:
             data = await queue.get()
@@ -2684,15 +2774,20 @@ async def _pump(session_id: str) -> None:
             await _close(ws)
     finally:
         readers.pop(session_id, None)
-        for d in (out_at, busy_since, burst, report_tokens):
-            d.pop(session_id, None)
-        manager.terminate(session_id)
-        try:
-            t = asyncio.get_running_loop().create_task(_orphaned(session_id))
-            background.add(t)
-            t.add_done_callback(background.discard)
-        except RuntimeError:  # loop closing
-            pass
+        if not (STOPPING.is_set() and isinstance(manager, ptyhost.PtyClient)):  # else sd-pty keeps the shell
+            _ended(session_id)
+
+
+def _ended(session_id: str) -> None:
+    for d in (out_at, busy_since, burst, report_tokens):
+        d.pop(session_id, None)
+    manager.terminate(session_id)
+    try:
+        t = asyncio.get_running_loop().create_task(_orphaned(session_id))
+        background.add(t)
+        t.add_done_callback(background.discard)
+    except RuntimeError:  # loop closing
+        pass
 
 
 def _clamp(value, lo: int, hi: int, default: int) -> int:
@@ -2794,6 +2889,8 @@ async def terminal_ws(ws: WebSocket, session_id: str):
     sockets.setdefault(session_id, set()).add(ws)
     socket_owner[ws] = login
     try:
+        if msg := _restored_msg(session_id):
+            await ws.send_text(json.dumps(msg))
         if history := manager.history(session_id):
             await ws.send_text(json.dumps({"type": "output", "data": history, "replay": True}))
         if session_id in at_prompt:
@@ -3145,7 +3242,7 @@ def _setup_logging() -> None:
     logging.getLogger().setLevel(logging.INFO)
 
 
-def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, keyfile: str | None = None) -> None:
+def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, keyfile: str | None = None) -> int:
     global ALLOWED_HOSTS, _server
     if host in ("0.0.0.0", "::"):
         ALLOWED_HOSTS = None
@@ -3169,3 +3266,4 @@ def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, 
         ws_ping_interval=20, ws_ping_timeout=20,  # drop dead connections; the UI reconnects
     ))
     _server.run()
+    return EXIT["code"]

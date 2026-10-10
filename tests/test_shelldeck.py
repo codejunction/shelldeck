@@ -47,9 +47,10 @@ def test_scrollback_survives_restart(tmp_path):
     m.scrollback["abc123"] = sb = Scrollback()
     sb.add("hello from before\r\n")
     m.save()
-    restored = PtyManager(store=tmp_path)._restore("abc123").text()
-    assert restored.startswith("hello from before\r\n") and "restored" in restored  # CRLF kept
-    assert PtyManager(store=tmp_path)._restore("../evil").text() == ""
+    back = PtyManager(store=tmp_path)._restore("abc123")
+    assert back.restored == "hello from before\r\n" and back.restored_at and back.text() == ""  # CRLF kept, not in the live stream
+    assert back.persisted() == "hello from before\r\n"  # kept for the next restart until a snapshot replaces it
+    assert PtyManager(store=tmp_path)._restore("../evil").restored == ""
     m.snapshot("abc123", "rendered screen")
     assert sb.persisted() == "rendered screen"
     sb.add("x" * 5000)  # lots of output since the snapshot: fall back to raw
@@ -81,6 +82,7 @@ def test_agents(client, tmp_path, monkeypatch):
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "@anthropic-ai/claude-code", "--model", "opus"])
     try:
         time.sleep(0.5)
+        agents._ppids["at"] = 0  # the shared process snapshot may predate the child
         assert agents.running({"me": os.getpid()}) == {"me": ("claude", "opus")}
         assert stats.collect({"me": os.getpid()})["sessions"]["me"]["agent"] == {"key": "claude", "label": "Claude Code", "model": "opus", "context": None}
     finally:
@@ -1274,3 +1276,29 @@ def test_stored_session_state_follows_reports(client, tmp_path, monkeypatch):
     assert db.get_agent_session(sid)["last_state"] == "done"
     server.reports.forget(sid)
     server.agent_status.pop(sid, None)
+
+
+def test_descendants_outermost_first():
+    import os
+    import subprocess
+
+    from shelldeck import agents
+
+    code = "import subprocess, sys; subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'])"
+    child = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        for _ in range(50):
+            agents._ppids["at"] = 0  # fresh snapshot
+            found = agents.descendants(os.getpid())
+            if child.pid in found and found.index(child.pid) < len(found) - 1:
+                break
+            time.sleep(0.1)
+        assert os.getpid() not in found
+        below = agents.descendants(child.pid)
+        assert below and all(found.index(p) > found.index(child.pid) for p in below)
+    finally:
+        import psutil
+
+        for p in psutil.Process(child.pid).children(recursive=True):
+            p.kill()
+        child.kill()

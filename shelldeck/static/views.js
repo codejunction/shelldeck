@@ -587,79 +587,96 @@ export async function settingsDialog() {
     })
     .join("");
   const distros = S.shells.wsl_distros;
+  const opts = (name, pairs, cur) => `<select name="${name}">${pairs.map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  const field = (label, control, hint = "") => `<label class="field"><span>${label}</span>${control}${hint ? `<small class="faint">${hint}</small>` : ""}</label>`;
+  const SECTIONS = [["appearance", "Appearance", "sun"], ["terminal", "Terminal", "terminal"], ["agents", "AI agents", "sparkle"], ["updates", "Updates", "refresh"], ["security", "Password", "lock"]];
   const d = dialog({
     title: "Settings",
-    body: `<form>
-      <div class="field-row">
-        <label class="field"><span>Default shell</span><select name="default_shell">${shellOpts}</select></label>
-        <label class="field"><span>WSL distribution</span><select name="wsl_distro" ${distros.length ? "" : "disabled"}>
-          <option value="">${distros.length ? "System default" : "WSL not available"}</option>
-          ${distros.map((x) => `<option ${x === s.wsl_distro ? "selected" : ""}>${esc(x)}</option>`).join("")}
-        </select></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Theme</span><select name="theme">${["dark", "light", "system"].map((t) => `<option ${t === s.theme ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-        <label class="field"><span>Terminal font size</span><input type="number" name="font_size" min="8" max="32" value="${esc(s.font_size)}" /></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Pane layout</span><select name="layout_mode">
-          <option value="tiled" ${s.layout_mode === "tiled" ? "selected" : ""}>Tiled: panes fill the window</option>
-          <option value="free" ${s.layout_mode === "free" ? "selected" : ""}>Free: drag and resize windows</option>
-        </select></label>
-        <label class="field"><span>Project colors</span><select name="project_tint">
-          <option value="on" ${s.project_tint !== "off" ? "selected" : ""}>Tint terminal background</option>
-          <option value="off" ${s.project_tint === "off" ? "selected" : ""}>Off</option>
-        </select></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Terminal colors</span><select name="terminal_theme">${TERMINAL_THEMES.map(
-          (t) => `<option value="${t}" ${t === (s.terminal_theme || "default") ? "selected" : ""}>${t === "default" ? "Default (follows theme)" : t.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</option>`,
-        ).join("")}</select></label>
-        <label class="field"><span>Terminal font</span><input name="font_family" list="font-list" placeholder="Default (Cascadia / Nerd Font)" value="${esc(s.font_family || "")}" />
-          <datalist id="font-list">${["Cascadia Code", "Cascadia Mono", "CaskaydiaCove Nerd Font", "JetBrains Mono", "Fira Code", "Consolas", "Source Code Pro", "Hack", "Ubuntu Mono", "DejaVu Sans Mono", "Menlo"].map((f) => `<option value="${f}"></option>`).join("")}</datalist></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Open file paths with</span><select name="editor">
-          <option value="vscode" ${s.editor === "vscode" ? "selected" : ""}>VS Code (at the line)</option>
-          <option value="shelldeck" ${s.editor === "shelldeck" ? "selected" : ""}>shelldeck's built-in editor</option>
-          <option value="system" ${s.editor === "system" ? "selected" : ""}>System default app</option>
-        </select></label>
-        <label class="field"><span>Smart search (sd recall --smart)</span><select name="recall_agent">
-          ${[["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]]
-            .map(([v, l]) => `<option value="${v}" ${(s.recall_agent || "off") === v ? "selected" : ""}>${l}</option>`).join("")}
-        </select></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Ask agent (? and sd ask)</span><select name="ask_agent">
-          ${[["auto", "First installed agent"], ["claude", "Claude Code"], ["codex", "Codex"], ["gemini", "Gemini CLI"], ["devin", "Devin CLI"]]
-            .map(([v, l]) => `<option value="${v}" ${(s.ask_agent || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}
-        </select></label>
-        <label class="field"><span>Ask model</span><input name="ask_model" list="ask-models" placeholder="Default (its smallest)" value="${esc(s.ask_model || "")}" /><datalist id="ask-models"></datalist></label>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>Resume agent sessions after a restart</span><select name="agent_resume">
-          <option value="ask" ${(s.agent_resume || "ask") === "ask" ? "selected" : ""}>Ask (a Resume button on AI agents)</option>
-          <option value="auto" ${s.agent_resume === "auto" ? "selected" : ""}>Automatically</option>
-          <option value="never" ${s.agent_resume === "never" ? "selected" : ""}>Never</option>
-        </select></label>
-      </div>
-      <p class="faint" style="margin:0 0 14px">New terminals use the default shell. Free layout scrolls when windows don't fit; use Tile all to arrange them.</p>
-      <hr style="border:0;border-top:1px solid var(--border);margin:4px 0 14px" />
-      <div style="margin-bottom:8px"><b>Change password</b> <span class="faint">· each browser locks after ${Math.round((auth.idle_timeout || 1800) / 60)} min idle; changing it signs out every other browser</span></div>
-      <div class="field-row">
-        <label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" /></label>
-        <span></span>
-      </div>
-      <div class="field-row">
-        <label class="field"><span>New password (8+ characters)</span><input type="password" name="password" autocomplete="new-password" /></label>
-        <label class="field"><span>Confirm new password</span><input type="password" name="confirm" autocomplete="new-password" /></label>
-      </div>
-      <div class="row"><button type="button" class="btn sm" data-a="pw">Change password</button></div>
+    wide: true,
+    cls: "settings",
+    body: `<form class="set">
+      <nav class="set-nav">${SECTIONS.map(([k, l, i], n) => `<button type="button" data-sec="${k}" class="${n ? "" : "on"}">${icon(i)}<span>${l}</span></button>`).join("")}</nav>
+      <div class="set-panes">
+      <section data-pane="appearance">
+        <div class="field-row">
+          ${field("Theme", opts("theme", [["dark", "Dark"], ["light", "Light"], ["system", "Follow system"]], s.theme))}
+          ${field("Terminal colors", opts("terminal_theme", TERMINAL_THEMES.map((t) => [t, t === "default" ? "Default (follows theme)" : t.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())]), s.terminal_theme || "default"))}
+        </div>
+        <div class="field-row">
+          ${field("Terminal font", `<input name="font_family" list="font-list" placeholder="Default (Cascadia / Nerd Font)" value="${esc(s.font_family || "")}" /><datalist id="font-list">${["Cascadia Code", "Cascadia Mono", "CaskaydiaCove Nerd Font", "JetBrains Mono", "Fira Code", "Consolas", "Source Code Pro", "Hack", "Ubuntu Mono", "DejaVu Sans Mono", "Menlo"].map((f) => `<option value="${f}"></option>`).join("")}</datalist>`)}
+          ${field("Font size", `<input type="number" name="font_size" min="8" max="32" value="${esc(s.font_size)}" />`)}
+        </div>
+        <div class="field-row">
+          ${field("Pane layout", opts("layout_mode", [["tiled", "Tiled: panes fill the window"], ["free", "Free: drag and resize windows"]], s.layout_mode), "Free layout scrolls when windows don't fit; Tile all arranges them.")}
+          ${field("Project colors", opts("project_tint", [["on", "Tint terminal background"], ["off", "Off"]], s.project_tint === "off" ? "off" : "on"))}
+        </div>
+      </section>
+      <section data-pane="terminal" hidden>
+        <div class="field-row">
+          ${field("Default shell", `<select name="default_shell">${shellOpts}</select>`, "New terminals start with it.")}
+          ${field("WSL distribution", `<select name="wsl_distro" ${distros.length ? "" : "disabled"}><option value="">${distros.length ? "System default" : "WSL not available"}</option>${distros.map((x) => `<option ${x === s.wsl_distro ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`)}
+        </div>
+        <div class="field-row">
+          ${field("Open file paths with", opts("editor", [["vscode", "VS Code (at the line)"], ["shelldeck", "shelldeck's built-in editor"], ["system", "System default app"]], s.editor))}
+        </div>
+      </section>
+      <section data-pane="agents" hidden>
+        <div class="field-row">
+          ${field("Ask agent", opts("ask_agent", [["auto", "First installed agent"], ["claude", "Claude Code"], ["codex", "Codex"], ["gemini", "Gemini CLI"], ["devin", "Devin CLI"]], s.ask_agent || "auto"), "Writes the command for <kbd>?</kbd> and <code>sd ask</code>.")}
+          ${field("Ask model", `<input name="ask_model" list="ask-models" placeholder="Default (its smallest)" value="${esc(s.ask_model || "")}" /><datalist id="ask-models"></datalist>`)}
+        </div>
+        <div class="field-row">
+          ${field("Smart search", opts("recall_agent", [["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]], s.recall_agent || "off"), "Widens <code>sd recall --smart</code> with related keywords.")}
+          ${field("Resume sessions after a restart", opts("agent_resume", [["ask", "Ask (a Resume button on AI agents)"], ["auto", "Automatically"], ["never", "Never"]], s.agent_resume || "ask"))}
+        </div>
+      </section>
+      <section data-pane="updates" hidden>
+        <div class="set-update"><div><b class="set-ver">shelldeck</b><div class="faint set-status">Checking for updates…</div></div>
+          <div class="row"><button type="button" class="btn sm" data-a="check">Check now</button><button type="button" class="btn sm primary" data-a="update" hidden>Update</button></div></div>
+        <p class="faint set-how" hidden></p>
+      </section>
+      <section data-pane="security" hidden>
+        <p class="faint" style="margin:0 0 12px">Each browser locks after ${Math.round((auth.idle_timeout || 1800) / 60)} min idle. Changing the password signs out every other browser.</p>
+        <div class="field-row">${field("Current password", `<input type="password" name="current" autocomplete="current-password" />`)}<span></span></div>
+        <div class="field-row">
+          ${field("New password (8+ characters)", `<input type="password" name="password" autocomplete="new-password" />`)}
+          ${field("Confirm new password", `<input type="password" name="confirm" autocomplete="new-password" />`)}
+        </div>
+        <div class="row"><button type="button" class="btn sm" data-a="pw">Change password</button></div>
+      </section>
       <div class="error"></div>
+      </div>
     </form>`,
     foot: `<button class="btn" data-close>Close</button><button class="btn primary" data-a="save">Save</button>`,
   });
   const form = $("form", d.el);
+  const showSection = (k) => {
+    $$("[data-sec]", d.el).forEach((b) => b.classList.toggle("on", b.dataset.sec === k));
+    $$("[data-pane]", d.el).forEach((p) => (p.hidden = p.dataset.pane !== k));
+    $("[data-a=save]", d.el).hidden = k === "updates" || k === "security"; // those act through their own buttons
+  };
+  const checkUpdate = async (force) => {
+    const st = $(".set-status", d.el);
+    st.textContent = "Checking for updates…";
+    try {
+      const u = await api(`/api/update${force ? "?force=1" : ""}`);
+      $(".set-ver", d.el).textContent = `shelldeck ${u.current}`;
+      st.textContent = u.available ? `Version ${u.latest} is available.` : `Up to date (latest is ${u.latest}).`;
+      $("[data-a=update]", d.el).hidden = !(u.available && u.how === "ota");
+      const how = $(".set-how", d.el);
+      how.hidden = !u.available || u.how === "ota";
+      how.innerHTML =
+        u.how === "manual"
+          ? `This copy can't update itself: download the new release from <a href="https://github.com/codejunction/shelldeck/releases/latest" target="_blank" rel="noopener">GitHub</a>.`
+          : `Installed with uv: run <code>uv tool upgrade shelldeck</code>, then <code>sd restart</code>.`;
+      if (u.available && u.how === "ota" && !u.in_place) {
+        how.hidden = false;
+        how.textContent = "Updating restarts shelldeck; running terminals close.";
+      }
+    } catch {
+      st.textContent = "Couldn't check for updates (offline?).";
+    }
+  };
   const save = async (e) => {
     e?.preventDefault();
     const ok = await saveSettings({
@@ -697,9 +714,25 @@ export async function settingsDialog() {
       });
     })
     .catch(() => {});
+  checkUpdate(false);
   d.el.addEventListener("click", async (e) => {
+    const sec = e.target.closest("[data-sec]")?.dataset.sec;
+    if (sec) showSection(sec);
     const a = e.target.closest("[data-a]")?.dataset.a;
     if (a === "save") save(e);
+    if (a === "check") checkUpdate(true);
+    if (a === "update") {
+      const btn = e.target.closest("[data-a]");
+      btn.disabled = true;
+      $(".set-status", d.el).textContent = "Downloading and installing…";
+      try {
+        const r = await api("/api/update", { method: "POST" });
+        $(".set-status", d.el).textContent = `Installed ${r.version}; restarting…`;
+      } catch (err) {
+        btn.disabled = false;
+        $(".set-status", d.el).textContent = err.message === "host_only" ? "Only the computer running shelldeck can update it." : `Update failed: ${err.message}`;
+      }
+    }
     if (a === "pw") {
       try {
         const btn = e.target.closest("[data-a]");

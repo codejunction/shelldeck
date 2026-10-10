@@ -383,3 +383,20 @@ def test_claude_tools_that_ask_you_block():
 def test_devin_notebook_edit_is_captured():
     act = hook.report("devin", {"hook_event_name": "PostToolUse", "tool_name": "notebook_edit", "tool_input": {"notebook_path": "a.ipynb"}})
     assert act["activity"] == {"file": "a.ipynb", "change": "edit"}
+
+
+def test_frozen_hooks_go_through_the_root_shim(tmp_path, monkeypatch):
+    import sys
+
+    from shelldeck import frozen
+
+    exe = tmp_path / "versions" / "1.0" / "sd-ui.exe"
+    exe.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(frozen, "FROZEN", True)
+    frozen.ensure_shims()
+    shim = tmp_path / ("sd.cmd" if sys.platform == "win32" else "sd")
+    assert shim.exists() and "versions" in (tmp_path / "sd").read_text()
+    cmd = integrations.hook_command("claude")
+    assert cmd == f'"{shim.as_posix()}" shelldeck.hook claude' and integrations._ours(cmd, "claude")
+    assert not integrations._ours(cmd, "claud")

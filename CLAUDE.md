@@ -34,7 +34,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - **free**: floating windows with drag, grip resize, a scrolling canvas, and Tile all.
 - **Pane title.** Shows the last command (tracked from keystrokes, falling back to the wrap-joined prompt line in the xterm buffer), cut to 32 chars with "…".
 - **Opening.** `sd` / `sd web` print a banner (ASCII logo in a violet gradient, version, Local and Network URLs; rich drops color on non-ANSI output and `NO_COLOR`) and open the default browser. Network is "off" unless the server binds a non-loopback host (server.json records `host`). Keep the banner ASCII-only: piped output on Windows is cp1252. When Windows opened a console just for `sd` (`_own_console()`: the topmost console-sharing ancestor is sd/shelldeck/python, not a shell), it waits for Enter so the window doesn't vanish.
-- **Detached server.** `ensure_server` uses `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`, never `DETACHED_PROCESS`: venv `python.exe` is a launcher, and its console-less child would open a visible terminal window.
+- **Detached server.** `ensure_server` starts the venv's `shelldeck.exe` launcher on Windows (Task Manager shows shelldeck, with python under it), and `serve` sets the Linux process name with `prctl(PR_SET_NAME)`. It uses `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`, never `DETACHED_PROCESS`: venv `python.exe` is a launcher, and its console-less child would open a visible terminal window.
 - **App window (opt-in).** `--app` opens an Edge/Chrome `--app` window on the default profile. A fresh `--user-data-dir` triggers Edge sign-in prompts, so don't use one.
 - **Visuals.**
   - T3 Code-like: zinc neutrals, violet accent, Inter/Segoe UI, Cascadia/Nerd Font terminal stack.
@@ -66,6 +66,14 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 - `shelldeck/server.py`: FastAPI app, containing:
   - Origin/Host guard middleware, auth, settings, `/api/shells`, projects, `/api/fs/dirs`, sessions (server-side names like "pwsh 2"), bookmarks, scheduler, tasks.
   - `/ws/{sid}` terminal socket, `/ws/alarms`, `/api/health`, `/api/shutdown`.
+- **Two processes.** `serve` is a supervisor (`cli._supervise`, process name `shelldeck`) that runs `sd-pty` (`shelldeck ptyhost`) and `sd-ui` (`shelldeck ui`); `_role_argv` starts the sibling `sd-pty`/`sd-ui` exe (frozen build or the installed scripts in pyproject, so Task Manager shows them under shelldeck), else `python -m shelldeck`. Subcommands are passed explicitly; there is no argv0 dispatch.
+  - `shelldeck/ptyhost.py`: `Host` (in sd-pty) owns a `PtyManager`, records scrollback, saves it every 15s and quits on stdin EOF (the supervisor holds the pipe, so a stop or a dead supervisor ends the shells). `PtyClient` (in sd-ui, a `PtyManager` subclass set in `lifespan` when `SHELLDECK_PTY_ADDR` is set) mirrors scrollback locally and sends one-way messages. Loopback TCP, one JSON line per message, token from the supervisor, one UI connection at a time. On connect the host sends `state` (alive terminals, scrollback, extra env); `_host_terminal` restarts their pumps and report tokens. Bump `PROTOCOL` on an incompatible change.
+  - sd-ui exit codes: 0 stops everything, `RESTART_UI` (75) restarts sd-ui only (`/api/restart`, `sd restart`, updates), `RESTART_ALL` (76) also restarts sd-pty (`_host_lost`). While `STOPPING` under a `PtyClient`, `_pump` must not terminate shells.
+  - sd-pty gets `CREATE_NEW_PROCESS_GROUP` / `start_new_session`, so a console Ctrl+C stops sd-ui, not the shells. The supervisor exports `SHELLDECK_PORT`/`SHELLDECK_HOME` (and, frozen, the root on PATH plus `frozen.ensure_shims()`) because shells inherit sd-pty's env.
+  - Without the supervisor (tests, `server.run` directly) `manager` stays an in-process `PtyManager`.
+  - Echo through the host is ~2.6ms median on Windows.
+- **Updates.** `shelldeck/update.py`: `check()` (GitHub latest release for the standalone build, PyPI otherwise; cached `CHECK_S`; `how` is ota/manual/uv) and `apply()` (standalone only: download `asset_name()`, verify the `.sha256` asset, unpack to `<root>/versions/<ver>/`, write `current.txt` with no newline). `GET/POST /api/update`, `_watch_updates` broadcasts `{"type":"update"}` to host browsers (`offerUpdate` toast in app.js; Settings has an Updates section). The supervisor starts sd-ui from `update.app_dir()` each time; app.js reloads when `/api/health` reports a new version after the alarm socket reconnects. PyPI installs are told to run `uv tool upgrade shelldeck` (Windows locks the running venv). Old version folders are never deleted yet.
+- **Standalone build.** `packaging/shelldeck.spec` (PyInstaller onedir: shelldeck, sd-pty, sd-ui, sd exes sharing `_internal`); `shelldeck/frozen.py` (root, `sd` shims, frozen hook/askpass commands). Build: `uv run --isolated --no-dev --with pyinstaller pyinstaller -y --distpath .devhome/pkg/dist --workpath .devhome/pkg/build packaging/shelldeck.spec`. A dev server's `cli-token` rotates per sd-ui start: give parallel test servers their own `SHELLDECK_HOME`.
 - `shelldeck/pty.py`: `PtyManager` (session id -> `Proc`) plus a per-session `Scrollback` (256 KB), replayed on reconnect.
   - `Proc` is `WinProc` (pywinpty ConPTY) on Windows and `PosixProc` elsewhere (stdlib `pty`, `start_new_session`, non-blocking master fd, incremental UTF-8 decode, `killpg` on close).
   - Both expose `read`, `write`, `resize`, `isalive` and `kill`.
@@ -74,7 +82,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - pwsh/powershell get `shelldeck.ps1` via `-EncodedCommand`, because execution policy blocks `.ps1` files.
   - cmd uses a `PROMPT` env var; bash uses `--rcfile bash.sh` (`SHELLDECK_LOGIN` emulates `--login`); zsh uses a `ZDOTDIR` shim; fish uses `-C source`. WSL has none.
 - `shelldeck/db.py`: raw `sqlite3` with WAL. Schema lives in `init_db()`; new columns are added with `ALTER TABLE` guarded by `PRAGMA table_info`. Imports `~/.config/termy/termy.db` once and drops the old mindmap tables.
-- `shelldeck/stats.py`: `/api/stats` data. psutil gives system CPU/RAM and per-terminal process trees; CPU is normalized to the whole machine, and `Process` objects are cached so `cpu_percent` has a baseline. GPU comes from one long-lived `nvidia-smi -lms 2000` (NVIDIA only, `CREATE_NO_WINDOW`), stopped after 30s unpolled. Don't go back to a launch per poll: each launch costs about 400ms of CPU. Shell pid is `Proc.pid`.
+- `shelldeck/stats.py`: `/api/stats` data. psutil gives system CPU/RAM and per-terminal process trees; CPU is normalized to the whole machine, and `Process` objects are cached so `cpu_percent` has a baseline. GPU comes from one long-lived `nvidia-smi -lms 2000` (NVIDIA only, `CREATE_NO_WINDOW`), stopped after 30s unpolled. Don't go back to a launch per poll: each launch costs about 400ms of CPU. Shell pid is `Proc.pid`. Process trees come from `agents.descendants()` (one `psutil._ppid_map()` snapshot shared for 1s): `children()` takes a full snapshot per call (~25ms on Windows), and calling it per terminal from stats, `running` and `native` was most of the idle CPU. `processes`/`end` (user actions, kill checks) keep fresh `children()`.
 - `shelldeck/agents.py`: AI coding agent CLIs (`AGENTS`: label, exe names, npm/pip cmdline markers, fallback models). `identify()` matches a process (cached per pid), with the model from `--model`/`-m` or the agent's config; `models()` reads Codex's `models_cache.json` and opencode's models.dev cache. `stats.tree` returns `agent` per terminal (outermost agent process), which feeds the pane `ai-chip`, the sidebar badge and `static/agents.js` (AI agents page, launch, team prompt). `/api/agents`, `/api/sessions/{id}/screen` and `/api/sessions/{id}/input` back `sd agents/peek/tell`.
   - Model order: `--model` flag, env var (`MODEL_ENV`), `devin -r <id>`'s session, then the agent's config.
   - Devin: `devin_models()` parses `<install>/model_configs.bin` (protobuf; base name at field 30.1, lowercased and dashed, is what `--model` takes). `devin_sessions()` reads `sessions.db` read-only (`%APPDATA%/devin/cli`; Linux paths are guesses). A devin exe outside a `cli` folder counts as `devin_desktop` (unverified).
@@ -124,6 +132,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - `app.css`.
   - `app.js`: state, `Term` class, layout tree and free canvas, sidebar, palette, shortcuts, boot. Sidebar footer: Terminals, AI agents and Context always shown; the other views sit in the `#sb-more` *More* fold (open state in localStorage `sbMore`, auto-opens on one of its views); Settings + `#conn` on their own line.
   - `views.js`: bookmarks, scheduler, tasks, settings, add-project, alarms.
+  - `radio.js`: top-bar cliamp radio. The browser fetches `radio.cliamp.stream/stations` (CORS open) and plays the stream in an `Audio`; nothing goes through the server.
   - `devices.js`: Devices view (signed-in browsers, in use / idle, revoke).
   - `editor.js`: `openFile(path, {sid, mode, line})` dialog: textarea + line-number gutter, markdown preview, image view, Ctrl+S, dirty guard through `dialog().canClose`. Used by `sd edit/view`, the palette's *Open file…* and clickable paths when the `editor` setting is `shelldeck`.
   - `context.js`: Context view over `/api/context*`: read-first *Working on* summary (`editing` toggles the form), facts and decisions with hover actions, `describe()` turns events into plain words, search results replace the body, and the search box's agent and model pickers come from `/api/context/recall-agents` (`smart_recall.choices()`). Not polled, so forms keep their input.
@@ -134,13 +143,13 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Ports: `stats.listening()` maps pids to LISTEN ports; `S.ports` feeds the pane-header chips.
   - `monitor.js`: one 2s `/api/stats` poller (skipped while hidden), feeding the top-bar `#sysmon` meters and the Task manager view (`view-monitor`).
   - `ui.js`: api, icons, dialogs, menus, toasts, localStorage `store`.
-  - `vendor/`: pinned xterm.js 5.5 + fit + web-links + webgl + search + serialize.
+  - `vendor/`: pinned xterm.js 5.5 + fit + web-links + webgl + search.
 - `tests/`: `test_shelldeck.py` (API, security, settings, tasks, scheduler, static caching, real PTY round trip), `test_cli.py` (banner, web, browser/app window, serve guards, render, search), `test_gitgraph.py`.
 - **Release plumbing.**
-  - `install.ps1` / `install.sh`: one-line installers (uv, then `uv tool install shelldeck`; `SHELLDECK_SOURCE` overrides the source and CI feeds it the built wheel; `UV_NO_MODIFY_PATH` skips PATH edits).
+  - `install.ps1` / `install.sh`: one-line installers. Default is the standalone build from the GitHub release (`SHELLDECK_VERSION`, `SHELLDECK_ARCHIVE`, `SHELLDECK_ROOT`, `SHELLDECK_NO_MODIFY_PATH`; macOS and non-x64 fall back to uv); `-Pip` / `--pip` / `SHELLDECK_PIP=1` installs with uv then `uv tool install shelldeck` (`SHELLDECK_SOURCE` overrides the source and CI feeds it the built wheel; `UV_NO_MODIFY_PATH` skips PATH edits).
   - `.github/workflows/ci.yml`: lint, a Windows+Ubuntu × py3.12–3.14 test matrix, and an installer smoke test.
   - `release.yml`: on a `v*` tag, reuses CI, checks the tag matches the pyproject version, then builds, publishes to PyPI (trusted publishing, environment `pypi`) and creates the GitHub release.
-    - Manual run (`workflow_dispatch`, input `version`) publishes a release candidate from a `feature/` or `fix/` branch: `x.y.zrcN` only, newer than pyproject, patched into pyproject in the build (never committed), no tag or GitHub release. It lives in `release.yml` because the PyPI trusted publisher is bound to that file.
+    - Manual run (`workflow_dispatch`, input `version`) publishes a release candidate from a `feature/` or `fix/` branch: `x.y.zrcN` only, newer than pyproject, patched into pyproject in the build (never committed), no git tag pushed, but a GitHub prerelease `v<rc>` on the branch's commit with the wheel and standalone assets (`releases/latest` skips prereleases, so OTA never offers an rc). It lives in `release.yml` because the PyPI trusted publisher is bound to that file.
   - README screenshots live in `docs/assets/`. `docs/superpowers/` and `plans/` are local-only (gitignored).
 - `chapters/`: spec corpus for a future agent platform, not implemented. `_ref_code/`: reference only.
 
@@ -148,7 +157,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 1. `POST /api/sessions` creates and names the DB row.
 2. The UI opens `/ws/{id}`. The server rejects unknown ids (4404) and foreign origins (1008), then replays scrollback as `{"type":"output","replay":true}`. The UI ignores xterm's auto-replies while replaying, or they get typed into the shell.
-3. The first `resize` spawns the PTY and starts one `_pump` task per session, which fans output out to every socket.
+3. The first `resize` spawns the PTY (in sd-pty, via `PtyClient.create`) and starts one `_pump` task per session, which fans output out to every socket.
    - Output is read on a thread per session (`PtyManager.stream`) and queued to `_pump`, which merges queued chunks.
    - The thread polls with `time.sleep(0.001)` after activity; `write()` wakes it. On Windows, asyncio sleeps and `Event.wait` have ~16ms resolution, which made echo take 16–32ms (now ~4ms).
    - pywinpty's blocking `read` holds data back and hangs at EOF, so don't use it.
@@ -156,9 +165,9 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 - **Ctrl+C.** The detached server has `CREATE_NEW_PROCESS_GROUP`, which makes Windows ignore Ctrl+C in it and every child. `WinProc` calls `SetConsoleCtrlHandler(None, False)` before spawning; don't remove it.
 - **Folder tracking.** `_pump` parses `633;P;Cwd=` from output and stores it in `sessions.cwd`, so a respawned shell opens where it left off.
-- **Restore.** The UI sends `{"type":"snapshot"}` (xterm serialize addon, trailing cursor moves stripped) every 15s and on hide. `PtyManager.save()` writes `scrollback/<sid>.log` every 15s.
-  - It saves the snapshot while fresh and falls back to raw output otherwise; raw ConPTY output is cursor-addressed and replays garbled.
-  - On respawn the file is replayed, then the "restored" banner, then enough newlines to push it all into scrollback, because a new ConPTY paints absolute rows.
+- **Restore.** The UI sends `{"type":"snapshot"}` (`Term.text()`: plain lines, wrapped rows joined; the normal buffer, then an open TUI's screen) every 15s and on hide. `PtyManager.save()` writes `scrollback/<sid>.log` every 15s. `sd peek` reads the same text.
+  - It saves the snapshot while fresh and falls back to the previous restore plus raw output otherwise.
+  - On respawn the file becomes `Scrollback.restored`, never part of the live stream: `_pump` (before any output) and every later connect send `{"type":"restored"}` (through `_plain`, so no cursor moves). The browser writes it, the "restored" banner, and its own `rows` newlines to push it into scrollback, because a new ConPTY paints absolute rows. The old way put it in the stream with the server's row count, so a refresh at another size let the new shell paint into the old text.
   - Read/write these files as bytes: text mode drops the CR in CRLF.
 
 ## Frontend conventions and gotchas

@@ -14,7 +14,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import hook
+from . import frozen, hook
 
 
 @dataclass(frozen=True)
@@ -75,13 +75,16 @@ OPENCODE_MARKER = "shelldeck-opencode-plugin"
 
 
 def hook_command(agent: str, event: str = "") -> str:
-    """`"<python>" -m shelldeck.hook <agent> [event]`: absolute interpreter, so it works from any PATH."""
+    """`"<python>" -m shelldeck.hook <agent> [event]`: absolute interpreter, so it works from any PATH.
+    The standalone build has no interpreter: `"<sd>" shelldeck.hook <agent>`, through the shim that outlives updates."""
+    if frozen.FROZEN:
+        return f'"{frozen.sd().as_posix()}" shelldeck.hook {agent}' + (f" {event}" if event else "")
     exe = sys.executable.replace("\\", "/")
     return f'"{exe}" -m shelldeck.hook {agent}' + (f" {event}" if event else "")
 
 
 def _ours(command, agent: str) -> bool:
-    return bool(re.search(rf"-m shelldeck\.hook {re.escape(agent)}\b", str(command or "")))
+    return bool(re.search(rf"shelldeck\.hook {re.escape(agent)}\b", str(command or "")))
 
 
 def _python_of(command: str) -> str | None:
@@ -696,9 +699,9 @@ INSTALLERS = {
     "pi": Extension("pi", lambda: _pi_dir() / "shelldeck-agent-state.ts", lambda: _pi_extension("pi"), "shelldeck-pi-extension"),
     "omp": Extension("omp", lambda: _omp_dir() / "shelldeck-omp-agent-state.ts", lambda: _pi_extension("omp"), "shelldeck-omp-extension"),
     "antigravity": NamedBlock("antigravity", lambda: _home("ANTIGRAVITY_CLI_CONFIG_DIR", ".gemini", "config") / "hooks.json", _antigravity_block),
-    "grok": OwnFile("grok", lambda: _home("GROK_HOME", ".grok") / "hooks" / "shelldeck.json", _grok_file, "-m shelldeck.hook grok"),
+    "grok": OwnFile("grok", lambda: _home("GROK_HOME", ".grok") / "hooks" / "shelldeck.json", _grok_file, "shelldeck.hook grok"),
     "kilo": OwnFile("kilo", lambda: _xdg() / "kilo" / "plugin" / "shelldeck.js", lambda: _opencode_plugin("kilo"), "shelldeck-kilo-plugin"),
-    "copilot": OwnFile("copilot", lambda: _home("COPILOT_HOME", ".copilot") / "hooks" / "shelldeck.json", _copilot_file, "-m shelldeck.hook copilot"),
+    "copilot": OwnFile("copilot", lambda: _home("COPILOT_HOME", ".copilot") / "hooks" / "shelldeck.json", _copilot_file, "shelldeck.hook copilot"),
     "opencode": OwnFile("opencode", lambda: _xdg() / "opencode" / "plugins" / "shelldeck.js", _opencode_plugin, OPENCODE_MARKER),
 }
 

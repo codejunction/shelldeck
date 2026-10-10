@@ -6,6 +6,7 @@ import { showGitGraph } from "./gitgraph.js";
 import { openFile } from "./editor.js";
 import { scratchChanged } from "./scratch.js";
 import { canShare, initShare, setShareState, shareDialog } from "./share.js";
+import { radioMenu } from "./radio.js";
 
 // ------------------------------------------------------------------ state
 
@@ -253,8 +254,6 @@ class Term {
     this.xterm.loadAddon(new WebLinksAddon.WebLinksAddon((e, uri) => window.open(uri, "_blank", "noopener")));
     this.search = new SearchAddon.SearchAddon();
     this.xterm.loadAddon(this.search);
-    this.serializer = new SerializeAddon.SerializeAddon();
-    this.xterm.loadAddon(this.serializer);
     this.lastSnapshot = "";
     this.changed = false; // output since the last snapshot
     // shell integration (shelldeck/integration): 133 = prompt/command marks, 633 = command line + cwd
@@ -272,7 +271,7 @@ class Term {
     this.readyWaiters = [];
 
     // ignore xterm's auto-replies (e.g. to DA queries) while replaying scrollback
-    this.replaying = false;
+    this.replaying = 0; // replay writes still being parsed (a restored block and the scrollback can overlap)
     this.xterm.onData((data) => {
       if (this.replaying) return;
       data = withCtrl(data);
@@ -396,15 +395,29 @@ class Term {
     return true; // P;Cwd= is recorded server-side
   }
 
-  /** Send the rendered screen to the server; it is what comes back after a restart. */
+  /** Send the terminal's text to the server; it is what comes back after a restart. */
   snapshot() {
     if (!this.changed || this.replaying || this.closed) return;
     this.changed = false;
-    // drop the trailing cursor moves / mode sets: the restore banner must land after the content
-    const data = this.serializer.serialize({ scrollback: 2000 }).replace(/(?:\x1b\[[0-9;]*[ABCDGHf]|\x1b\[\?[0-9;]*[hl])+$/, "");
+    const data = this.text();
     if (data === this.lastSnapshot) return;
     this.lastSnapshot = data;
     this.send({ type: "snapshot", data });
+  }
+
+  /** Plain lines with wrapped rows joined: scrollback and screen, then an open TUI's screen. */
+  text() {
+    const lines = [];
+    for (const b of new Set([this.xterm.buffer.normal, this.xterm.buffer.active])) {
+      for (let i = 0; i < b.length; i++) {
+        const line = b.getLine(i);
+        const s = line.translateToString(!b.getLine(i + 1)?.isWrapped);
+        if (line.isWrapped && lines.length) lines[lines.length - 1] += s;
+        else lines.push(s);
+      }
+    }
+    while (lines.length && !lines.at(-1)) lines.pop();
+    return lines.join("\r\n");
   }
 
   jumpPrompt(dir) {
@@ -515,14 +528,19 @@ class Term {
       } catch {
         return;
       }
-      if (msg.type === "output") {
+      if (msg.type === "restored") {
+        // the previous run's text, pushed into scrollback so the new shell paints a blank screen below it
+        this.replaying++;
+        const old = msg.data.replace(/\s+$/, "").replace(/\r?\n/g, "\r\n");
+        this.xterm.write(`\x1b[0m${old}\r\n\x1b[2m--- restored ${msg.when} ---\x1b[0m${"\r\n".repeat(this.xterm.rows)}\x1b[H`, () => this.replaying--);
+      } else if (msg.type === "output") {
         if (!this.gotOutput) {
           this.gotOutput = true;
           this.status("");
         }
         if (msg.replay) {
-          this.replaying = true;
-          this.xterm.write(msg.data, () => (this.replaying = false));
+          this.replaying++;
+          this.xterm.write(msg.data, () => this.replaying--);
         } else {
           this.xterm.write(msg.data);
           this.changed = true;
@@ -2253,9 +2271,15 @@ function wireLock() {
 }
 
 let alarmSocket = null;
+let serverVersion = null;
 function connectAlarms() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/alarms`);
   alarmSocket = ws;
+  // after an update sd-ui comes back as a new version: load its page (terminals keep running in sd-pty)
+  ws.onopen = () => api("/api/health").then((h) => {
+    if (serverVersion && h.version !== serverVersion) location.reload();
+    serverVersion = h.version;
+  }).catch(() => {});
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "alarm") views.showAlarm(msg.task, true);
@@ -2264,6 +2288,7 @@ function connectAlarms() {
     if (msg.type === "spawned") openSpawned(msg.session_id);
     if (msg.type === "share_state") setShareState(msg.state);
     if (msg.type === "scratch") scratchChanged();
+    if (msg.type === "update") offerUpdate(msg);
     if (msg.type === "agent_state") {
       S.serverAgentState[msg.session_id] = msg.state;
       if (msg.status) {
@@ -2286,6 +2311,34 @@ function connectAlarms() {
   ws.onclose = (ev) => {
     if (ev.code !== 1008 && ev.code !== 4423) setTimeout(connectAlarms, 3000);
   };
+}
+
+/** A newer shelldeck is out: the standalone build installs it in place (terminals keep running); a PyPI install gets the command. */
+function offerUpdate(u) {
+  if (!u.in_place) {
+    toast({ title: `shelldeck ${u.latest} is available`, body: "Update with: uv tool upgrade shelldeck, then sd stop; sd", timeout: 0, actions: [{ label: "OK" }] });
+    return;
+  }
+  toast({
+    title: `shelldeck ${u.latest} is available`,
+    body: `You have ${u.current}. Updating restarts the app; your terminals keep running.`,
+    timeout: 0,
+    actions: [
+      {
+        label: "Update now",
+        onClick: async () => {
+          const t = toast({ title: `Updating to ${u.latest}…`, timeout: 0 });
+          try {
+            await api("/api/update", { method: "POST", body: {} });
+          } catch (err) {
+            t.close();
+            toastError(err);
+          }
+        },
+      },
+      { label: "Later" },
+    ],
+  });
 }
 
 /** A sub-agent started by `sd spawn`: show it next to the others without taking the keyboard. */
@@ -2352,6 +2405,7 @@ function wireGlobal() {
     else if (act === "bookmark-picker") views.bookmarkPicker();
     else if (act === "tile") tileAll();
     else if (act === "share") shareDialog();
+    else if (act === "radio") radioMenu(a);
   });
   window.addEventListener("resize", () => fitVisible());
   const snapshotAll = () => S.terms.forEach((t) => t.snapshot());
@@ -2374,7 +2428,8 @@ const bootStart = performance.now();
 function finishBoot() {
   const boot = $("#boot");
   if (!boot) return Promise.resolve();
-  const wait = Math.max(0, 2000 - (performance.now() - bootStart));
+  // the name's reveal ends at 0.75s (app.css); hold the full mark briefly before fading
+  const wait = Math.max(0, 1000 - (performance.now() - bootStart));
   return new Promise((resolve) =>
     setTimeout(() => {
       boot.classList.add("done");
@@ -2425,10 +2480,11 @@ async function init() {
   }
   views.loadBookmarks();
   api("/api/plugins").then((r) => (S.pluginCommands = r.commands)).catch(() => {});
-  if (EMBED) return setInterval(refreshProjects, 5000);
+  const refreshVisible = () => !document.hidden && refreshProjects();
+  if (EMBED) return setInterval(refreshVisible, 5000);
   connectAlarms();
   initShare();
-  setInterval(refreshProjects, 5000);
+  setInterval(refreshVisible, 5000);
 }
 
 init();
