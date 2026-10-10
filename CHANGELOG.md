@@ -4,6 +4,11 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching between the dark and light theme left terminals on a dark color preset (Dracula, Nord, ...). A preset now applies only in the theme it matches; in the other theme terminals use its sibling (Solarized) or that theme's default colors.
+- The Context page scrolled sideways when a recent command was long, hiding the times and the decision box.
+
 ## [0.0.12] - 2026-10-11
 
 ### Added

@@ -3670,7 +3670,7 @@ body.embed .pane {
 .cx-related { margin: 8px 0 0; font-size: 12px; }
 .cx-related span { color: var(--faint); }
 .cx-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
-.cx-main, .cx-side { display: grid; gap: 16px; }
+.cx-main, .cx-side { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
 .cx-section h2, .cx-standing h2 { font-size: 13px; margin: 0 0 10px; display: flex; gap: 6px; align-items: baseline; }
 .cx-standing-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .cx-standing-top h2 { font-size: 17px; margin: 2px 0 0; }
@@ -3697,7 +3697,7 @@ body.embed .pane {
 .cx-add { display: flex; gap: 6px; flex-wrap: wrap; }
 .cx-add input { flex: 1 1 160px; min-width: 0; }
 .cx-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.cx-event { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.cx-event { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 12.5px; }
 .cx-event code { display: block; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-event time { font-size: 11px; white-space: nowrap; }
 .cx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); align-self: center; }

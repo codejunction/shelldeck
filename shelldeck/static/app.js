@@ -193,9 +193,20 @@ function resolvedTheme() {
   return t === "system" ? (prefersDark.matches ? "dark" : "light") : t === "light" ? "light" : "dark";
 }
 
+const isDark = (t) => parseInt(t.background.slice(1, 3), 16) < 0x80;
+const PAIR = { "solarized-dark": "solarized-light", "solarized-light": "solarized-dark" };
+
+// A preset is one brightness: in the other app theme use its sibling, else that theme's default colors.
+function terminalBase() {
+  const mode = resolvedTheme();
+  const name = S.settings.terminal_theme;
+  for (const p of [PRESETS[name], PRESETS[PAIR[name]]]) if (p && isDark(p) === (mode === "dark")) return p;
+  return XTERM_THEMES[mode];
+}
+
 function themeFor(sid) {
-  const base = PRESETS[S.settings.terminal_theme] || XTERM_THEMES[resolvedTheme()];
-  const dark = parseInt(base.background.slice(1, 3), 16) < 0x80;
+  const base = terminalBase();
+  const dark = isDark(base);
   const s = findSession(sid);
   if (!s || S.settings.project_tint === "off") return base;
   const bg = mix(base.background, projectColor(s.project), dark ? 0.09 : 0.07);
