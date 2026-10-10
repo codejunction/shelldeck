@@ -1,11 +1,12 @@
 """sd-pty / sd-ui split: a shell outlives its UI connection, and a new UI gets it back."""
 
 import asyncio
+import sys
 
 from shelldeck import ptyhost, update
 
 
-async def _until(pred, timeout=10.0):
+async def _until(pred, timeout=30.0):  # CI runners start shells slowly
     end = asyncio.get_running_loop().time() + timeout
     while not pred():
         assert asyncio.get_running_loop().time() < end, "timed out"
@@ -23,7 +24,7 @@ def test_shell_survives_ui_reconnect(tmp_path):
             ui = ptyhost.PtyClient(addr, "tok")
             await ui.connect(alive.append, lambda: None)
             got: list[str | None] = []
-            ui.create("s1", rows=24, cols=80, extra_env={"SHELLDECK_AGENT_REPORT_TOKEN": "r"})
+            ui.create("s1", shell="cmd" if sys.platform == "win32" else "", rows=24, cols=80, extra_env={"SHELLDECK_AGENT_REPORT_TOKEN": "r"})
             ui.stream("s1", got.append)
             await _until(lambda: ui.procs["s1"].pid)
             ui.write("s1", "echo first-ui\r")
@@ -65,7 +66,6 @@ def test_update_apply_installs_next_to_running(tmp_path, monkeypatch):
     import hashlib
     import io
     import json
-    import sys
     import zipfile
 
     import pytest
@@ -112,4 +112,4 @@ def test_update_apply_installs_next_to_running(tmp_path, monkeypatch):
     assert (root / "current.txt").read_bytes() == b"0.0.12"  # no newline: the sh shim cats it
     assert (root / "versions" / "0.0.12" / "_internal" / "x.txt").exists()
     assert update.app_dir() == root / "versions" / "0.0.12"
-    assert [p.name for p in (root / "versions").iterdir()] == ["0.0.11", "0.0.12"]
+    assert sorted(p.name for p in (root / "versions").iterdir()) == ["0.0.11", "0.0.12"]
