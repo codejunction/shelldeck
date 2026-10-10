@@ -2271,9 +2271,15 @@ function wireLock() {
 }
 
 let alarmSocket = null;
+let serverVersion = null;
 function connectAlarms() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/alarms`);
   alarmSocket = ws;
+  // after an update sd-ui comes back as a new version: load its page (terminals keep running in sd-pty)
+  ws.onopen = () => api("/api/health").then((h) => {
+    if (serverVersion && h.version !== serverVersion) location.reload();
+    serverVersion = h.version;
+  }).catch(() => {});
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "alarm") views.showAlarm(msg.task, true);
@@ -2282,6 +2288,7 @@ function connectAlarms() {
     if (msg.type === "spawned") openSpawned(msg.session_id);
     if (msg.type === "share_state") setShareState(msg.state);
     if (msg.type === "scratch") scratchChanged();
+    if (msg.type === "update") offerUpdate(msg);
     if (msg.type === "agent_state") {
       S.serverAgentState[msg.session_id] = msg.state;
       if (msg.status) {
@@ -2304,6 +2311,34 @@ function connectAlarms() {
   ws.onclose = (ev) => {
     if (ev.code !== 1008 && ev.code !== 4423) setTimeout(connectAlarms, 3000);
   };
+}
+
+/** A newer shelldeck is out: the standalone build installs it in place (terminals keep running); a PyPI install gets the command. */
+function offerUpdate(u) {
+  if (!u.in_place) {
+    toast({ title: `shelldeck ${u.latest} is available`, body: "Update with: uv tool upgrade shelldeck, then sd stop; sd", timeout: 0, actions: [{ label: "OK" }] });
+    return;
+  }
+  toast({
+    title: `shelldeck ${u.latest} is available`,
+    body: `You have ${u.current}. Updating restarts the app; your terminals keep running.`,
+    timeout: 0,
+    actions: [
+      {
+        label: "Update now",
+        onClick: async () => {
+          const t = toast({ title: `Updating to ${u.latest}…`, timeout: 0 });
+          try {
+            await api("/api/update", { method: "POST", body: {} });
+          } catch (err) {
+            t.close();
+            toastError(err);
+          }
+        },
+      },
+      { label: "Later" },
+    ],
+  });
 }
 
 /** A sub-agent started by `sd spawn`: show it next to the others without taking the keyboard. */
@@ -2393,7 +2428,8 @@ const bootStart = performance.now();
 function finishBoot() {
   const boot = $("#boot");
   if (!boot) return Promise.resolve();
-  const wait = Math.max(0, 600 - (performance.now() - bootStart));
+  // the name's reveal ends at 0.75s (app.css); hold the full mark briefly before fading
+  const wait = Math.max(0, 1000 - (performance.now() - bootStart));
   return new Promise((resolve) =>
     setTimeout(() => {
       boot.classList.add("done");

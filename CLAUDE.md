@@ -66,6 +66,14 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 - `shelldeck/server.py`: FastAPI app, containing:
   - Origin/Host guard middleware, auth, settings, `/api/shells`, projects, `/api/fs/dirs`, sessions (server-side names like "pwsh 2"), bookmarks, scheduler, tasks.
   - `/ws/{sid}` terminal socket, `/ws/alarms`, `/api/health`, `/api/shutdown`.
+- **Two processes.** `serve` is a supervisor (`cli._supervise`, process name `shelldeck`) that runs `sd-pty` (`shelldeck ptyhost`) and `sd-ui` (`shelldeck ui`); `_role_argv` starts the sibling `sd-pty`/`sd-ui` exe (frozen build or the installed scripts in pyproject, so Task Manager shows them under shelldeck), else `python -m shelldeck`. Subcommands are passed explicitly; there is no argv0 dispatch.
+  - `shelldeck/ptyhost.py`: `Host` (in sd-pty) owns a `PtyManager`, records scrollback, saves it every 15s and quits on stdin EOF (the supervisor holds the pipe, so a stop or a dead supervisor ends the shells). `PtyClient` (in sd-ui, a `PtyManager` subclass set in `lifespan` when `SHELLDECK_PTY_ADDR` is set) mirrors scrollback locally and sends one-way messages. Loopback TCP, one JSON line per message, token from the supervisor, one UI connection at a time. On connect the host sends `state` (alive terminals, scrollback, extra env); `_host_terminal` restarts their pumps and report tokens. Bump `PROTOCOL` on an incompatible change.
+  - sd-ui exit codes: 0 stops everything, `RESTART_UI` (75) restarts sd-ui only (`/api/restart`, `sd restart`, updates), `RESTART_ALL` (76) also restarts sd-pty (`_host_lost`). While `STOPPING` under a `PtyClient`, `_pump` must not terminate shells.
+  - sd-pty gets `CREATE_NEW_PROCESS_GROUP` / `start_new_session`, so a console Ctrl+C stops sd-ui, not the shells. The supervisor exports `SHELLDECK_PORT`/`SHELLDECK_HOME` (and, frozen, the root on PATH plus `frozen.ensure_shims()`) because shells inherit sd-pty's env.
+  - Without the supervisor (tests, `server.run` directly) `manager` stays an in-process `PtyManager`.
+  - Echo through the host is ~2.6ms median on Windows.
+- **Updates.** `shelldeck/update.py`: `check()` (GitHub latest release for the standalone build, PyPI otherwise; cached `CHECK_S`; `how` is ota/manual/uv) and `apply()` (standalone only: download `asset_name()`, verify the `.sha256` asset, unpack to `<root>/versions/<ver>/`, write `current.txt` with no newline). `GET/POST /api/update`, `_watch_updates` broadcasts `{"type":"update"}` to host browsers (`offerUpdate` toast in app.js; Settings has an Updates section). The supervisor starts sd-ui from `update.app_dir()` each time; app.js reloads when `/api/health` reports a new version after the alarm socket reconnects. PyPI installs are told to run `uv tool upgrade shelldeck` (Windows locks the running venv). Old version folders are never deleted yet.
+- **Standalone build.** `packaging/shelldeck.spec` (PyInstaller onedir: shelldeck, sd-pty, sd-ui, sd exes sharing `_internal`); `shelldeck/frozen.py` (root, `sd` shims, frozen hook/askpass commands). Build: `uv run --isolated --no-dev --with pyinstaller pyinstaller -y --distpath .devhome/pkg/dist --workpath .devhome/pkg/build packaging/shelldeck.spec`. A dev server's `cli-token` rotates per sd-ui start: give parallel test servers their own `SHELLDECK_HOME`.
 - `shelldeck/pty.py`: `PtyManager` (session id -> `Proc`) plus a per-session `Scrollback` (256 KB), replayed on reconnect.
   - `Proc` is `WinProc` (pywinpty ConPTY) on Windows and `PosixProc` elsewhere (stdlib `pty`, `start_new_session`, non-blocking master fd, incremental UTF-8 decode, `killpg` on close).
   - Both expose `read`, `write`, `resize`, `isalive` and `kill`.
@@ -149,7 +157,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 1. `POST /api/sessions` creates and names the DB row.
 2. The UI opens `/ws/{id}`. The server rejects unknown ids (4404) and foreign origins (1008), then replays scrollback as `{"type":"output","replay":true}`. The UI ignores xterm's auto-replies while replaying, or they get typed into the shell.
-3. The first `resize` spawns the PTY and starts one `_pump` task per session, which fans output out to every socket.
+3. The first `resize` spawns the PTY (in sd-pty, via `PtyClient.create`) and starts one `_pump` task per session, which fans output out to every socket.
    - Output is read on a thread per session (`PtyManager.stream`) and queued to `_pump`, which merges queued chunks.
    - The thread polls with `time.sleep(0.001)` after activity; `write()` wakes it. On Windows, asyncio sleeps and `Event.wait` have ~16ms resolution, which made echo take 16–32ms (now ~4ms).
    - pywinpty's blocking `read` holds data back and hangs at EOF, so don't use it.
