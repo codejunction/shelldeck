@@ -3772,3 +3772,99 @@ body.embed .pane {
   color: var(--bad);
   background: color-mix(in srgb, var(--bad) 12%, transparent);
 }
+
+/* ------------------------------------------------------------- settings */
+
+.dialog.settings .dialog-body {
+  padding: 0;
+}
+
+.set {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  min-height: 380px;
+}
+
+.set-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-side);
+}
+
+.set-nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.set-nav button i[data-icon] {
+  width: 15px;
+  height: 15px;
+}
+
+.set-nav button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.set-nav button.on {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.set-panes {
+  padding: 16px 18px;
+}
+
+.set-panes .field > small {
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.set-update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.set-update .set-status {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.set-how {
+  margin: 10px 2px 0;
+}
+
+@media (max-width: 560px) {
+  .set {
+    grid-template-columns: 1fr;
+  }
+
+  .set-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .set-nav button {
+    flex: none;
+  }
+}
