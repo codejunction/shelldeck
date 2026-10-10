@@ -73,6 +73,8 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true  # a rerun after a later job failed (the same rc) must not fail here
 
   standalone:
     # no-Python build (packaging/shelldeck.spec) from the same wheel: shelldeck-<ver>-<os>.zip|tar.gz + .sha256,

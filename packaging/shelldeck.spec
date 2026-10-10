@@ -1,14 +1,12 @@
 # Standalone build: one folder, four exes sharing _internal, each with its own Task Manager name.
 #   uv run --isolated --no-dev --with pyinstaller pyinstaller packaging/shelldeck.spec
 # Layout once installed (shelldeck.frozen): <root>/versions/<ver>/<this folder's contents>, <root>/current.txt.
-# The exe name picks the role (cli._main): shelldeck = supervisor, sd-pty = PTY host, sd-ui = UI server, sd = CLI.
+# All four run cli._main; `serve` starts sd-pty/sd-ui with explicit subcommands (ptyhost / ui). sd = the CLI.
 import sys
 from importlib.metadata import version
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
-from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
-                                                 VarFileInfo, VarStruct, VSVersionInfo)
 
 ROOT = Path(SPECPATH).parent
 VERSION = version("shelldeck")  # the installed package (CI builds from the wheel, so release candidates match)
@@ -24,7 +22,11 @@ a = Analysis([str(ROOT / "packaging" / "entry.py")], datas=datas, binaries=binar
 pyz = PYZ(a.pure)
 
 
-def version_info(desc: str, name: str) -> VSVersionInfo:
+def version_info(desc: str, name: str):
+    # Windows only: the module needs pefile, which PyInstaller installs on Windows alone
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+
     table = StringTable("040904B0", [StringStruct("FileDescription", desc), StringStruct("ProductName", "shelldeck"),
                                      StringStruct("FileVersion", VERSION), StringStruct("ProductVersion", VERSION),
                                      StringStruct("OriginalFilename", f"{name}.exe")])
