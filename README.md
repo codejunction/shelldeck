@@ -44,6 +44,53 @@ uvx shelldeck                  # try it without installing
 
 To try a release candidate, pin it: `uv tool install --force shelldeck==0.0.5rc3` (or `pip install shelldeck==0.0.5rc3`). Go back to the stable release with `uv tool install --force shelldeck`.
 
+### Standalone build (no Python)
+
+Each release also has a self-contained build: `shelldeck-<version>-windows-x64.zip` and `shelldeck-<version>-linux-x64.tar.gz` on the [GitHub releases](https://github.com/codejunction/shelldeck/releases) page, each with a `.sha256` checksum. It needs neither Python nor uv. Plugins are the exception: they are Python packages, so they only work in the Python install.
+
+Unpack it into a `versions` folder and name the version in use in `current.txt`.
+
+Windows (PowerShell):
+
+```powershell
+$v = "0.0.12"; $root = "$env:LOCALAPPDATA\shelldeck"
+New-Item -ItemType Directory -Force "$root\versions" | Out-Null
+Invoke-WebRequest "https://github.com/codejunction/shelldeck/releases/download/v$v/shelldeck-$v-windows-x64.zip" -OutFile "$env:TEMP\shelldeck.zip"
+Expand-Archive "$env:TEMP\shelldeck.zip" "$root\versions" -Force
+Rename-Item "$root\versions\shelldeck-$v" $v
+Set-Content -NoNewline "$root\current.txt" $v
+& "$root\versions\$v\shelldeck.exe"      # first start: the server, your browser, and the sd shims in $root
+[Environment]::SetEnvironmentVariable("Path", "$root;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
+```
+
+Linux:
+
+```sh
+v=0.0.12; root=~/.local/share/shelldeck
+mkdir -p "$root/versions"
+curl -fsSL "https://github.com/codejunction/shelldeck/releases/download/v$v/shelldeck-$v-linux-x64.tar.gz" | tar -xz -C "$root/versions"
+mv "$root/versions/shelldeck-$v" "$root/versions/$v"
+printf %s "$v" > "$root/current.txt"
+"$root/versions/$v/shelldeck"            # first start: the server, your browser, and the sd shim in $root
+echo "export PATH=\"$root:\$PATH\"" >> ~/.bashrc
+```
+
+The folder then looks like this:
+
+```text
+shelldeck/
+  current.txt              the version in use, e.g. 0.0.12
+  sd.cmd, sd               shims: run versions/<current>/sd, so `sd` and agent hooks survive updates
+  versions/
+    0.0.12/                shelldeck, sd-pty, sd-ui, sd (+ .exe on Windows) and _internal/
+```
+
+Put the root folder on your PATH, as the last line above does. `sd` then works in any terminal, and terminals inside shelldeck get it on their PATH automatically.
+
+**Processes.** `shelldeck` supervises two processes. `sd-pty` owns the shells and keeps running; `sd-ui` is the web server and app, and can restart. Task Manager shows them as *shelldeck*, *sd-pty* and *sd-ui*. The Python install runs the same three processes.
+
+**Updates.** *Settings › Updates* shows the installed and latest version. *Update* downloads the new release, checks its sha256, unpacks it next to the current one in `versions/`, points `current.txt` at it and restarts only `sd-ui`, so your terminals and the programs running in them keep going. `sd restart` does the same restart without updating; `sd stop` stops everything. A Python install shows `uv tool upgrade shelldeck` instead.
+
 Requirements: Windows 10 1809+ (for ConPTY) or Linux, and a modern browser.
 
 ## Quick start
