@@ -135,7 +135,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Ports: `stats.listening()` maps pids to LISTEN ports; `S.ports` feeds the pane-header chips.
   - `monitor.js`: one 2s `/api/stats` poller (skipped while hidden), feeding the top-bar `#sysmon` meters and the Task manager view (`view-monitor`).
   - `ui.js`: api, icons, dialogs, menus, toasts, localStorage `store`.
-  - `vendor/`: pinned xterm.js 5.5 + fit + web-links + webgl + search + serialize.
+  - `vendor/`: pinned xterm.js 5.5 + fit + web-links + webgl + search.
 - `tests/`: `test_shelldeck.py` (API, security, settings, tasks, scheduler, static caching, real PTY round trip), `test_cli.py` (banner, web, browser/app window, serve guards, render, search), `test_gitgraph.py`.
 - **Release plumbing.**
   - `install.ps1` / `install.sh`: one-line installers (uv, then `uv tool install shelldeck`; `SHELLDECK_SOURCE` overrides the source and CI feeds it the built wheel; `UV_NO_MODIFY_PATH` skips PATH edits).
@@ -157,9 +157,9 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
 
 - **Ctrl+C.** The detached server has `CREATE_NEW_PROCESS_GROUP`, which makes Windows ignore Ctrl+C in it and every child. `WinProc` calls `SetConsoleCtrlHandler(None, False)` before spawning; don't remove it.
 - **Folder tracking.** `_pump` parses `633;P;Cwd=` from output and stores it in `sessions.cwd`, so a respawned shell opens where it left off.
-- **Restore.** The UI sends `{"type":"snapshot"}` (xterm serialize addon, trailing cursor moves stripped) every 15s and on hide. `PtyManager.save()` writes `scrollback/<sid>.log` every 15s.
-  - It saves the snapshot while fresh and falls back to raw output otherwise; raw ConPTY output is cursor-addressed and replays garbled.
-  - On respawn the file is replayed, then the "restored" banner, then enough newlines to push it all into scrollback, because a new ConPTY paints absolute rows.
+- **Restore.** The UI sends `{"type":"snapshot"}` (`Term.text()`: plain lines, wrapped rows joined; the normal buffer, then an open TUI's screen) every 15s and on hide. `PtyManager.save()` writes `scrollback/<sid>.log` every 15s. `sd peek` reads the same text.
+  - It saves the snapshot while fresh and falls back to the previous restore plus raw output otherwise.
+  - On respawn the file becomes `Scrollback.restored`, never part of the live stream: `_pump` (before any output) and every later connect send `{"type":"restored"}` (through `_plain`, so no cursor moves). The browser writes it, the "restored" banner, and its own `rows` newlines to push it into scrollback, because a new ConPTY paints absolute rows. The old way put it in the stream with the server's row count, so a refresh at another size let the new shell paint into the old text.
   - Read/write these files as bytes: text mode drops the CR in CRLF.
 
 ## Frontend conventions and gotchas

@@ -13,6 +13,11 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - The background server shows as shelldeck in Task Manager (Windows) and in process lists (Linux), not as Python.
 - Lower idle CPU: terminal process trees come from one shared process snapshot per second, not several per terminal on every poll.
 - The boot screen shows for at most 0.6s (was 2s), and hidden tabs stop refreshing the sidebar.
+- After a server restart, terminals show their previous text as plain lines above the new shell (under a "restored" line), not a replayed screen snapshot.
+
+### Fixed
+
+- Refreshing the page after a server restart let the new shell's output land in the middle of the restored text. It now shows the restored text on the first page load too, not only after a refresh.
 
 ## [0.0.11] - 2026-10-10
 

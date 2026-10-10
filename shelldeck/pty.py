@@ -31,7 +31,9 @@ class Scrollback:
         self.size = 0
         self.dirty = False
         self.total = 0  # chars ever added, to tell how stale a snapshot is
-        self.snapshot: tuple[int, str] | None = None  # (total at snapshot, client-rendered screen)
+        self.snapshot: tuple[int, str] | None = None  # (total at snapshot, the client's terminal text)
+        self.restored = ""  # the previous run's text, shown above the new shell (never part of the live stream)
+        self.restored_at = ""
 
     def add(self, data: str) -> None:
         self.dirty = True
@@ -48,13 +50,12 @@ class Scrollback:
         return "".join(self.chunks)
 
     def persisted(self) -> str:
-        """What to save for a restart: the client's rendered snapshot while it is fresh.
-
-        Raw ConPTY output positions the cursor absolutely, so it replays garbled on a new screen.
+        """What to save for a restart: the client's terminal text while it is fresh, else the raw output
+        (shown as plain text: raw ConPTY output positions the cursor absolutely).
         ponytail: staleness = output since the snapshot; a server-side emulator would drop this."""
         if self.snapshot and self.total - self.snapshot[0] < 4096:
             return self.snapshot[1]
-        return self.text()
+        return self.restored + self.text()
 
 
 # --------------------------------------------------------------- backends
@@ -179,18 +180,6 @@ Proc = WinProc if sys.platform == "win32" else PosixProc
 # ---------------------------------------------------------------- manager
 
 
-# after replayed scrollback from a previous run: leave alt screen (1047: no cursor restore), reset style, show cursor
-RESTORED = "\x1b[0m\x1b[?1047l\x1b[?25h\r\n\x1b[J\x1b[2m--- restored {when} ---\x1b[0m"
-
-
-def _push_to_scrollback(rows: int) -> str:
-    """Scroll everything on screen into scrollback and home the cursor.
-
-    A new ConPTY paints at absolute rows of a screen it thinks is blank, which would
-    overwrite restored lines still in view."""
-    return "\x1b[999B" + "\r\n" * rows + "\x1b[H"
-
-
 class PtyManager:
     def __init__(self, store: Path | None = None):
         self.procs: dict[str, Proc] = {}
@@ -203,14 +192,12 @@ class PtyManager:
             return None
         return self.store / f"{session_id}.log"
 
-    def _restore(self, session_id: str, rows: int = 24) -> Scrollback:
+    def _restore(self, session_id: str) -> Scrollback:
         sb = Scrollback()
         f = self._file(session_id)
-        if f and f.exists():
-            old = f.read_bytes().decode("utf-8", errors="replace")  # bytes: text mode drops the CR in CRLF
-            if old:
-                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
-                sb.add(old + RESTORED.format(when=when) + _push_to_scrollback(rows))
+        if f and f.exists() and (old := f.read_bytes().decode("utf-8", errors="replace").rstrip()):  # bytes: keep CRLF
+            sb.restored = old + "\r\n"
+            sb.restored_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
         return sb
 
     def save(self) -> None:
@@ -224,7 +211,7 @@ class PtyManager:
                 f.write_bytes(sb.persisted().encode("utf-8"))
 
     def snapshot(self, session_id: str, data: str) -> None:
-        """Store the client's serialized screen (xterm serialize addon) for the next restart."""
+        """Store the client's terminal text (scrollback and screen, plain lines) for the next restart."""
         if sb := self.scrollback.get(session_id):
             sb.snapshot = (sb.total, data[-SCROLLBACK_CHARS:])
             sb.dirty = True
@@ -271,7 +258,7 @@ class PtyManager:
         env.update(extra_env or {})
         proc = Proc(argv, start_dir, env, rows, cols)
         self.procs[session_id] = proc
-        self.scrollback[session_id] = self._restore(session_id, rows)
+        self.scrollback[session_id] = self._restore(session_id)
         log.info("spawned %s for session %s in %s", argv, session_id, start_dir)
         return proc
 

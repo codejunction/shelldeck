@@ -2633,6 +2633,12 @@ async def _send_all(session_id: str, message: dict) -> None:
             sockets.get(session_id, set()).discard(ws)
 
 
+def _restored_msg(session_id: str) -> dict | None:
+    """The previous run's terminal text as plain lines: no cursor moves that would land in the new shell's screen."""
+    sb = manager.scrollback.get(session_id)
+    return {"type": "restored", "data": _plain(sb.restored), "when": sb.restored_at} if sb and sb.restored else None
+
+
 async def _pump(session_id: str) -> None:
     """Single reader per session; fans output out to every attached socket."""
     queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -2646,6 +2652,8 @@ async def _pump(session_id: str) -> None:
 
     manager.stream(session_id, emit)
     try:
+        if msg := _restored_msg(session_id):  # before any output: the browser puts it above the new shell
+            await _send_all(session_id, msg)
         done = False
         while not done:
             data = await queue.get()
@@ -2790,6 +2798,8 @@ async def terminal_ws(ws: WebSocket, session_id: str):
     sockets.setdefault(session_id, set()).add(ws)
     socket_owner[ws] = login
     try:
+        if msg := _restored_msg(session_id):
+            await ws.send_text(json.dumps(msg))
         if history := manager.history(session_id):
             await ws.send_text(json.dumps({"type": "output", "data": history, "replay": True}))
         if session_id in at_prompt:
