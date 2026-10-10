@@ -156,4 +156,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ inputs.version }}
-        run: gh release create "$TAG" dist/* standalone/* --prerelease --target "$GITHUB_SHA" --title "shelldeck $TAG (release candidate)" --notes "Release candidate from $GITHUB_REF_NAME. Install: SHELLDECK_VERSION=${{ inputs.version }} with install.ps1 / install.sh, or uv tool install shelldeck==${{ inputs.version }}."
+        run: |
+          gh release create "$TAG" dist/* standalone/* --prerelease --target "$GITHUB_SHA" --title "shelldeck $TAG (release candidate)"             --notes "Release candidate from $GITHUB_REF_NAME. Install: SHELLDECK_VERSION=${{ inputs.version }} with install.ps1 / install.sh, or uv tool install shelldeck==${{ inputs.version }}."
