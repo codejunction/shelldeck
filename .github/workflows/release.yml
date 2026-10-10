@@ -74,10 +74,50 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  standalone:
+    # no-Python build (packaging/shelldeck.spec) from the same wheel: shelldeck-<ver>-<os>.zip|tar.gz + .sha256,
+    # one folder shelldeck-<ver>/ that the updater unpacks to <root>/versions/<ver>/
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest, asset: windows-x64, ext: zip }
+          - { os: ubuntu-latest, asset: linux-x64, ext: tar.gz }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Build
+        run: uv run --isolated --no-project --python 3.13 --with "$(ls dist/*.whl)" --with pyinstaller pyinstaller -y --distpath out --workpath build packaging/shelldeck.spec
+      - name: Package
+        run: |
+          ver=$(basename dist/*.whl | cut -d- -f2)
+          name="shelldeck-$ver-${{ matrix.asset }}.${{ matrix.ext }}"
+          mv out/shelldeck "out/shelldeck-$ver"
+          "out/shelldeck-$ver/sd" --help > /dev/null
+          mkdir standalone
+          if [ "${{ matrix.ext }}" = zip ]; then
+            (cd out && uv run --no-project python -m zipfile -c "../standalone/$name" "shelldeck-$ver")
+          else
+            tar -C out -czf "standalone/$name" "shelldeck-$ver"
+          fi
+          (cd standalone && sha256sum "$name" > "$name.sha256" && cat "$name.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: standalone-${{ matrix.asset }}
+          path: standalone/
+
   github-release:
-    # tagged releases only; release candidates live on PyPI
+    # tagged releases only; release candidates live on PyPI (their standalone builds stay workflow artifacts)
     if: github.event_name == 'push'
-    needs: pypi
+    needs: [pypi, standalone]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,6 +127,11 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: standalone-*
+          path: standalone/
+          merge-multiple: true
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "shelldeck $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* standalone/* --title "shelldeck $GITHUB_REF_NAME" --generate-notes

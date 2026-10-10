@@ -734,3 +734,4 @@ ds_src/
 docs/superpowers/
 plans/
 .playwright-cli/
+!packaging/shelldeck.spec

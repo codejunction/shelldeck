@@ -135,6 +135,9 @@ def _askpass(folder: Path) -> Path:
     """A tiny SSH_ASKPASS helper that prints SHELLDECK_ASKPASS (the password lives only in ssh's environment)."""
     if sys.platform == "win32":
         helper = folder / "askpass.cmd"
+        if getattr(sys, "frozen", False):  # standalone build: no interpreter; `sd askpass` prints it
+            helper.write_text(f'@"{Path(sys.executable).with_name("sd.exe")}" askpass\r\n', encoding="utf-8")
+            return helper
         helper.write_text(f'@"{sys.executable}" -c "import os,sys; sys.stdout.write(os.environ[\'SHELLDECK_ASKPASS\'] + chr(10))"\r\n',
                           encoding="utf-8")
     else:
