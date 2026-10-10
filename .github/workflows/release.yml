@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release candidate version for PyPI, e.g. 0.0.5rc1 (not committed; pyproject is patched in the build)"
+        description: "Release candidate, e.g. 0.0.5rc1: PyPI + a GitHub prerelease (not committed; pyproject is patched in the build)"
         required: true
 
 permissions:
@@ -115,8 +115,8 @@ jobs:
           path: standalone/
 
   github-release:
-    # tagged releases only; release candidates live on PyPI (their standalone builds stay workflow artifacts)
-    if: github.event_name == 'push'
+    # a tag makes the release; a release candidate makes a prerelease v<rc> on the branch's commit, so the
+    # installers can fetch its standalone build (prereleases never show as releases/latest, so no OTA offer)
     needs: [pypi, standalone]
     runs-on: ubuntu-latest
     permissions:
@@ -132,6 +132,12 @@ jobs:
           pattern: standalone-*
           path: standalone/
           merge-multiple: true
-      - env:
+      - if: github.event_name == 'push'
+        env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* standalone/* --title "shelldeck $GITHUB_REF_NAME" --generate-notes
+      - if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ inputs.version }}
+        run: gh release create "$TAG" dist/* standalone/* --prerelease --target "$GITHUB_SHA" --title "shelldeck $TAG (release candidate)" --notes "Release candidate from $GITHUB_REF_NAME. Install: SHELLDECK_VERSION=${{ inputs.version }} with install.ps1 / install.sh, or uv tool install shelldeck==${{ inputs.version }}."

@@ -149,7 +149,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - `install.ps1` / `install.sh`: one-line installers (uv, then `uv tool install shelldeck`; `SHELLDECK_SOURCE` overrides the source and CI feeds it the built wheel; `UV_NO_MODIFY_PATH` skips PATH edits).
   - `.github/workflows/ci.yml`: lint, a Windows+Ubuntu × py3.12–3.14 test matrix, and an installer smoke test.
   - `release.yml`: on a `v*` tag, reuses CI, checks the tag matches the pyproject version, then builds, publishes to PyPI (trusted publishing, environment `pypi`) and creates the GitHub release.
-    - Manual run (`workflow_dispatch`, input `version`) publishes a release candidate from a `feature/` or `fix/` branch: `x.y.zrcN` only, newer than pyproject, patched into pyproject in the build (never committed), no tag or GitHub release. It lives in `release.yml` because the PyPI trusted publisher is bound to that file.
+    - Manual run (`workflow_dispatch`, input `version`) publishes a release candidate from a `feature/` or `fix/` branch: `x.y.zrcN` only, newer than pyproject, patched into pyproject in the build (never committed), no git tag pushed, but a GitHub prerelease `v<rc>` on the branch's commit with the wheel and standalone assets (`releases/latest` skips prereleases, so OTA never offers an rc). It lives in `release.yml` because the PyPI trusted publisher is bound to that file.
   - README screenshots live in `docs/assets/`. `docs/superpowers/` and `plans/` are local-only (gitignored).
 - `chapters/`: spec corpus for a future agent platform, not implemented. `_ref_code/`: reference only.
 
