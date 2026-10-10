@@ -109,6 +109,22 @@ jobs:
             tar -C out -czf "standalone/$name" "shelldeck-$ver"
           fi
           (cd standalone && sha256sum "$name" > "$name.sha256" && cat "$name.sha256")
+      - name: Installer on this archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:SHELLDECK_ARCHIVE = (Get-Item standalone/*.zip).FullName
+          $env:SHELLDECK_ROOT = Join-Path $env:RUNNER_TEMP 'sdroot'
+          $env:SHELLDECK_NO_MODIFY_PATH = '1'
+          ./install.ps1
+          & (Join-Path $env:SHELLDECK_ROOT 'sd.cmd') --help > $null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Installer on this archive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          root="$RUNNER_TEMP/sdroot"
+          SHELLDECK_ARCHIVE="$(ls standalone/*.tar.gz)" SHELLDECK_ROOT="$root" SHELLDECK_NO_MODIFY_PATH=1 sh ./install.sh
+          "$root/sd" --help > /dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: standalone-${{ matrix.asset }}

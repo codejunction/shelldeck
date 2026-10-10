@@ -23,75 +23,49 @@ in split or free-floating panes that survive restarts, with your AI coding agent
 
 ## Install
 
-**Windows** (PowerShell):
+There are two ways to install shelldeck, and both are fully supported:
 
-```powershell
-irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 | iex
-```
+- **Standalone** (the default): a self-contained build with no Python or uv needed. It updates itself from *Settings › Updates*.
+- **Python package** with [uv](https://docs.astral.sh/uv/): `uv tool install shelldeck`. Update it with `uv tool upgrade shelldeck`. Plugins (Python packages) only work in this mode.
 
-**Linux** (macOS should work too, but is untested):
+| | Windows (PowerShell) | Linux |
+|---|---|---|
+| Standalone | `irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 \| iex` | `curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh \| sh` |
+| uv tool | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1))) -Pip` | `curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh \| sh -s -- --pip` |
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh | sh
-```
+Already have uv? `uv tool install shelldeck` is all the uv mode needs (or `pipx install shelldeck`, or `uvx shelldeck` to try it without installing). On macOS (untested), `install.sh` installs the Python package, since there is no standalone build for it yet.
 
-The installer sets up [uv](https://docs.astral.sh/uv/) if you don't have it, then installs shelldeck with its own Python 3.12+. Run it again to update to the latest release (or `uv tool upgrade shelldeck`); stop the server first with `sd stop` so Windows can replace `sd.exe`. Already use Python tooling? Any of these work too:
+Requirements: Windows 10 1809+ (for ConPTY) or Linux x64, and a modern browser.
 
-```sh
-uv tool install shelldeck      # or: pipx install shelldeck, or: pip install shelldeck
-uvx shelldeck                  # try it without installing
-```
+### Standalone install
 
-To try a release candidate, pin it: `uv tool install --force shelldeck==0.0.5rc3` (or `pip install shelldeck==0.0.5rc3`). Go back to the stable release with `uv tool install --force shelldeck`.
-
-### Standalone build (no Python)
-
-Each release also has a self-contained build: `shelldeck-<version>-windows-x64.zip` and `shelldeck-<version>-linux-x64.tar.gz` on the [GitHub releases](https://github.com/codejunction/shelldeck/releases) page, each with a `.sha256` checksum. It needs neither Python nor uv. Plugins are the exception: they are Python packages, so they only work in the Python install.
-
-Unpack it into a `versions` folder and name the version in use in `current.txt`.
-
-Windows (PowerShell):
-
-```powershell
-$v = "0.0.12"; $root = "$env:LOCALAPPDATA\shelldeck"
-New-Item -ItemType Directory -Force "$root\versions" | Out-Null
-Invoke-WebRequest "https://github.com/codejunction/shelldeck/releases/download/v$v/shelldeck-$v-windows-x64.zip" -OutFile "$env:TEMP\shelldeck.zip"
-Expand-Archive "$env:TEMP\shelldeck.zip" "$root\versions" -Force
-Rename-Item "$root\versions\shelldeck-$v" $v
-Set-Content -NoNewline "$root\current.txt" $v
-& "$root\versions\$v\shelldeck.exe"      # first start: the server, your browser, and the sd shims in $root
-[Environment]::SetEnvironmentVariable("Path", "$root;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
-```
-
-Linux:
-
-```sh
-v=0.0.12; root=~/.local/share/shelldeck
-mkdir -p "$root/versions"
-curl -fsSL "https://github.com/codejunction/shelldeck/releases/download/v$v/shelldeck-$v-linux-x64.tar.gz" | tar -xz -C "$root/versions"
-mv "$root/versions/shelldeck-$v" "$root/versions/$v"
-printf %s "$v" > "$root/current.txt"
-"$root/versions/$v/shelldeck"            # first start: the server, your browser, and the sd shim in $root
-echo "export PATH=\"$root:\$PATH\"" >> ~/.bashrc
-```
-
-The folder then looks like this:
+The installer downloads `shelldeck-<version>-windows-x64.zip` or `shelldeck-<version>-linux-x64.tar.gz` from the latest [GitHub release](https://github.com/codejunction/shelldeck/releases), checks its `.sha256` and unpacks it into `%LOCALAPPDATA%\shelldeck` (Windows) or `~/.local/share/shelldeck` (Linux). It then puts that folder on your PATH:
 
 ```text
 shelldeck/
   current.txt              the version in use, e.g. 0.0.12
-  sd.cmd, sd               shims: run versions/<current>/sd, so `sd` and agent hooks survive updates
+  sd.cmd, sd               shims that run versions/<current>/sd, so `sd` and agent hooks survive updates
   versions/
     0.0.12/                shelldeck, sd-pty, sd-ui, sd (+ .exe on Windows) and _internal/
 ```
 
-Put the root folder on your PATH, as the last line above does. `sd` then works in any terminal, and terminals inside shelldeck get it on their PATH automatically.
+Options, as environment variables:
+- `SHELLDECK_VERSION=0.0.12rc2` installs a specific release, release candidates included.
+- `SHELLDECK_ROOT=<dir>` installs somewhere else.
+- `SHELLDECK_NO_MODIFY_PATH=1` leaves PATH alone.
+- `SHELLDECK_ARCHIVE=<file>` installs a downloaded archive.
 
-**Processes.** `shelldeck` supervises two processes. `sd-pty` owns the shells and keeps running; `sd-ui` is the web server and app, and can restart. Task Manager shows them as *shelldeck*, *sd-pty* and *sd-ui*. The Python install runs the same three processes.
+Running the installer again installs the newest release next to the old one and switches `current.txt` to it.
 
-**Updates.** *Settings › Updates* shows the installed and latest version. *Update* downloads the new release, checks its sha256, unpacks it next to the current one in `versions/`, points `current.txt` at it and restarts only `sd-ui`, so your terminals and the programs running in them keep going. `sd restart` does the same restart without updating; `sd stop` stops everything. A Python install shows `uv tool upgrade shelldeck` instead.
+### Updates
 
-Requirements: Windows 10 1809+ (for ConPTY) or Linux, and a modern browser.
+- **Standalone:** *Settings › Updates* shows the installed and latest version. *Update* downloads the new release, checks its sha256, unpacks it next to the current one, points `current.txt` at it and restarts only the web app. Your terminals and the programs running in them keep going.
+- **uv tool:** run `uv tool upgrade shelldeck`, then `sd restart`.
+- **Release candidates:** in standalone mode, `SHELLDECK_VERSION=0.0.12rc2` with the installer; with uv, `uv tool install --force shelldeck==0.0.12rc2`. Go back to the stable release with `uv tool install --force shelldeck`.
+
+`sd restart` restarts only the web app; `sd stop` stops everything.
+
+**Processes.** Both modes run three processes. `shelldeck` supervises the other two: `sd-pty`, which owns the shells and keeps running, and `sd-ui`, the web server and app, which can restart on its own. Task Manager shows them as *shelldeck*, *sd-pty* and *sd-ui*.
 
 ## Quick start
 
