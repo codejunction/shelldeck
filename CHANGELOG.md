@@ -6,7 +6,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ### Added
 
-- Radio: a top-bar button plays cliamp radio's channels (radio.cliamp.stream) in the browser.
+- Radio: a top-bar button plays cliamp radio's channels (radio.cliamp.stream) in the browser, with a volume slider.
 
 ### Changed
 

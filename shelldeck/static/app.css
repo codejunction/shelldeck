@@ -1616,6 +1616,20 @@ textarea:focus {
   font-size: 11px;
 }
 
+.menu .menu-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 6px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.menu-volume input {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
 /* ------------------------------------------------------------- palette */
 
 .palette {
