@@ -4,15 +4,21 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-10-11
+
 ### Added
 
+- Standalone build: Windows x64 and Linux x64 archives on every GitHub release, no Python or uv needed. The one-line installers install it by default; `-Pip` / `--pip` (or `SHELLDECK_PIP=1`) installs with `uv tool` instead. `SHELLDECK_VERSION` picks a release, release candidates included.
+- In-place updates: the standalone build downloads a new release (checked against its `.sha256`), unpacks it next to the running one and restarts only its UI process, so terminals keep running. Host browsers get an *Update now* toast, and Settings has an *Updates* section. uv installs are told to run `uv tool upgrade shelldeck`.
+- Two processes: the server runs as `shelldeck` with `sd-pty` (the shells) and `sd-ui` (web UI) under it. Restarting or updating the UI (`sd restart`) keeps every shell and its scrollback. `sd stop` ends both.
 - Radio: a top-bar button plays cliamp radio's channels (radio.cliamp.stream) in the browser, with a volume slider.
 
 ### Changed
 
 - The background server shows as shelldeck in Task Manager (Windows) and in process lists (Linux), not as Python.
 - Lower idle CPU: terminal process trees come from one shared process snapshot per second, not several per terminal on every poll.
-- The boot screen shows for at most 0.6s (was 2s), and hidden tabs stop refreshing the sidebar.
+- The boot screen shows for about 1s (was 2s) and finishes its logo animation before the page appears; hidden tabs stop refreshing the sidebar.
+- Settings is split into sections (Appearance, Terminal, AI agents, Updates, Password) with a side navigation.
 - After a server restart, terminals show their previous text as plain lines above the new shell (under a "restored" line), not a replayed screen snapshot.
 
 ### Fixed
@@ -212,7 +218,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.11...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.12...HEAD
+[0.0.12]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.12
 [0.0.11]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.11
 [0.0.10]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.10
 [0.0.9]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.9
