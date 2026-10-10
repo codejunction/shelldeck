@@ -665,7 +665,10 @@ export async function settingsDialog() {
       $("[data-a=update]", d.el).hidden = !(u.available && u.how === "ota");
       const how = $(".set-how", d.el);
       how.hidden = !u.available || u.how === "ota";
-      how.innerHTML = `Installed with uv: run <code>uv tool upgrade shelldeck</code>, then <code>sd restart</code>.`;
+      how.innerHTML =
+        u.how === "manual"
+          ? `This copy can't update itself: download the new release from <a href="https://github.com/codejunction/shelldeck/releases/latest" target="_blank" rel="noopener">GitHub</a>.`
+          : `Installed with uv: run <code>uv tool upgrade shelldeck</code>, then <code>sd restart</code>.`;
       if (u.available && u.how === "ota" && !u.in_place) {
         how.hidden = false;
         how.textContent = "Updating restarts shelldeck; running terminals close.";
