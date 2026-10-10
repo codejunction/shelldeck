@@ -2,6 +2,23 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.0.11] - 2026-10-10
+
+### Added
+
+- `?` menu: type `?` on an empty shell prompt for a menu at the cursor with shelldeck's commands, bookmarks and plugin commands, filtered as you type.
+- Ask: type a question in the `?` menu (or press `Ctrl+I`) and an installed agent's model writes one command for that terminal's shell and OS. Enter types it without running it, Shift+Enter runs it. `sd ask "..."` prints it. New settings *Ask agent* and *Ask model*.
+- Plugins: Python packages with `shelldeck.plugins` entry points add commands (`?docker ps`, `sd docker ps`) and event handlers. `@command(usage="<container>")` names arguments. A *Plugins* page (sidebar, *More*) shows status, commands with *Run*, events and on/off; `sd plugin list|enable|disable|run`. Ask knows plugin commands. Guide in `docs/plugins.md`, reference plugin in `examples/shelldeck-docker`.
+
+### Fixed
+
+- The first `?` in a new terminal went to the shell: xterm's automatic replies to a new ConPTY were counted as typing.
+- `?` right after a page load did nothing, because replayed output has no prompt marks.
+- Input typed while a terminal socket connects is queued, not dropped.
+- An empty Enter left a terminal marked running until the next command.
+- The shelldeck agent skill's frontmatter was not valid YAML, so agents hid the skill.
+- A plugin calling `sys.exit` or raising can't stop the server.
+
 ## [0.0.10] - 2026-10-06
 
 ### Added
@@ -178,7 +195,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.11
 [0.0.10]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.10
 [0.0.9]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.9
 [0.0.8]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.8

@@ -276,6 +276,7 @@ class Term {
     this.xterm.onData((data) => {
       if (this.replaying) return;
       data = withCtrl(data);
+      if (data === "?" && this.atPrompt()) return inlineCommands(this);
       this.track(data);
       this.send({ type: "input", data });
     });
@@ -289,6 +290,11 @@ class Term {
     if (e.type !== "keydown") return true;
     const k = e.key.toLowerCase();
     if (isAppShortcut(e)) return false;
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && k === "i" && this.atPrompt()) {
+      e.preventDefault();
+      inlineCommands(this, { askOnly: true }); // Ctrl+I: Ask, like Devin's terminal Command (elsewhere it stays Tab)
+      return false;
+    }
     if (e.ctrlKey && !e.altKey && !e.shiftKey && k === "f") {
       e.preventDefault();
       this.openFind();
@@ -315,13 +321,19 @@ class Term {
     return true;
   }
 
+  /** An empty line at a shell prompt: `?` there opens Ask instead of reaching the shell. Needs shell
+   * integration (no WSL), so vim, less, ssh and agents' own input always get the key. */
+  atPrompt() {
+    return this.integrated && !this.running && !this.line && !this.edited && !S.agents[this.sid] && this.xterm.buffer.active.type === "normal";
+  }
+
   // ponytail: heuristic command tracking from keystrokes; shell integration (OSC 633) if it proves flaky.
   track(data) {
+    data = data.replace(TERM_REPLIES, ""); // xterm answering the shell (a new ConPTY asks for the cursor), not typing
     for (const part of data.split(/(\r)/)) {
       if (part === "\r") this.commit();
       else if (part === "\x03") (this.line = ""), (this.edited = false);
       else if (part === "\x7f" || part === "\b") this.line = this.line.slice(0, -1);
-      else if (/^\x1b\[[IO]$/.test(part)) continue; // focus in/out reports
       else if (part.startsWith("\x1b") || part.includes("\t")) this.edited = true;
       else if (part >= " ") this.line += part;
     }
@@ -360,13 +372,14 @@ class Term {
     const [kind, code] = data.split(";");
     this.integrated = true;
     if (kind === "A") {
+      this.running = null; // a prompt means nothing runs (an empty Enter sets running but gets no D)
       const m = this.xterm.registerMarker(0);
       if (m) this.prompts.push(m);
       if (this.prompts.length > 500) this.prompts.shift().dispose();
     } else if (kind === "D") {
       const r = this.running;
       this.running = null;
-      if (!r || this.replaying) return true;
+      if (!r || this.replaying || r.restored) return true; // restored: started before this page loaded
       this.exit = code ? +code || 0 : null;
       this.paintCmd();
       this.send({ type: "command", cmd: this.cmd || r.cmd, exit: this.exit, ms: Date.now() - r.at, at: new Date(r.at).toISOString() });
@@ -491,6 +504,7 @@ class Term {
       this.size = null;
       this.fit(true);
       if (!this.gotOutput) this.status("Starting shell…", true);
+      for (const m of (this.queued || []).splice(0)) this.send(m);
       this.readyWaiters.splice(0).forEach((r) => r());
     };
     ws.onmessage = (ev) => {
@@ -519,6 +533,11 @@ class Term {
         }
       }
       else if (msg.type === "exit") this.exited();
+      else if (msg.type === "prompt") {
+        // the server saw this shell's prompt marks (a replayed screen has none): at a prompt, or running something
+        this.integrated = true;
+        this.running = msg.at ? null : this.running || { cmd: "", at: Date.now(), restored: true };
+      }
       else if (msg.type === "snapshot") { // another terminal's agent is reading this screen (sd peek)
         this.changed = true;
         this.lastSnapshot = null;
@@ -567,6 +586,7 @@ class Term {
 
   send(msg) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    else if (msg.type === "input") (this.queued ||= []).push(msg); // typed while (re)connecting: sent once open
   }
 
   fit(force = false) {
@@ -735,6 +755,8 @@ export function updateAgentStates() {
 }
 
 const CMD_MAX = 32;
+// replies xterm sends on its own: cursor position, device attributes, focus in/out, OSC color answers
+const TERM_REPLIES = /\x1b\[[?>]?[\d;]*[RcIO]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const LONG_CMD_MS = 10000; // commands at least this long notify when they finish out of view
 // search decorations must be #rrggbb
 const FIND_DECORATIONS = { matchBackground: "#3f3f46", activeMatchBackground: "#7c3aed", matchOverviewRuler: "#71717a", activeMatchColorOverviewRuler: "#a78bfa" };
@@ -1734,12 +1756,12 @@ function toggleSidebar() {
 
 // ------------------------------------------------------------- top bar/views
 
-const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", remotes: "Remote systems", agents: "AI agents", scratch: "Scratchpad", context: "Context" };
+const VIEW_TITLES = { bookmarks: "Bookmarks", scheduler: "Scheduler", tasks: "Tasks", monitor: "Task manager", history: "Command history", devices: "Devices", remotes: "Remote systems", agents: "AI agents", scratch: "Scratchpad", context: "Context", plugins: "Plugins" };
 
 export function switchView(view) {
   if (S.view === view) return;
   S.view = view;
-  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "remotes", "agents", "scratch", "context"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["terminals", "bookmarks", "scheduler", "tasks", "monitor", "history", "devices", "remotes", "agents", "scratch", "context", "plugins"]) $(`#view-${v}`).hidden = v !== view;
   for (const b of $$(".sb-link[data-view]")) b.classList.toggle("active", b.dataset.view === view && view !== "terminals");
   if ($("#sb-more .sb-link.active")) $("#sb-more").open = true; // a view inside "More" keeps it open
   $("#term-actions").hidden = view !== "terminals";
@@ -1782,24 +1804,25 @@ function fuzzy(q, text) {
 }
 
 /** Generic palette. items: {group, label, hint, icon, run(e)} ; multi: allow checking several. */
-export function palette({ placeholder = "Type a command or search…", items, multi = null, footer = "" }) {
-  const d = dialog({
-    cls: "palette",
-    body: `<input type="search" placeholder="${esc(placeholder)}" autofocus aria-label="Search" /><div class="palette-list" role="listbox"></div>${footer ? `<div class="palette-foot">${footer}</div>` : ""}`,
-  });
-  d.el.querySelector(".dialog-body").style.padding = "0";
+export function palette({ placeholder = "Type a command or search…", items, multi = null, footer = "", at = null, extra = null, onClose = null }) {
+  const body = `<input type="search" placeholder="${esc(placeholder)}" autofocus aria-label="Search" /><div class="palette-list" role="listbox"></div>${footer ? `<div class="palette-foot">${footer}</div>` : ""}`;
+  const d = at ? popover(at, body, onClose) : dialog({ cls: "palette", body, onClose });
+  const dbody = d.el.querySelector(".dialog-body");
+  if (dbody) dbody.style.padding = "0";
   const input = $("input", d.el);
   const list = $(".palette-list", d.el);
   const checked = new Set();
   let shown = [];
   let sel = 0;
+  let override = null; // what a `stay` item shows instead of the matches (a spinner, then its result) until the input changes
   const render = () => {
     const q = input.value.trim();
-    shown = items
+    shown = override || items
       .map((it) => ({ it, score: fuzzy(q, `${it.label} ${it.hint || ""} ${it.group || ""}`) }))
       .filter((x) => x.score > 0)
       .sort((a, b) => (q ? b.score - a.score : 0))
       .map((x) => x.it);
+    if (extra && !override) shown = extra(q, shown);
     sel = Math.min(sel, Math.max(0, shown.length - 1));
     let group = null;
     list.innerHTML = shown.length
@@ -1808,21 +1831,42 @@ export function palette({ placeholder = "Type a command or search…", items, mu
             const head = !q && it.group && it.group !== group ? `<div class="palette-group">${esc((group = it.group))}</div>` : "";
             return `${head}<div class="palette-item ${i === sel ? "sel" : ""}" data-i="${i}" role="option">
               ${multi ? `<input type="checkbox" tabindex="-1" ${checked.has(it) ? "checked" : ""} />` : ""}
-              ${icon(it.icon || "terminal")}<span class="label">${esc(it.label)}</span><span class="hint">${esc(it.hint || "")}</span></div>`;
+              ${it.busy ? `<span class="spinner sm"></span>` : icon(it.icon || "terminal")}<span class="label ${it.mono ? "mono" : ""}">${esc(it.label)}</span><span class="hint">${esc(it.hint || "")}</span></div>`;
           })
           .join("")
-      : `<div class="placeholder">No matches</div>`;
+      : q ? `<div class="placeholder">No matches</div>` : "";
     list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
   };
   const run = (e) => {
     const picked = multi && checked.size ? [...checked] : shown[sel] ? [shown[sel]] : [];
-    if (!picked.length) return;
+    if (!picked.length || !picked[0].run) return;
+    if (picked[0].stay) {
+      // stays open: the item swaps the list for its progress and result; editing the input goes back to matching
+      const asked = input.value;
+      const show = (list) => {
+        if (!d.el.isConnected || input.value !== asked) return false;
+        override = list;
+        sel = 0;
+        render();
+        return true;
+      };
+      // fill: put text in the box to keep typing (a plugin command that still needs its arguments)
+      const fill = (text) => {
+        input.value = text;
+        override = null;
+        sel = 0;
+        render();
+        input.focus();
+      };
+      return picked[0].run(e, { show, fill, close: d.close });
+    }
     d.close();
     if (multi) multi(picked, e);
     else picked[0].run(e);
   };
   input.addEventListener("input", () => {
     sel = 0;
+    override = null;
     render();
   });
   input.addEventListener("keydown", (e) => {
@@ -1832,7 +1876,7 @@ export function palette({ placeholder = "Type a command or search…", items, mu
       render();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      run(e);
+      run(e); // Ctrl+Enter too (Devin's accept); Shift+Enter is passed on (runs a bookmark or a generated command)
     } else if (e.key === " " && multi && !input.value) {
       e.preventDefault();
       const it = shown[sel];
@@ -1863,7 +1907,70 @@ export function palette({ placeholder = "Type a command or search…", items, mu
   return d;
 }
 
-function commandPalette() {
+/** The palette as a small menu at a point (the terminal cursor) instead of a dialog. */
+function popover(at, body, onClose) {
+  const el = document.createElement("div");
+  el.className = "palette inline";
+  el.innerHTML = body;
+  el.style.left = `${Math.max(8, Math.min(at.left, innerWidth - 428))}px`;
+  if (at.bottom + 340 < innerHeight) el.style.top = `${at.bottom + 4}px`;
+  else el.style.bottom = `${innerHeight - at.top + 4}px`; // no room below: grow upward from the cursor
+  document.body.append(el);
+  const close = () => {
+    if (!el.isConnected) return;
+    el.remove();
+    removeEventListener("mousedown", outside, true);
+    onClose?.();
+  };
+  const outside = (e) => !el.contains(e.target) && close();
+  addEventListener("mousedown", outside, true);
+  const input = $("input", el);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || (e.key === "Backspace" && !input.value)) {
+      e.preventDefault();
+      close();
+    }
+  });
+  setTimeout(() => input.focus(), 0);
+  return { el, close };
+}
+
+/** `?` at an empty shell prompt: shelldeck's commands right at the cursor, plus Ask for anything typed. */
+/** `?` at an empty prompt: the command menu at the cursor. `askOnly` (Ctrl+I) is just the Ask box, like Devin's. */
+function inlineCommands(term, { askOnly = false } = {}) {
+  // the cursor cell on screen (xterm's own textarea lags behind in a pane that was just opened)
+  const x = term.xterm;
+  const screen = x.element.querySelector(".xterm-screen").getBoundingClientRect();
+  const row = screen.height / x.rows;
+  const b = x.buffer.active;
+  const top = screen.top + (b.baseY + b.cursorY - b.viewportY) * row;
+  palette({
+    at: { left: screen.left + b.cursorX * (screen.width / x.cols), top, bottom: top + row },
+    placeholder: askOnly ? `Describe a ${shellLabel(findSession(term.sid)?.shell)} command…` : "Ask, or pick a command…",
+    items: askOnly ? [] : paletteItems().filter((it) => it.group !== "Terminals"),
+    // ponytail: a space means a sentence, so Ask goes first; one word prefers a matching command
+    extra: (q, shown) => {
+      if (!q) return shown;
+      const words = q.split(/\s+/);
+      const plugin = !askOnly && pluginMatch(q);
+      if (plugin) return [plugin, ...shown];
+      const ask = { group: "Ask", label: `Ask: ${q}`, hint: askWho(), icon: "sparkle", stay: true, run: (e, ctl) => askInto(term, q, ctl) };
+      // a name being typed (`docker restart`) keeps its command first; otherwise a sentence goes to Ask
+      const named = shown.findIndex((it) => it.label.toLowerCase().startsWith(q.toLowerCase()));
+      if (named >= 0) return [shown[named], ...shown.filter((_, i) => i !== named), ask];
+      return q.includes(" ") || !shown.length ? [ask, ...shown] : [...shown, ask];
+    },
+    onClose: () => term.focus(),
+    footer: askOnly ? "Enter asks, then inserts the answer · Shift+Enter runs it · Esc" : "Type to ask or filter · ↑↓ · Enter · Esc",
+  });
+}
+
+function askWho() {
+  const a = S.settings.ask_agent && S.settings.ask_agent !== "auto" ? S.settings.ask_agent : "";
+  return [a, S.settings.ask_model].filter(Boolean).join(" · ") || "AI";
+}
+
+function paletteItems() {
   const items = [];
   for (const s of allSessions()) {
     items.push({ group: "Terminals", label: sessionTitle(s), hint: s.project.name, icon: "terminal", run: () => showSession(s.id) });
@@ -1891,11 +1998,13 @@ function commandPalette() {
     ["Command history", "history", () => switchView("history"), "Ctrl+Alt+R"],
     ["Task manager", "activity", () => switchView("monitor"), "Ctrl+Alt+M"],
     ["Devices", "devices", () => switchView("devices")],
+    ["Plugins", "grid", () => switchView("plugins")],
     ...(canShare() ? [["Share…", "share", () => shareDialog()]] : []),
     ["AI agents", "sparkle", () => switchView("agents")],
     ["Scratchpad", "note", () => switchView("scratch")],
     ["Context", "sparkle", () => switchView("context")],
     ["Open file…", "note", () => openFileDialog()],
+    ["Ask for a command…", "sparkle", () => (S.terms.get(S.focused) ? inlineCommands(S.terms.get(S.focused)) : toast({ title: "Focus a terminal first" })), "?"],
     ["Open terminals", "terminal", () => switchView("terminals")],
     ["Open bookmarks", "bookmark", () => switchView("bookmarks")],
     ["Open scheduler", "clock", () => switchView("scheduler"), "Ctrl+Alt+S"],
@@ -1906,7 +2015,70 @@ function commandPalette() {
     ["Lock", "lock", () => lockNow(), "Ctrl+Alt+L"],
   ];
   for (const [label, ic, run, hint] of cmds) items.push({ group: "Commands", label, icon: ic, run, hint });
-  palette({ items, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+  for (const c of S.pluginCommands || []) items.push(pluginItem(c));
+  return items;
+}
+
+/** A plugin command as a menu item. One whose usage names a required `<argument>` and has none yet fills the
+ * box with `docker logs ` instead of running, so the arguments are typed right there. */
+function pluginItem(c, args = []) {
+  const words = [...c.name.split(" "), ...args];
+  if (!args.length && c.usage?.includes("<")) {
+    return { group: "Plugins", label: `${c.name} ${c.usage}`, hint: c.description, icon: "grid", stay: true, run: (e, ctl) => ctl.fill(`${c.name} `) };
+  }
+  return { group: "Plugins", label: words.join(" "), hint: c.usage && !args.length ? `${c.usage} · ${c.description}` : c.description, icon: "grid", run: () => runPlugin(words) };
+}
+
+/** `docker logs web` typed in a menu: that plugin command with its arguments, ready to run. */
+function pluginMatch(q) {
+  const words = q.split(/\s+/);
+  const c = (S.pluginCommands || []).find((x) => x.name === words.slice(0, 2).join(" "));
+  return c && words.length > 2 ? pluginItem(c, words.slice(2)) : null;
+}
+
+/** A plugin command for the focused terminal: `input` is typed at its prompt (never run), text is shown. */
+export async function runPlugin(words) {
+  const term = S.terms.get(S.focused);
+  try {
+    const out = await api("/api/plugins/run", { method: "POST", body: { words, session_id: term?.sid || "" } });
+    if (out.input && term) {
+      switchView("terminals"); // run from the Plugins page: show where it was typed
+      term.send({ type: "input", data: out.input });
+      term.line += out.input;
+      return term.focus();
+    }
+    const text = out.input || out.text;
+    if (text) dialog({ title: words.join(" "), wide: true, body: `<pre class="mono plugin-out">${esc(text)}</pre>` });
+    else term?.focus();
+  } catch (e) {
+    toast({ title: `${words.slice(0, 2).join(" ")} failed`, body: e.data?.detail || e.message, kind: "error" });
+  }
+}
+
+function commandPalette() {
+  const extra = (q, shown) => {
+    const plugin = q && pluginMatch(q);
+    return plugin ? [plugin, ...shown] : shown;
+  };
+  palette({ items: paletteItems(), extra, footer: "↑↓ to navigate · Enter to open · Shift+Enter runs a bookmark · Esc to close" });
+}
+
+/** Ask inside the open menu: a spinner while the agent writes, then the command to accept (Enter types it,
+ * Shift+Enter runs it). Editing the question drops the answer, so a new Enter asks again. */
+async function askInto(term, q, ctl) {
+  ctl.show([{ label: `Asking ${askWho()}…`, hint: q, busy: true }]);
+  try {
+    const { command, plugin } = await api("/api/ask", { method: "POST", body: { q, session_id: term.sid } });
+    if (plugin) return ctl.show([{ label: plugin.join(" "), mono: true, icon: "grid", hint: "Plugin command · Enter runs it", run: () => runPlugin(plugin) }]);
+    const insert = (e) => {
+      term.send({ type: "input", data: command + (e?.shiftKey ? "\r" : "") }); // typed; it runs only on Shift+Enter
+      if (!e?.shiftKey) term.line += command; // a later `?` on this line is text, not Ask
+    };
+    ctl.show([{ label: command, mono: true, icon: "terminal", hint: "Enter inserts · Shift+Enter runs", run: insert }]);
+  } catch (e) {
+    const why = { no_agent_installed: "Install Claude, Codex, Gemini or Devin first.", no_answer: "The agent gave no command." }[e.message] || e.message;
+    ctl.show([{ label: why, icon: "x", hint: "Edit the question to try again" }]);
+  }
 }
 
 function gitOfFocused() {
@@ -2252,6 +2424,7 @@ async function init() {
     openFile(params.get("file"), { mode: params.get("mode") === "view" ? "view" : "edit" });
   }
   views.loadBookmarks();
+  api("/api/plugins").then((r) => (S.pluginCommands = r.commands)).catch(() => {});
   if (EMBED) return setInterval(refreshProjects, 5000);
   connectAlarms();
   initShare();

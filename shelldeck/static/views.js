@@ -2,6 +2,7 @@ import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedPro
 import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
+import { renderPlugins } from "./plugins.js";
 import { renderRemotes } from "./remotes.js";
 import { renderAgents } from "./agents.js";
 import { renderScratch } from "./scratch.js";
@@ -17,9 +18,9 @@ export function init() {}
 export function show(view, el) {
   current = view;
   clearInterval(pollTimer);
-  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, remotes: renderRemotes, agents: renderAgents, scratch: renderScratch, context: renderContext }[view];
+  const render = { bookmarks: renderBookmarks, scheduler: renderScheduler, tasks: renderTasks, monitor: renderMonitor, history: renderHistory, devices: renderDevices, remotes: renderRemotes, agents: renderAgents, scratch: renderScratch, context: renderContext, plugins: renderPlugins }[view];
   render(el);
-  if (!["bookmarks", "monitor", "history", "scratch", "context"].includes(view)) { // monitor refreshes from its own 2s poller
+  if (!["bookmarks", "monitor", "history", "scratch", "context", "plugins"].includes(view)) { // monitor refreshes from its own 2s poller
     pollTimer = setInterval(() => {
       if (current === view && !el.hidden && !document.querySelector(".dialog-bg")) render(el);
       else if (el.hidden) clearInterval(pollTimer);
@@ -627,6 +628,15 @@ export async function settingsDialog() {
           ${[["off", "Off (keywords only)"], ["auto", "First installed agent"], ["claude", "Claude Code (haiku)"], ["codex", "Codex (small model)"], ["gemini", "Gemini CLI (flash-lite)"], ["devin", "Devin CLI (small model)"]]
             .map(([v, l]) => `<option value="${v}" ${(s.recall_agent || "off") === v ? "selected" : ""}>${l}</option>`).join("")}
         </select></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Ask agent (? and sd ask)</span><select name="ask_agent">
+          ${[["auto", "First installed agent"], ["claude", "Claude Code"], ["codex", "Codex"], ["gemini", "Gemini CLI"], ["devin", "Devin CLI"]]
+            .map(([v, l]) => `<option value="${v}" ${(s.ask_agent || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Ask model</span><input name="ask_model" list="ask-models" placeholder="Default (its smallest)" value="${esc(s.ask_model || "")}" /><datalist id="ask-models"></datalist></label>
+      </div>
+      <div class="field-row">
         <label class="field"><span>Resume agent sessions after a restart</span><select name="agent_resume">
           <option value="ask" ${(s.agent_resume || "ask") === "ask" ? "selected" : ""}>Ask (a Resume button on AI agents)</option>
           <option value="auto" ${s.agent_resume === "auto" ? "selected" : ""}>Automatically</option>
@@ -663,6 +673,8 @@ export async function settingsDialog() {
       editor: form.editor.value,
       agent_resume: form.agent_resume.value,
       recall_agent: form.recall_agent.value,
+      ask_agent: form.ask_agent.value,
+      ask_model: form.ask_model.value.trim(),
       font_family: form.font_family.value,
     });
     if (ok) {
@@ -671,6 +683,20 @@ export async function settingsDialog() {
     }
   };
   form.onsubmit = save;
+  // the model list follows the picked agent (installed agents only, from smart recall's pickers)
+  const askModels = (choices) => {
+    const a = choices.find((c) => c.agent === form.ask_agent.value) || (form.ask_agent.value === "auto" ? choices[0] : null);
+    $("#ask-models", d.el).innerHTML = (a?.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
+  };
+  api("/api/context/recall-agents")
+    .then(({ agents }) => {
+      askModels(agents);
+      form.ask_agent.addEventListener("change", () => {
+        form.ask_model.value = "";
+        askModels(agents);
+      });
+    })
+    .catch(() => {});
   d.el.addEventListener("click", async (e) => {
     const a = e.target.closest("[data-a]")?.dataset.a;
     if (a === "save") save(e);

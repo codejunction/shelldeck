@@ -109,6 +109,7 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 - **Facts come from the agents.** No model runs inside shelldeck: agents record what they learn with `sd remember`, `sd decide` and `sd task update`. *Extract facts* in an agent's *Actions* menu on the AI agents page (or `sd agent extract Maya`) asks an agent to do it now, in one short turn. It never runs on its own, so it costs tokens only when you ask.
 - **Smart search without embeddings.** `sd recall auth --smart` (or *smart* on the Context page, or the *Smart search* setting) asks an installed agent's smallest model for related keywords (authentication, oauth, jwt, session...) and searches with those too. It uses the agent's own non-interactive mode: `claude -p --model haiku`, `codex exec`, `gemini -p -m flash-lite` or `devin -p`. Only the query is sent, never your stored memory, and answers are cached, so each new query costs a few tokens once. If no agent is available, search uses keywords only.
 - **Context page.** The sidebar's *Context* view reads like a status page: *Working on* (task, next step, tests passing or failing, last error, git; *Edit* when you need it), *Facts* ("may be out of date" when a source file changed; check or remove them on hover), *Decisions*, and *Recent activity* in plain words. The search box can widen a search with an installed agent and a model you choose (its cheapest by default).
+- **`?` menu and Ask.** Type `?` on an empty shell prompt and a menu opens right at the cursor: shelldeck's commands and bookmarks, filtered as you type. Type a question instead ("top 5 processes by memory") and pick *Ask*: an installed agent's model (Settings: *Ask agent* and *Ask model*, default the first installed agent's smallest) writes one command for that terminal's shell and OS (PowerShell, cmd, Git Bash, WSL bash, zsh...). The menu stays open with a spinner until the command appears in it; Enter types it at the prompt without running it, Shift+Enter runs it, and editing the question asks again. `Ctrl+I` opens just the Ask box, like Devin Desktop's terminal Command. `?` and `Ctrl+I` only open the menu at a shell prompt with shell integration and no agent running, so vim, less, ssh and agents still get the key. `sd ask "..."` prints the command instead.
 - **Context that outlives the agent.** Each project keeps a task, its current state and next action, memory (facts and discoveries), decisions and recent events in a local database (`context.db` next to the shelldeck config). The same context is written as Markdown to `.shelldeck/STATE.md`, `TASK.md`, `MEMORY.md` and `DECISIONS.md`. A new agent runs `sd context` and continues where the last one stopped. `sd recall "auth architecture"` searches knowledge from every project, with its source project and files. Secrets are redacted before anything is stored, `.env`/key files are never referenced, and knowledge whose source files changed is marked stale. Hand-off files include a context snapshot. All of it stays on this machine.
 - **Agents know the commands.** On start, shelldeck installs a `shelldeck` skill for every agent CLI on PATH: a skill for Claude Code, Codex and Devin, and a marked block in the global instructions file of Gemini, opencode, Qwen, Amp, Droid, Copilot, Crush, Goose and Kiro. `sd install-skill --remove` takes it out and stops the reinstall; the AI agents page has an *Install skill* button per agent.
 
@@ -126,6 +127,23 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
     <td align="center"><sub>Task manager, per terminal</sub></td>
   </tr>
 </table>
+
+### Plugins
+
+A plugin is a Python package that adds commands. Its commands show up in the `?` menu (`?docker ps`, `?docker logs web`) and in the CLI (`sd docker ps`). A command either returns text, which shelldeck shows, or a command line, which shelldeck types at the prompt without pressing Enter. Plugins can also react to shelldeck's events (`agent.*`, `handoff.*`, ...). Ask knows the installed plugin commands too: "follow the logs of the web container" can come back as the plugin's `docker logs web`.
+
+```python
+# pyproject.toml: [project.entry-points."shelldeck.plugins"]  docker = "shelldeck_docker:plugin"
+from shelldeck.plugins import Plugin
+
+plugin = Plugin("docker", "0.1.0")
+
+@plugin.command("logs", "Follow a container's logs", usage="<container>")
+def logs(args, ctx):  # ctx: session_id, cwd, shell, project
+    return {"input": "docker logs -f " + " ".join(args)}
+```
+
+Install a plugin into shelldeck's environment, for example `uv tool install shelldeck --with ./examples/shelldeck-docker` (the reference plugin), then restart shelldeck. The *Plugins* page (sidebar, *More*) shows each plugin's status (or why it failed to load), its commands with a *Run* button and the events it listens to, and turns plugins on or off; `sd plugin list` and `sd plugin disable NAME` do the same from the CLI. Plugins run inside the server with your permissions, like any package you install, so only install ones you trust. [Writing a plugin](docs/plugins.md) covers the API, arguments (`usage="<container>"`), results, events and troubleshooting.
 
 ### Secure by default
 
@@ -154,6 +172,7 @@ sd ~/code/api      # add a folder as a project and open a terminal in it
 | `Ctrl+Alt+M` | Task manager |
 | `Ctrl+Alt+R` | Command history |
 | `Ctrl+Shift+F` | Search all terminals |
+| `?` / `Ctrl+I` (empty shell prompt) | Command menu with Ask / just the Ask box |
 | `Ctrl+Alt+,` | Settings |
 | `Ctrl+Alt+L` | Lock |
 | `Ctrl+Alt+H` | Show shortcuts |
@@ -219,6 +238,8 @@ sd agent report STATE --source S --agent A   report state from an integration in
 sd init [PATH] [--task TEXT]         set up a project for agents now: add it to shelldeck, write .shelldeck/ (STATE, TASK, MEMORY, DECISIONS, AGENTS.md)
 sd context [PROJECT] [-q QUERY]      task, state, next action, memory, decisions, hand-off, git, events
 sd resume                            this project's unfinished task and where to pick it up
+sd plugin list | enable NAME | disable NAME          installed plugins; `sd <plugin> <command> [ARGS]` runs one
+sd ask "QUESTION" [--agent A [--model M]]          print one command for this terminal's shell and OS (never run)
 sd recall QUERY [--smart | --agent A [--model M]]   search every project; an agent's model can add related keywords first
 sd memory [search QUERY]             this project's memory and decisions
 sd remember FACT [FACT...] / sd discover FINDING [--type T] [--file F]   add to project memory

@@ -226,3 +226,12 @@ def test_note_text_may_start_with_a_dash():
     assert _text_args(["abc1", "-- x"]) == ["--", "abc1", "-- x"]
     assert _text_args(["--", "- a", "-t", "T"]) == ["-t", "T", "--", "- a"]
     assert _text_args(["--help"]) == ["--help"]
+
+
+def test_shorthand_routes_folders_and_plugin_commands(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "app", lambda: seen.append(cli.sys.argv[1:]))
+    for argv in (["sd", str(tmp_path)], ["sd", "nofolder"], ["sd", "docker", "ps", "-a"], ["sd", "agents"]):
+        monkeypatch.setattr(cli.sys, "argv", argv)
+        cli._main()
+    assert seen == [["open", str(tmp_path)], ["open", "nofolder"], ["plugin", "run", "--", "docker", "ps", "-a"], ["agents"]]

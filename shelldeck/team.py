@@ -140,7 +140,7 @@ def one_line(text: str, limit: int = 2000) -> str:
 
 SKILL = """---
 name: shelldeck
-description: Work with other AI agents in shelldeck terminals and keep shared project context. Use when SHELLDECK_SESSION_ID is set: at the start of work (sd context), when the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent, and before stopping.
+description: "Work with other AI agents in shelldeck terminals and keep shared project context. Use when SHELLDECK_SESSION_ID is set: at the start of work (sd context), when the user asks to spawn, delegate, hand off, run in parallel, ask or check on another agent, and before stopping."
 ---
 
 # shelldeck agent team

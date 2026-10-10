@@ -149,6 +149,9 @@ def test_recall_api_smart(client, tmp_path, monkeypatch):
     assert chosen["model"] == "sonnet" and seen[-1] == ("claude", "sonnet")
     assert client.get("/api/context/recall", params={"q": "auth", "agent": "off", "smart": True}).json()["agent"] is None
     assert client.put("/api/settings", json={"recall_agent": "nope"}).status_code == 400
+    assert client.put("/api/settings", json={"ask_agent": "nope"}).status_code == 400
+    assert client.put("/api/settings", json={"ask_model": "x; rm"}).status_code == 400
+    assert client.put("/api/settings", json={"ask_agent": "claude", "ask_model": "haiku"}).json()["ask_model"] == "haiku"
 
 
 def test_sd_init_writes_shelldeck_folder(client, tmp_path):

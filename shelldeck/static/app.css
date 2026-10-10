@@ -1675,6 +1675,123 @@ textarea:focus {
   letter-spacing: 0.06em;
 }
 
+/* ------------------------------------------------------------- plugins */
+
+.plg-list {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.plg,
+.plg-help,
+.plg-empty {
+  margin: 0;
+  padding: 14px 16px;
+  cursor: default;
+}
+
+.plg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plg-head .plg-pkg {
+  flex: 1;
+  font-size: 12px;
+}
+
+.plg p {
+  margin: 6px 0 0;
+}
+
+.plg-error {
+  color: var(--bad);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.plg-cmds {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+}
+
+.plg-cmds td {
+  padding: 6px 8px 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.plg-cmds td:last-child {
+  width: 1%;
+  text-align: right;
+}
+
+.plg-events {
+  font-size: 12px;
+}
+
+.plg-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plg-help pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.plugin-out {
+  max-height: 60vh;
+  margin: 0;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.palette.inline {
+  position: fixed;
+  z-index: 60;
+  width: 420px;
+  max-width: calc(100vw - 16px);
+  background: var(--elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.palette.inline input {
+  height: 36px;
+  padding: 0 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.palette.inline .palette-list {
+  max-height: 260px;
+}
+
+/* a generated command: shown whole (wrapped) so it can be read before it is accepted */
+.palette-item:has(.label.mono) {
+  flex-wrap: wrap;
+}
+
+.palette-item .label.mono {
+  flex: 1 1 calc(100% - 30px);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.palette-item:has(.label.mono) .hint {
+  margin-left: 26px;
+}
+
 .palette-foot {
   padding: 8px 12px;
   border-top: 1px solid var(--border);
