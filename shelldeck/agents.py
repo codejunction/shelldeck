@@ -377,16 +377,32 @@ def _devin_native(p: psutil.Process) -> dict | None:
 NATIVE = {"codex": _codex_native, "claude": _claude_native, "devin": _devin_native}
 
 
+_ppids: dict = {"at": 0.0, "kids": {}}
+
+
+def descendants(pid: int) -> list[int]:
+    """Every pid under `pid`, outermost first. psutil's children() takes a full process snapshot per call
+    (on Windows: per terminal, several times per poll); this shares one snapshot for a second."""
+    now = time.monotonic()
+    if now - _ppids["at"] > 1:
+        kids: dict[int, list[int]] = {}
+        for child, parent in psutil._ppid_map().items():  # ponytail: private psutil API; children() if it ever goes
+            if child != parent:
+                kids.setdefault(parent, []).append(child)
+        _ppids.update(at=now, kids=kids)
+    out = [pid]
+    for p in out:  # breadth first: callers pick the outermost agent
+        out += [c for c in _ppids["kids"].get(p, ()) if c not in out]
+    return out[1:]
+
+
 def native(shells: dict[str, int]) -> dict[str, dict]:
     """Lifecycle the agents write in their own logs (no hook needed): session id -> {state, age, session_id?, resume_argv?}."""
     out = {}
     for sid, pid in shells.items():
-        try:
-            kids = psutil.Process(pid).children(recursive=True)
-        except psutil.Error:
-            continue
-        for k in kids:
+        for k in descendants(pid):
             try:
+                k = psutil.Process(k)
                 hit = identify(k)
                 if hit and hit[0] in NATIVE:
                     if found := NATIVE[hit[0]](k):
@@ -401,12 +417,9 @@ def running(shells: dict[str, int]) -> dict[str, tuple[str, str | None]]:
     """session id -> (agent, model) for terminals (shell pid) with an agent running under them."""
     out = {}
     for sid, pid in shells.items():
-        try:
-            kids = psutil.Process(pid).children(recursive=True)
-        except psutil.Error:
-            continue
-        for k in kids:
+        for k in descendants(pid):
             try:
+                k = psutil.Process(k)
                 if hit := identify(k):
                     out[sid] = hit
                     break

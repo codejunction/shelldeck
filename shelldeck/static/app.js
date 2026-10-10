@@ -6,6 +6,7 @@ import { showGitGraph } from "./gitgraph.js";
 import { openFile } from "./editor.js";
 import { scratchChanged } from "./scratch.js";
 import { canShare, initShare, setShareState, shareDialog } from "./share.js";
+import { radioMenu } from "./radio.js";
 
 // ------------------------------------------------------------------ state
 
@@ -2352,6 +2353,7 @@ function wireGlobal() {
     else if (act === "bookmark-picker") views.bookmarkPicker();
     else if (act === "tile") tileAll();
     else if (act === "share") shareDialog();
+    else if (act === "radio") radioMenu(a);
   });
   window.addEventListener("resize", () => fitVisible());
   const snapshotAll = () => S.terms.forEach((t) => t.snapshot());
@@ -2374,7 +2376,7 @@ const bootStart = performance.now();
 function finishBoot() {
   const boot = $("#boot");
   if (!boot) return Promise.resolve();
-  const wait = Math.max(0, 2000 - (performance.now() - bootStart));
+  const wait = Math.max(0, 600 - (performance.now() - bootStart));
   return new Promise((resolve) =>
     setTimeout(() => {
       boot.classList.add("done");
@@ -2425,10 +2427,11 @@ async function init() {
   }
   views.loadBookmarks();
   api("/api/plugins").then((r) => (S.pluginCommands = r.commands)).catch(() => {});
-  if (EMBED) return setInterval(refreshProjects, 5000);
+  const refreshVisible = () => !document.hidden && refreshProjects();
+  if (EMBED) return setInterval(refreshVisible, 5000);
   connectAlarms();
   initShare();
-  setInterval(refreshProjects, 5000);
+  setInterval(refreshVisible, 5000);
 }
 
 init();

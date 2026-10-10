@@ -1274,3 +1274,29 @@ def test_stored_session_state_follows_reports(client, tmp_path, monkeypatch):
     assert db.get_agent_session(sid)["last_state"] == "done"
     server.reports.forget(sid)
     server.agent_status.pop(sid, None)
+
+
+def test_descendants_outermost_first():
+    import os
+    import subprocess
+
+    from shelldeck import agents
+
+    code = "import subprocess, sys; subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'])"
+    child = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        for _ in range(50):
+            agents._ppids["at"] = 0  # fresh snapshot
+            found = agents.descendants(os.getpid())
+            if child.pid in found and found.index(child.pid) < len(found) - 1:
+                break
+            time.sleep(0.1)
+        assert os.getpid() not in found
+        below = agents.descendants(child.pid)
+        assert below and all(found.index(p) > found.index(child.pid) for p in below)
+    finally:
+        import psutil
+
+        for p in psutil.Process(child.pid).children(recursive=True):
+            p.kill()
+        child.kill()

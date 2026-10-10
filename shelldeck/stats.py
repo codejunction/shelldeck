@@ -70,8 +70,7 @@ def gpu() -> dict | None:
 def tree(pid: int, seen: set[int]) -> dict | None:
     """CPU (% of the whole machine), memory and busiest child for a shell and everything it started."""
     try:
-        root = _proc(pid)
-        procs = [root, *root.children(recursive=True)]
+        _proc(pid)
     except psutil.Error:
         return None
     cpu = 0.0
@@ -80,9 +79,9 @@ def tree(pid: int, seen: set[int]) -> dict | None:
     agent: tuple[str, str | None] | None = None
     agent_pid = 0
     pids = []
-    for p in procs:
+    for p in [pid, *agents.descendants(pid)]:
         try:
-            p = _proc(p.pid)
+            p = _proc(p)
             c = p.cpu_percent(None) / NCPU
             m = p.memory_info().rss
             name = p.name()

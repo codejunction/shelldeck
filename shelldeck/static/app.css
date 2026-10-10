@@ -638,6 +638,10 @@ i[data-icon] svg {
   flex: none;
 }
 
+.icon-btn.on {
+  color: var(--accent);
+}
+
 .icon-btn.sm {
   width: 22px;
   height: 22px;

@@ -2,6 +2,18 @@
 
 All notable changes to shelldeck are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Radio: a top-bar button plays cliamp radio's channels (radio.cliamp.stream) in the browser.
+
+### Changed
+
+- The background server shows as shelldeck in Task Manager (Windows) and in process lists (Linux), not as Python.
+- Lower idle CPU: terminal process trees come from one shared process snapshot per second, not several per terminal on every poll.
+- The boot screen shows for at most 0.6s (was 2s), and hidden tabs stop refreshing the sidebar.
+
 ## [0.0.11] - 2026-10-10
 
 ### Added

@@ -105,8 +105,11 @@ def ensure_server() -> None:
         if sys.platform == "win32"
         else {"start_new_session": True}
     )
+    # the venv's shelldeck.exe launcher, so Task Manager groups the server (and its shells) under shelldeck, not Python
+    exe = Path(sys.executable).with_name("shelldeck.exe")
+    cmd = [str(exe)] if sys.platform == "win32" and exe.exists() else [sys.executable, "-m", "shelldeck"]
     subprocess.Popen(
-        [sys.executable, "-m", "shelldeck", "--port", str(CFG["port"]), "serve"],
+        [*cmd, "--port", str(CFG["port"]), "serve"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -284,6 +287,10 @@ def serve(
             err=True,
         )
         raise typer.Exit(2)
+    if sys.platform.startswith("linux"):  # shows as shelldeck, not python3, in top and system monitors
+        import ctypes
+
+        ctypes.CDLL(None).prctl(15, b"shelldeck", 0, 0, 0)  # PR_SET_NAME
     db.init_db()
     _banner(host, "foreground, Ctrl+C stops", "https" if cert else "http")
     run(host=host, port=CFG["port"], certfile=str(cert) if cert else None, keyfile=str(key) if key else None)

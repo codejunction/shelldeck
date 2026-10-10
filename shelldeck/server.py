@@ -22,7 +22,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-import psutil
 import segno
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -910,10 +909,7 @@ def _tree_pids(shells: dict[str, int]) -> set[int]:
     """Every pid under a shelldeck shell (so `outside` skips them)."""
     pids = set(shells.values())
     for pid in shells.values():
-        try:
-            pids.update(p.pid for p in psutil.Process(pid).children(recursive=True))
-        except psutil.Error:
-            continue
+        pids.update(agents.descendants(pid))
     return pids
 
 
