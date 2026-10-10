@@ -600,7 +600,7 @@ export async function settingsDialog() {
       <section data-pane="appearance">
         <div class="field-row">
           ${field("Theme", opts("theme", [["dark", "Dark"], ["light", "Light"], ["system", "Follow system"]], s.theme))}
-          ${field("Terminal colors", opts("terminal_theme", TERMINAL_THEMES.map((t) => [t, t === "default" ? "Default (follows theme)" : t.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())]), s.terminal_theme || "default"))}
+          ${field("Terminal colors", opts("terminal_theme", TERMINAL_THEMES.map((t) => [t, t === "default" ? "Default (follows theme)" : t.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())]), s.terminal_theme || "default"), "Dark presets apply in the dark theme, light ones in the light theme.")}
         </div>
         <div class="field-row">
           ${field("Terminal font", `<input name="font_family" list="font-list" placeholder="Default (Cascadia / Nerd Font)" value="${esc(s.font_family || "")}" /><datalist id="font-list">${["Cascadia Code", "Cascadia Mono", "CaskaydiaCove Nerd Font", "JetBrains Mono", "Fira Code", "Consolas", "Source Code Pro", "Hack", "Ubuntu Mono", "DejaVu Sans Mono", "Menlo"].map((f) => `<option value="${f}"></option>`).join("")}</datalist>`)}

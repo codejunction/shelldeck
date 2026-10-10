@@ -4,6 +4,13 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-10-11
+
+### Fixed
+
+- Switching between the dark and light theme left terminals on a dark color preset (Dracula, Nord, ...). A preset now applies only in the theme it matches; in the other theme terminals use its sibling (Solarized) or that theme's default colors.
+- The Context page scrolled sideways when a recent command was long, hiding the times and the decision box.
+
 ## [0.0.12] - 2026-10-11
 
 ### Added
@@ -218,7 +225,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.12...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.13
 [0.0.12]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.12
 [0.0.11]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.11
 [0.0.10]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.10
