@@ -52,8 +52,8 @@ function syncAsks() {
     asks.set(
       p.id,
       toast({
-        title: "A device wants to connect",
-        body: `${deviceName(p.agent)} · ${p.ip}`,
+        title: p.code ? `A device wants to connect · code ${p.code}` : "A device wants to connect",
+        body: `${deviceName(p.agent)} · ${p.ip}${p.code ? " · allow only if your device shows this code" : ""}`,
         kind: "alarm",
         timeout: 0,
         actions: [
@@ -79,7 +79,7 @@ export function pendingHtml(list) {
   return list
     .map(
       (p) => `<div class="share-dev">
-        <div class="share-dev-name"><b>${esc(deviceName(p.agent))}</b><div class="faint small">${esc(p.ip)} · ${esc(new Date(p.at * 1000).toLocaleTimeString())}</div></div>
+        <div class="share-dev-name"><b>${esc(deviceName(p.agent))}</b>${p.code ? ` <span class="share-code">${esc(p.code)}</span>` : ""}<div class="faint small">${esc(p.ip)} · ${esc(new Date(p.at * 1000).toLocaleTimeString())}${p.code ? " · allow if the device shows this code" : ""}</div></div>
         <button class="btn sm primary" data-decide="allow" data-id="${esc(p.id)}">Allow</button>
         <button class="btn sm" data-decide="deny" data-id="${esc(p.id)}">Deny</button>
       </div>`,

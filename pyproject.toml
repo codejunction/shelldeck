@@ -30,6 +30,7 @@ dependencies = [
   "apscheduler>=3.10,<4",
   "psutil>=5.9",
   "segno>=1.6",
+  "cryptography>=42",
 ]
 
 [project.urls]

@@ -2298,6 +2298,13 @@ function connectAlarms() {
     if (msg.type === "open_file") openFile(msg.path, { mode: msg.mode });
     if (msg.type === "spawned") openSpawned(msg.session_id);
     if (msg.type === "share_state") setShareState(msg.state);
+    if (msg.type === "trusted") {
+      // a device that skips share approval from now on: say so, so a stranger's isn't missed
+      toast({ title: `New trusted device: ${msg.device.name}`, body: "It can reach shelldeck through a share without approval (the password is still needed).",
+        kind: "alarm", timeout: 0, actions: [{ label: "Review", onClick: () => switchView("devices") }] });
+      views.chime();
+      bus.dispatchEvent(new Event("trusted"));
+    }
     if (msg.type === "scratch") scratchChanged();
     if (msg.type === "update") offerUpdate(msg);
     if (msg.type === "agent_state") {

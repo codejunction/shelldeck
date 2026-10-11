@@ -1,0 +1,4 @@
+version: 1
+bundleID: dev.shelldeck.remote
+infoPath: Info.plist
+iconPath: ../shelldeck/static/icon-512.png

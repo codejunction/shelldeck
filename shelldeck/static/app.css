@@ -3394,7 +3394,7 @@ textarea:focus {
 /* dark modules on white in both themes, or phone cameras won't read it */
 .share-qr {
   align-self: center;
-  width: min(240px, 100%);
+  width: min(300px, 100%);
   padding: 12px;
   border-radius: 10px;
   background: #fff;
@@ -3402,8 +3402,10 @@ textarea:focus {
 }
 
 .share-qr svg {
+  display: block;
   width: 100%;
   height: auto;
+  aspect-ratio: 1;
 }
 
 .share-link {
@@ -3458,6 +3460,14 @@ textarea:focus {
 .share-dev-name {
   flex: 1;
   min-width: 0;
+}
+
+.share-code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+  margin-left: 6px;
 }
 
 .share-wait {

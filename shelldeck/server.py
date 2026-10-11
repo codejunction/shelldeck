@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import collections
 import functools
 import hashlib
@@ -9,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from urllib.parse import quote, urlsplit
 
 import segno
 import uvicorn
+from cryptography.exceptions import InvalidTag
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,7 +35,7 @@ from . import agent_commands, detection, smart_recall
 from . import agent_state as lifecycle
 from . import agents, auth, context, db, gitgraph, integrations, plugins, remotes, share, shells, stats, team
 from . import scheduler as sched
-from . import ptyhost, update
+from . import e2e, ptyhost, relay, update
 from .pty import PtyManager
 
 log = logging.getLogger("shelldeck")
@@ -133,6 +136,8 @@ LINK_TTL = 600  # a link must be opened within 10 minutes, once
 APPROVAL_TTL = 300  # a pending device the host didn't answer is dropped after 5 minutes
 SELF_URL = {"url": "http://127.0.0.1:5455"}  # where the tunnel points; set by run()
 CLIENT_HEADER = "x-shelldeck-client"  # "ios" asks for a remote login (see _login_response)
+APP_AGENT = "ShelldeckApp/"  # the iOS app's user agent
+DEVICE_COOKIE = "sd_device"  # a trusted device's token: passes the share gate with no link or approval
 
 
 def _sha(value: str) -> str:
@@ -149,8 +154,18 @@ def _share_link_ok(token: str) -> bool:
 
 
 def _grant(conn) -> dict | None:
-    cookie = conn.cookies.get(SHARE_COOKIE)
-    return _share.get("grants", {}).get(_sha(cookie)) if cookie and _share else None
+    """This browser's grant on the running share: from an opened link, or an allowed grant for a trusted device."""
+    if not _share:
+        return None
+    if (cookie := conn.cookies.get(SHARE_COOKIE)) and (g := _share["grants"].get(_sha(cookie))):
+        return g
+    if not (token := conn.cookies.get(DEVICE_COOKIE)) or not (d := db.trusted_device(_sha(token))):
+        return None
+    key = f"device:{d['id']}"
+    if key not in _share["grants"]:  # once per share
+        db.touch_trusted_device(d["id"])
+        _share["grants"][key] = {"id": d["id"], "ip": _client(conn), "agent": d["name"], "at": time.time(), "state": "ok", "session": None}
+    return _share["grants"][key]
 
 
 def _via_share(conn) -> bool:
@@ -342,6 +357,8 @@ SECURITY_HEADERS = {
 async def guard(request: Request, call_next):
     response = await _guarded(request, call_next)
     response.headers.update(SECURITY_HEADERS)
+    if _via_share(request):  # browsers then never use plain http to the tunnel host (cookies, password)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"  # terminal output, history, devices
     return response
@@ -467,11 +484,13 @@ def _via(request: Request) -> str:
 async def _login_response(request: Request, body: dict, res=None):
     """Start a login session (cookie on `res`, JSON body by default). It becomes the active device:
     this browser's previous login is replaced and every other device goes idle. A remote login (the
-    iOS app through an approved share grant) takes nothing over: the host browser stays in use."""
+    iOS app through an approved share grant or from the network) takes nothing over: the host browser stays in use."""
     if old := auth.session_hash(request.cookies.get(auth.COOKIE)):
         auth.end_session(old)
     g = _grant(request) if _via_share(request) else None
-    remote = bool(g and g["state"] == "ok" and request.headers.get(CLIENT_HEADER, "").lower() == "ios")
+    app = request.headers.get(CLIENT_HEADER, "").lower() == "ios" or APP_AGENT in request.headers.get("user-agent", "")
+    # ponytail: "app" is only a claim, so a LAN browser could fake it; it still needs the password, and remote only skips takeover
+    remote = app and (g["state"] == "ok" if g else not _via_share(request) and not _is_local(request))
     token = auth.new_session(f"{_client(request)} {request.headers.get('user-agent', '')}", _via(request),
                              "remote" if remote else "browser")
     h = auth.session_hash(token)
@@ -483,7 +502,8 @@ async def _login_response(request: Request, body: dict, res=None):
     res = res or JSONResponse(body)
     res.set_cookie(
         auth.COOKIE, token, httponly=True, samesite="strict", path="/",
-        secure=request.url.scheme == "https", max_age=30 * 24 * 3600,
+        # through the tunnel sd-ui sees http (cloudflared -> loopback), but the browser is on https
+        secure=request.url.scheme == "https" or _via_share(request), max_age=30 * 24 * 3600,
     )
     return res
 
@@ -564,7 +584,8 @@ def _host(request: Request) -> bool:
 
 @functools.lru_cache(maxsize=4)
 def _qr(url: str) -> str:
-    return segno.make(url, error="l").svg_inline(scale=5, border=2, light="#fff")
+    # omitsize: a viewBox instead of a fixed size, so CSS scales it (a fixed-size svg in a smaller box got cut off)
+    return segno.make(url, error="l").svg_inline(scale=5, border=2, light="#fff", omitsize=True)
 
 
 def _share_state() -> dict:
@@ -572,7 +593,8 @@ def _share_state() -> dict:
     host, token = _share.get("host"), _share.get("token")
     link = None
     if token and time.time() < _share["link_until"]:
-        url = f"https://{host}/share/{token}"
+        # the fragment never leaves the scanning device: the app pins the end-to-end key from it (e2e.py)
+        url = f"https://{host}/share/{token}#k={e2e.public()}"
         link = {"path": f"/share/{token}", "url": url, "expires_at": int(_share["link_until"]), "qr_svg": _qr(url)}
     return {
         "sharing": bool(_share), "starting": _share_lock.locked(), "url": f"https://{host}" if host else None,
@@ -597,7 +619,8 @@ def _pending() -> list[dict]:
     grants, now = _share.get("grants", {}), time.time()
     for k in [k for k, g in grants.items() if g["state"] == "pending" and now - g["at"] > APPROVAL_TTL]:
         del grants[k]
-    return [{"id": g["id"], "ip": g["ip"], "agent": g["agent"], "at": g["at"]} for g in grants.values() if g["state"] == "pending"]
+    return [{"id": g["id"], "ip": g["ip"], "agent": g["agent"], "at": g["at"], "code": g.get("code")}
+            for g in grants.values() if g["state"] == "pending"]
 
 
 @app.post("/api/share")
@@ -625,6 +648,7 @@ async def share_start(request: Request):
                 _share.update(host=host, grants={})
                 _new_share_link()
                 log.info("sharing via %s", host)
+                _spawn(_announce(host))
             except TimeoutError:
                 problem = err("tunnel_timeout", 504)
             except (OSError, RuntimeError):
@@ -638,6 +662,55 @@ def _spawn(coro) -> None:
     t = asyncio.get_running_loop().create_task(coro)
     background.add(t)
     t.add_done_callback(background.discard)
+
+
+async def _announce(host: str) -> None:
+    """Trusted devices learn the new share URL now, and again every REPEAT_S while this share runs."""
+    while _share.get("host") == host:
+        if devices := db.list_trusted_devices():
+            await asyncio.to_thread(relay.publish, devices, f"https://{host}")
+        await asyncio.sleep(relay.REPEAT_S)
+
+
+@app.post("/api/trusted")
+async def trust_device(request: Request, payload: dict | None = None):
+    """The iOS app, logged in (over the LAN or an approved share), makes itself a trusted device. The token,
+    ntfy topic and key are returned once; the server keeps the token's hash."""
+    if not auth.remote(request.state.session):
+        return err("app_only", 403)
+    token = secrets.token_urlsafe(32)
+    topic, key = relay.new_device()
+    d = db.add_trusted_device(str((payload or {}).get("name") or "iPhone"), _sha(token), topic, key)
+    log.info("trusted device %s (%s) added from %s", d["id"], d["name"], _client(request))
+    await _broadcast({"type": "trusted", "device": {"id": d["id"], "name": d["name"]}}, host_only=True)
+    if _share.get("host"):
+        await asyncio.to_thread(relay.publish, [d], f"https://{_share['host']}")
+    return {"id": d["id"], "token": token, "topic": topic, "key": key, "relay": relay.NTFY, "cookie": DEVICE_COOKIE,
+            "pc": socket.gethostname()}
+
+
+@app.get("/api/trusted/me")
+async def trusted_me(request: Request):
+    """Is this request's device token still trusted? The app asks before enrolling again, so it reuses its trust."""
+    d = db.trusted_device(_sha(token)) if (token := request.cookies.get(DEVICE_COOKIE)) else None
+    return {"trusted": bool(d), "id": d["id"] if d else None}
+
+
+@app.get("/api/trusted")
+async def trusted_list():
+    return {"devices": [{k: d[k] for k in ("id", "name", "created_at", "last_seen")} for d in db.list_trusted_devices()]}
+
+
+@app.delete("/api/trusted/{device_id}")
+async def trusted_delete(request: Request, device_id: str):
+    """Untrust a device (not from the tunnel). Its logins through the share end too."""
+    if _via_share(request):
+        return err("host_only", 403)
+    if not db.delete_trusted_device(device_id):
+        return err("not_found", 404)
+    if g := _share.get("grants", {}).pop(f"device:{device_id}", None):
+        await _revoke([g["session"]] if g["session"] else [])
+    return {"status": "ok"}
 
 
 async def _tunnel_exited(host: str) -> None:
@@ -720,14 +793,21 @@ _WAIT_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" conte
 <title>shelldeck</title><meta name="referrer" content="no-referrer">
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#09090b;color:#e4e4e7;
 font:16px/1.5 Inter,"Segoe UI",system-ui,sans-serif;text-align:center;padding:24px;box-sizing:border-box}
-p{max-width:28em;margin:.4em auto}b{color:#a78bfa}.m{color:#a1a1aa;font-size:14px}</style>
+p{max-width:28em;margin:.4em auto}b{color:#a78bfa}.m{color:#a1a1aa;font-size:14px}
+.code{font:600 40px/1.2 ui-monospace,Consolas,monospace;letter-spacing:.3em;color:#e4e4e7}</style>
 <main><p><b>shelldeck</b></p><p id="s">Waiting for the host to allow this device…</p>
-<p class="m" id="m">Allow it in shelldeck on the host, or in the <code>sd share</code> window.</p></main>
+<p id="c" class="code"></p>
+<p class="m" id="m">Allow it in shelldeck on the host, or in the <code>sd share</code> window, if it shows this code.</p></main>
 <script>
-const say = (s, m) => { document.getElementById("s").textContent = s; document.getElementById("m").textContent = m; };
+const say = (s, m) => { document.getElementById("s").textContent = s; document.getElementById("m").textContent = m;
+  document.getElementById("c").textContent = ""; };
 async function poll() {
   let st = "none";
-  try { st = (await (await fetch("/share/status", { cache: "no-store" })).json()).state; } catch {}
+  try {
+    const r = await (await fetch("/share/status", { cache: "no-store" })).json();
+    st = r.state;
+    if (r.code) document.getElementById("c").textContent = r.code;
+  } catch {}
   if (st === "ok") return location.replace("/");
   if (st === "denied") return say("The host denied this device.", "Ask for a new link if that was a mistake.");
   if (st !== "pending") return say("This request expired.", "Ask the host for a new link.");
@@ -745,7 +825,10 @@ def _share_page(body: str, status: int = 200):
 async def share_status(request: Request):
     """The waiting page's poll: pending, ok, denied, or none."""
     g = _grant(request) if _via_share(request) else None
-    return JSONResponse({"state": g["state"] if g else "none"}, headers={"Cache-Control": "no-store"})
+    body = {"state": g["state"] if g else "none"}
+    if g and g["state"] == "pending":
+        body["code"] = g.get("code")  # only this browser's own code: the host compares it before allowing
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/share/{token}")
@@ -763,6 +846,8 @@ async def share_open(request: Request, token: str):
     _share["grants"][_sha(cookie)] = {
         "id": secrets.token_hex(4), "ip": _client(request), "agent": request.headers.get("user-agent", "")[:200],
         "at": time.time(), "state": "pending", "session": None,
+        # shown on the device and next to Allow: whoever saw the QR and opened it first gets a different code
+        "code": f"{secrets.randbelow(10000):04d}",
     }
     log.info("share link opened from %s; waiting for the host", _client(request))
     await _share_changed()
@@ -2871,6 +2956,124 @@ async def alarms_ws(ws: WebSocket):
         socket_owner.pop(ws, None)
 
 
+@app.get("/e2e/key")
+async def e2e_key():
+    """The end-to-end public key, for an app on home Wi-Fi (trust on first use; the share QR carries it instead)."""
+    return {"key": e2e.public()}
+
+
+# headers the app may not set inside the channel: the outer connection's own decide where it came from
+E2E_OUTER = {"host", "x-forwarded-for", "cf-connecting-ip", "origin", auth.TOKEN_HEADER}
+
+
+@app.websocket("/e2e")
+async def e2e_ws(ws: WebSocket):
+    """The iOS app's end-to-end encrypted channel (e2e.py). Inside it, JSON messages carry HTTP requests and
+    WebSockets, which run through this app exactly as if they had come in directly: same gate, same logins."""
+    await ws.accept()
+    try:
+        sess = e2e.Session(e2e.server_key(), await ws.receive_bytes())
+    except (ValueError, KeyError, WebSocketDisconnect):
+        await _close(ws, 1008)
+        return
+    await ws.send_bytes(sess.reply)
+    lock = asyncio.Lock()
+    ended = False
+
+    async def reply(msg: dict) -> None:
+        async with lock:
+            if not ended:
+                await ws.send_bytes(sess.seal(json.dumps(msg).encode()))
+
+    outer = [(k.encode(), v.encode()) for k, v in ws.headers.items() if k in E2E_OUTER and k != auth.TOKEN_HEADER]
+    scheme = "https" if _via_share(ws) else ws.url.scheme.replace("ws", "http")
+    inbox: dict[int, asyncio.Queue] = {}
+    tasks: set[asyncio.Task] = set()
+    try:
+        while True:
+            try:
+                msg = json.loads(sess.open(await ws.receive_bytes()))
+            except InvalidTag:
+                log.warning("e2e: a frame failed to decrypt from %s; closing", _client(ws))
+                ended = True
+                await _close(ws, 1008)
+                break
+            rid, kind = int(msg.get("id", 0)), msg.get("t")
+            if kind in ("http", "ws"):
+                headers = outer + [(str(k).lower().encode(), str(v).encode()) for k, v in (msg.get("headers") or {}).items()
+                                   if str(k).lower() not in E2E_OUTER]
+                path, _, query = str(msg.get("path") or "/").partition("?")
+                scope = {"asgi": {"version": "3.0"}, "http_version": "1.1", "scheme": scheme, "path": path,
+                         "raw_path": path.encode(), "query_string": query.encode(), "root_path": "", "headers": headers,
+                         "client": ws.scope.get("client"), "server": ws.scope.get("server")}
+                run = _e2e_http(scope, msg, rid, reply) if kind == "http" else _e2e_socket(scope, rid, reply, inbox)
+                t = asyncio.create_task(run)
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+            elif kind == "msg" and rid in inbox:
+                inbox[rid].put_nowait({"type": "websocket.receive", "text": str(msg.get("data", ""))})
+            elif kind == "close" and rid in inbox:
+                inbox[rid].put_nowait({"type": "websocket.disconnect", "code": int(msg.get("code") or 1000)})
+    except (WebSocketDisconnect, ValueError, TypeError):
+        pass
+    finally:
+        ended = True
+        for q in inbox.values():
+            q.put_nowait({"type": "websocket.disconnect", "code": 1001})
+        for t in tasks:
+            if not t.done() and t.get_name() == "http":
+                t.cancel()
+
+
+async def _e2e_http(scope: dict, msg: dict, rid: int, reply) -> None:
+    asyncio.current_task().set_name("http")
+    body = base64.b64decode(msg.get("body") or "")
+    out: dict = {"status": 500, "headers": [], "body": b""}
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.Event().wait()  # never disconnects: the channel's end cancels this request
+
+    async def send(m: dict) -> None:
+        if m["type"] == "http.response.start":
+            out["status"], out["headers"] = m["status"], m.get("headers", [])
+        elif m["type"] == "http.response.body":
+            out["body"] += m.get("body", b"")
+
+    await app({**scope, "type": "http", "method": str(msg.get("method") or "GET").upper()}, receive, send)
+    await reply({"id": rid, "t": "http", "status": out["status"],
+                 "headers": [[k.decode("latin-1"), v.decode("latin-1")] for k, v in out["headers"]],
+                 "body": base64.b64encode(out["body"]).decode()})
+
+
+async def _e2e_socket(scope: dict, rid: int, reply, inbox: dict) -> None:
+    q: asyncio.Queue = asyncio.Queue()
+    q.put_nowait({"type": "websocket.connect"})
+    inbox[rid] = q
+    closed = False
+
+    async def send(m: dict) -> None:
+        nonlocal closed
+        if m["type"] == "websocket.accept":
+            await reply({"id": rid, "t": "open"})
+        elif m["type"] == "websocket.send":
+            await reply({"id": rid, "t": "msg", "data": m.get("text") or base64.b64encode(m.get("bytes") or b"").decode()})
+        elif m["type"] == "websocket.close" and not closed:
+            closed = True
+            await reply({"id": rid, "t": "close", "code": m.get("code", 1000)})
+
+    try:
+        await app({**scope, "type": "websocket", "scheme": scope["scheme"].replace("http", "ws"), "subprotocols": []}, q.get, send)
+    finally:
+        inbox.pop(rid, None)
+        if not closed:
+            await reply({"id": rid, "t": "close", "code": 1000})
+
+
 @app.websocket("/ws/{session_id}")
 async def terminal_ws(ws: WebSocket, session_id: str):
     who = _who(ws) if _trusted(ws) else None
@@ -3264,6 +3467,9 @@ def run(host: str = "127.0.0.1", port: int = 5455, certfile: str | None = None, 
         app, host=host, port=port, log_level="warning",
         ssl_certfile=certfile, ssl_keyfile=keyfile,
         ws_ping_interval=20, ws_ping_timeout=20,  # drop dead connections; the UI reconnects
+        # a restart must finish: one stuck handler (a socket that came through the share) once kept sd-ui alive
+        # with its port closed, so the supervisor never restarted it and a second server took the port
+        timeout_graceful_shutdown=5,
     ))
     _server.run()
     return EXIT["code"]
