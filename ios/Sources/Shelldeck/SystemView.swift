@@ -35,7 +35,7 @@ struct SystemView: View {
                                     Text(String(format: "%.1f%%", u.cpu)).monospacedDigit()
                                     Text(bytes(u.mem)).monospacedDigit().foregroundStyle(.secondary)
                                 }
-                                Text([model.session(sid)?.1.name, u.top, "\(u.procs) processes",
+                                Text([model.session(sid)?.1.name, u.top, "\(u.procs) process\(u.procs == 1 ? "" : "es")",
                                       u.ports?.isEmpty == false ? "ports " + u.ports!.map(String.init).joined(separator: ", ") : nil]
                                     .compactMap { $0 }.joined(separator: " · "))
                                     .font(.caption).foregroundStyle(.secondary)

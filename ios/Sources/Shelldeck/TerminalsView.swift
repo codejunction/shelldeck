@@ -87,12 +87,14 @@ struct TerminalsView: View {
         }
     }
 
+    /// Full width: hides the sidebar. Only shown while it's visible; iPadOS's own sidebar button brings it back
+    /// (a second sidebar button here would duplicate that one).
     @ToolbarContentBuilder private var fullWidthButton: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button { columns = columns == .detailOnly ? .all : .detailOnly } label: {
-                Image(systemName: columns == .detailOnly ? "sidebar.left" : "arrow.up.left.and.arrow.down.right")
+            if columns != .detailOnly {
+                Button { columns = .detailOnly } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .help("Full width")
             }
-            .help("Full width")
         }
     }
 

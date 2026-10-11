@@ -321,9 +321,38 @@ sd share --new-link   # another one-use link for a second device
 sd share stop
 ```
 
-- Each link works **once**, for **10 minutes**, and the device then waits until you allow it on this machine. It still needs your password (12+ characters for sharing).
-- Cloudflare ends TLS, so it can see the traffic. For sensitive work use SSH or Tailscale.
+- Each link works **once**, for **10 minutes**, and the device then waits until you allow it on this machine. The device shows a 4-digit code, and the Allow prompt (toast, Devices, `sd share`) shows the same code: allow only if they match. It still needs your password (12+ characters for sharing).
+- Cloudflare ends TLS, so in a browser it can see the traffic. The iPhone/iPad app encrypts end to end instead (below). For sensitive work in a browser use SSH or Tailscale.
 - The first share asks you to accept the terms. Stopping a share signs out every browser that came through it.
+
+**iPhone and iPad app.** The native app in [`ios/`](ios/README.md) is built and installed from Windows + WSL with [xtool](https://github.com/xtool-org/xtool). A free Apple ID is enough; no Mac or paid developer account. It has tabs for:
+
+- **Terminals** (SwiftTerm) with each agent's state.
+- **System** usage.
+- **Schedule** (jobs and tasks).
+- **Scratchpad**.
+- **Settings** (several PCs, alert sounds).
+
+On iPad, projects sit in a sidebar with up to four tiled terminals beside it.
+
+<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/ipad-terminals.png" alt="shelldeck on iPad: projects in a sidebar and four tiled terminals (an API server log, a test run, a Vite dev server and a Terraform plan)" width="100%">
+
+<table>
+  <tr>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-terminals.png" alt="iPhone: terminals grouped by project"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-terminal.png" alt="iPhone: a terminal with the Esc, Ctrl, Tab and arrow key bar"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-system.png" alt="iPhone: CPU, memory and GPU of the PC, and usage per terminal"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-scratchpad.png" alt="iPhone: a scratchpad note"></td>
+  </tr>
+</table>
+
+- **Connecting.** Scan the share's QR in the app once and allow the device. From then on it's a **trusted device**: it finds every new share by itself, with no QR or approval (the password is still asked). The new share address reaches it through [ntfy.sh](https://ntfy.sh), encrypted with a key only your PC and the device hold.
+- **End-to-end encrypted.** The share QR also carries the PC's public key, in the part of the link after `#`, which never leaves the phone. All of the app's traffic (API calls, terminals, your password) goes through one X25519 + AES-256-GCM channel to that key, so Cloudflare and your Wi-Fi only see ciphertext.
+- **Several devices.** An iPhone and an iPad on the same Apple ID share their trusted PCs through iCloud Keychain.
+- **Managing them.** The Devices page lists trusted devices and revokes them, and a new one raises an alert on the PC.
+- **Limits of a free Apple ID.** The app has to be reinstalled every 7 days (`ios/scripts/install.sh`), and alerts ring only while the app is open.
+
+Setup, prerequisites and installing it for someone else: [ios/README.md](ios/README.md).
 
 **HTTPS on the VM's address:** `sd serve --host 0.0.0.0 --cert cert.pem --key key.pem`. Plain HTTP on a non-local address is refused (`--insecure-http` overrides). A first visit from another machine also needs the setup code `sd serve` prints.
 
@@ -335,6 +364,8 @@ On phones, a key bar adds Esc, Tab, Ctrl and arrows, and dialogs open as bottom 
 - **Password required.** PBKDF2-SHA256 (600k iterations); logins are `HttpOnly`, `SameSite=Strict` cookies stored as SHA-256; failed logins slow down; 30 minutes idle locks the browser.
 - **One device at a time.** Logging in elsewhere takes over and idles the rest; the Devices page revokes any login.
 - **The CLI** uses a token file readable only by your account, rotated on every start.
+- **Sharing** stays shut until you allow a device, after checking that its matching code is the one you see. Through the tunnel, responses send HSTS and the login cookie is `Secure`. Trusted app devices skip only the approval, never the password; revoke them in Devices.
+- **The iPhone/iPad app** talks to the PC only through an end-to-end encrypted channel: X25519 + AES-256-GCM, with the PC's key pinned from the share QR. Neither the tunnel nor ntfy.sh can read or forge its traffic.
 - **Forgot the password?** On the host: `sd login-link` (one-time URL, 5 minutes) or `sd reset-password`. Never from the browser.
 - **Your data** lives in `~/.config/shelldeck/` (`SHELLDECK_HOME` moves it).
 

@@ -54,7 +54,7 @@ struct ScheduleView: View {
                 }
                 Text(job.command).font(.caption.monospaced()).lineLimit(2)
                 Text(["\(job.cron)", model.projects.first { $0.id == job.projectId }?.name,
-                      job.nextRunOn.map { "next \(when($0))" }, job.lastStatus.map { "last: \($0)" }]
+                      job.nextRunOn.map { "next \(when($0))" }, job.lastStatus.map { "last: \($0.replacingOccurrences(of: "_", with: " "))" }]
                     .compactMap { $0 }.joined(separator: " · "))
                     .font(.caption).foregroundStyle(job.lastStatus == "failed" ? .red : .secondary)
             }

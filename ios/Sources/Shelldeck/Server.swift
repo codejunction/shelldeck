@@ -222,4 +222,9 @@ struct Note: Decodable, Identifiable {
     }
 }
 
-func bytes(_ n: Double) -> String { ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .memory) }
+func bytes(_ n: Double) -> String {
+    let f = ByteCountFormatter()
+    f.countStyle = .memory
+    f.allowsNonnumericFormatting = false  // "0 bytes", not "Zero KB"
+    return f.string(fromByteCount: Int64(n))
+}

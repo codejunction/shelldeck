@@ -8,6 +8,19 @@ beside it.
 It is built and installed from **Windows with WSL** using [xtool](https://github.com/xtool-org/xtool). No Mac
 or paid Apple Developer account is needed; a free Apple ID is enough.
 
+<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/ipad-terminals.png" alt="shelldeck on iPad: projects in a sidebar and four tiled terminals" width="100%">
+
+<table>
+  <tr>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-terminals.png" alt="iPhone: terminals grouped by project"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-terminal.png" alt="iPhone: a terminal with the key bar"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-system.png" alt="iPhone: PC and per-terminal usage"></td>
+    <td width="25%"><img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/iphone-scratchpad.png" alt="iPhone: a scratchpad note"></td>
+  </tr>
+</table>
+
+<img src="https://raw.githubusercontent.com/codejunction/shelldeck/main/docs/assets/ios/ipad-scratchpad.png" alt="shelldeck on iPad: the scratchpad's notes beside the open note" width="100%">
+
 - [How it connects](#how-it-connects)
 - [What you need](#what-you-need)
 - [One-time setup](#one-time-setup)
@@ -222,7 +235,6 @@ and approve their device; they then need your password.
 | "Scan the share QR once more…" | That PC was trusted before end-to-end encryption existed; scan a new share QR. |
 | App can't find the PC away from home | Is `sd share` running? The app finds new shares through ntfy.sh within seconds of a share starting. |
 | `swift: command not found` | Open a new WSL shell, or `. ~/.local/share/swiftly/env.sh`. |
-| The device is called "Connection Failed" in the logs | That's your phone's name (Settings → General → About → Name). |
 
 ## Layout of this folder
 

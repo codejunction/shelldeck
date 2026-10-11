@@ -44,10 +44,11 @@ struct PC: Codable, Identifiable, Equatable {
                     kSecValueData as String: try! JSONEncoder().encode(pcs)] as CFDictionary, nil)
     }
 
-    /// Adds or replaces (same hostname: the PC was re-added) and returns the PC.
+    /// Adds or replaces (same end-to-end key: the same shelldeck, added again) and returns the PC. The key, not
+    /// the hostname: two shelldecks on one machine (separate data folders) are different PCs.
     @discardableResult
     static func add(_ pc: PC) -> PC {
-        save(all().filter { $0.id != pc.id && ($0.pc == nil || $0.pc != pc.pc) } + [pc])
+        save(all().filter { $0.id != pc.id && ($0.e2e == nil || $0.e2e != pc.e2e) } + [pc])
         return pc
     }
 
