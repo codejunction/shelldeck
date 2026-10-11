@@ -34,9 +34,13 @@ export async function renderDevices(el) {
       </div>
       <p class="dev-summary muted"></p>
       <div class="dev-pending" hidden><h3 class="share-h">Waiting for approval</h3><div class="card share-pending"></div></div>
-      <div class="card mon-table dev-table"><table><thead><tr><th>Device</th><th>From</th><th>Signed in</th><th>Last active</th><th></th></tr></thead><tbody></tbody></table></div>`;
+      <div class="card mon-table dev-table"><table><thead><tr><th>Device</th><th>From</th><th>Signed in</th><th>Last active</th><th></th></tr></thead><tbody class="dev-logins"></tbody></table></div>
+      <h3 class="share-h">Trusted devices</h3>
+      <p class="muted small">iPhone apps that reach shelldeck through a share without a link or your approval. They still need the password. Revoke one you don't recognise.</p>
+      <div class="card mon-table dev-table"><table><thead><tr><th>Device</th><th>Trusted since</th><th>Last seen</th><th></th></tr></thead><tbody class="dev-trusted"></tbody></table></div>`;
     el.addEventListener("click", (e) => onClick(e, el));
     bus.addEventListener("share", () => !el.hidden && renderPending(el));
+    bus.addEventListener("trusted", () => !el.hidden && renderDevices(el));
   }
   let data;
   try {
@@ -50,7 +54,16 @@ export async function renderDevices(el) {
   el.querySelector(".dev-summary").textContent =
     `${n} signed in · ${data.devices.filter((d) => d.active).length} in use` + (data.share ? ` · sharing via ${data.share}` : "");
   el.querySelector("[data-dev=others]").disabled = n < 2;
-  el.querySelector("tbody").innerHTML = data.devices
+  const trusted = (await api("/api/trusted").catch(() => ({ devices: [] }))).devices;
+  el.querySelector(".dev-trusted").innerHTML = trusted.length
+    ? trusted.map((d) => `<tr>
+        <td><div class="dev-name">${esc(d.name)}</div><div class="hist-meta faint">${esc(d.id)}</div></td>
+        <td class="nowrap faint">${esc(ago(d.created_at))}</td>
+        <td class="nowrap faint">${d.last_seen ? esc(ago(d.last_seen)) : "not yet"}</td>
+        <td class="nowrap"><button class="btn sm" data-dev="untrust" data-id="${esc(d.id)}">Revoke</button></td>
+      </tr>`).join("")
+    : `<tr><td colspan="4" class="faint">None</td></tr>`;
+  el.querySelector(".dev-logins").innerHTML = data.devices
     .map(
       (d) => `<tr>
         <td><div class="dev-name">${d.kind === "remote" ? "iPhone app (remote)" : esc(deviceName(d.agent))}${d.current ? ' <span class="exit ok">this device</span>' : ""}</div>
@@ -76,6 +89,16 @@ function renderPending(el) {
 async function onClick(e, el) {
   const b = e.target.closest("[data-dev]");
   if (!b) return;
+  if (b.dataset.dev === "untrust") {
+    if (!(await confirmDialog("Revoke this trusted device? It will need a new QR code and your approval to come back.", { ok: "Revoke", danger: true }))) return;
+    try {
+      await api(`/api/trusted/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+      toast("Trusted device revoked");
+    } catch (err) {
+      return toastError(err);
+    }
+    return renderDevices(el);
+  }
   const me = b.dataset.me === "1";
   const others = b.dataset.dev === "others";
   const what = others ? "Sign out every other device?" : me ? "Sign out this device?" : "Revoke this device?";

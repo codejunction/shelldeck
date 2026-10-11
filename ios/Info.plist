@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>shelldeck</string>
+	<key>NSCameraUsageDescription</key>
+	<string>shelldeck scans the QR code that sd share shows on your PC.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>shelldeck connects to the shelldeck server on your PC.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- the PC serves plain HTTP on the home network (sd serve --insecure-http), by IP address -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.14</string>
+	<!-- iPad: every orientation and multitasking (Split View, Slide Over, Stage Manager); xtool adds the ~ipad list -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

@@ -4,6 +4,38 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-10-12
+
+### Added
+
+- **iPhone and iPad app** (`ios/`), native SwiftUI, built and installed from Windows + WSL with xtool and a free Apple ID. See `ios/README.md` for setup, prerequisites, scripts and how to install it for someone else.
+  - Tabs:
+    - **Terminals**: SwiftTerm, with each agent's state.
+    - **System**: CPU, memory, GPU, and usage per terminal.
+    - **Schedule**: jobs and tasks.
+    - **Scratchpad**.
+    - **Settings**: several PCs, and alert sounds when an agent needs you or finishes.
+  - On iPad: projects in a sidebar with up to four tiled terminals beside it, split-view Scratchpad, and every orientation and multitasking.
+- **Trusted devices.** After the app is allowed once through a share, it finds every later share by itself, with no QR or approval (the password is still asked).
+  - Each new share address reaches it through ntfy.sh, sealed with AES-256-GCM.
+  - The Devices page lists trusted devices and revokes them. A new one raises an alert on the PC.
+  - An iPhone and an iPad on the same Apple ID share their trusted PCs through iCloud Keychain.
+- **End-to-end encryption for the app.** The share QR carries the PC's public key in its `#` fragment, so the key never reaches Cloudflare. All app traffic (API, terminals, password) runs through one X25519 + AES-256-GCM channel (`/e2e`), so the tunnel and Wi-Fi only see ciphertext.
+- **Matching code on share approval.** A device that opens a share link shows a 4-digit code, and the Allow prompt (toast, Devices, `sd share`) shows the same code.
+
+### Changed
+
+- Through a share, responses send `Strict-Transport-Security`.
+- The new dependency `cryptography` is used for the channel and the relay.
+
+### Fixed
+
+- Through a share, the login cookie wasn't marked `Secure`: sd-ui only sees http from cloudflared.
+- The Share dialog's QR code could be cut off. It now scales to fit.
+- `sd restart` could start a second server while the first was still shutting down, splitting the shells between two.
+  - Shutdown now waits at most 5 seconds.
+  - `sd` waits for a supervisor that's still alive instead of starting another.
+
 ## [0.0.13] - 2026-10-11
 
 ### Fixed
@@ -225,7 +257,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.14...HEAD
+[0.0.14]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.14
 [0.0.13]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.13
 [0.0.12]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.12
 [0.0.11]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.11

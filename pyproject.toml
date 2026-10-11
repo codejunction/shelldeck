@@ -1,6 +1,6 @@
 [project]
 name = "shelldeck"
-version = "0.0.13"
+version = "0.0.14"
 description = "Project-first multi-terminal for Windows and Linux: real shells, grouped by project, in your browser"
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,7 @@ dependencies = [
   "apscheduler>=3.10,<4",
   "psutil>=5.9",
   "segno>=1.6",
+  "cryptography>=42",
 ]
 
 [project.urls]

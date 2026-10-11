@@ -98,6 +98,13 @@ def ensure_server() -> None:
     if state == "other":
         typer.echo(f"port {CFG['port']} is used by another program; try `shelldeck --port 5456`", err=True)
         raise typer.Exit(1)
+    if _supervisor_alive():  # sd-ui is restarting (port briefly down): a second server would split the shells
+        for _ in range(120):
+            time.sleep(0.25)
+            if _health() == "ok":
+                return
+        typer.echo(f"shelldeck is running but not answering; see {db.config_dir() / 'shelldeck.log'}", err=True)
+        raise typer.Exit(1)
     # a hidden console of its own, not DETACHED_PROCESS: venv python.exe is a launcher that starts the real
     # python, and a console-less parent makes Windows open a new (visible) terminal window for that child
     detach = (
@@ -307,7 +314,32 @@ def _role_argv(role: str, folder: Path | None = None) -> list[str]:
     return [str(exe)] if exe.exists() else [sys.executable, "-m", "shelldeck"]
 
 
+def _supervisor_file() -> Path:
+    return db.config_dir() / f"supervisor-{CFG['port']}.pid"
+
+
+def _supervisor_alive() -> bool:
+    """Is a `serve` supervisor for this port still running (sd-ui may be between restarts)?"""
+    import psutil
+
+    try:
+        pid = int(_supervisor_file().read_text(encoding="utf-8"))
+        return "serve" in psutil.Process(pid).cmdline()
+    except (OSError, ValueError, psutil.Error):
+        return False
+
+
 def _supervise(ui_args: list[str]) -> int:
+    f = _supervisor_file()
+    f.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        return _supervise_loop(ui_args)
+    finally:
+        if f.exists() and f.read_text(encoding="utf-8") == str(os.getpid()):
+            f.unlink()
+
+
+def _supervise_loop(ui_args: list[str]) -> int:
     """shelldeck = sd-pty (owns the shells, long-lived) + sd-ui (web server and app, restartable).
     sd-ui exits 0 to stop everything, RESTART_UI after an update (the shells keep running) and
     RESTART_ALL when it needs a new sd-pty too."""
@@ -442,6 +474,8 @@ def _watch_share(stopped: threading.Event) -> None:
             if p["id"] in answered:
                 continue
             typer.echo(f"\n  A device opened the link: {p['ip']}\n  {p['agent'][:100]}")
+            if p.get("code"):
+                typer.echo(f"  It shows the code {p['code']}. Allow only if that is the code on your device.")
             allow = input("  Allow it? [y/N] ").strip().lower() in ("y", "yes")
             if p["id"] in answered:
                 typer.echo("  already answered")

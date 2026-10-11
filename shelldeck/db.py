@@ -150,6 +150,18 @@ def init_db() -> None:
                 created_at REAL NOT NULL
             );
 
+            -- iOS app devices the host trusts: they pass the share gate without approval (the password is
+            -- still needed). token_hash = sha256 of the device cookie; topic + key carry the share URL via ntfy.
+            CREATE TABLE IF NOT EXISTS trusted_devices (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                topic TEXT NOT NULL,
+                key TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                last_seen REAL
+            );
+
             -- command history (sessions/projects may be deleted later; keep the text)
             CREATE TABLE IF NOT EXISTS commands (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -484,6 +496,41 @@ def delete_push_tokens(session_hashes: list[str]) -> None:
     with _connect() as conn:
         conn.executemany("DELETE FROM push_tokens WHERE session_hash = ?", [(h,) for h in session_hashes])
         conn.commit()
+
+
+def add_trusted_device(name: str, token_hash: str, topic: str, key: str) -> dict:
+    device = {"id": short_id(), "name": name[:80], "token_hash": token_hash, "topic": topic, "key": key, "created_at": time.time()}
+    with _connect() as conn:
+        conn.execute("INSERT INTO trusted_devices (id, name, token_hash, topic, key, created_at) VALUES "
+                     "(:id, :name, :token_hash, :topic, :key, :created_at)", device)
+        conn.commit()
+    return device
+
+
+def list_trusted_devices() -> list[dict]:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM trusted_devices ORDER BY created_at")]
+
+
+def trusted_device(token_hash: str) -> dict | None:
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM trusted_devices WHERE token_hash = ?", (token_hash,)).fetchone()
+        return dict(row) if row else None
+
+
+def touch_trusted_device(device_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE trusted_devices SET last_seen = ? WHERE id = ?", (time.time(), device_id))
+        conn.commit()
+
+
+def delete_trusted_device(device_id: str) -> bool:
+    with _connect() as conn:
+        n = conn.execute("DELETE FROM trusted_devices WHERE id = ?", (device_id,)).rowcount
+        conn.commit()
+        return n > 0
 
 
 def list_push_tokens() -> list[dict]:

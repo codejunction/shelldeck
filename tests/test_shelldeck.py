@@ -1,3 +1,5 @@
+import base64
+import re
 import json
 import asyncio
 import sys
@@ -618,7 +620,8 @@ def test_share_gate_needs_link_approval_then_password(browser, tunnel_stub):
     assert state["sharing"] is False and state["link"] is None and state["cloudflared"] is True
     path = _start(b, cli)
     link = b.get("/api/share", headers=cli).json()["link"]
-    assert link["qr_svg"].startswith("<svg") and link["url"].endswith(path) and link["expires_at"] > time.time()
+    assert link["qr_svg"].startswith("<svg") and link["expires_at"] > time.time()
+    assert link["url"] == f"https://{tunnel['host']}{path}#k={server.e2e.public()}"  # the app pins the e2e key from it
     assert b.post("/api/share", headers=cli).json()["link"]["path"] == path  # already running: unchanged
 
     # the bare tunnel URL and a wrong token get nothing; the link waits for the host
@@ -627,7 +630,10 @@ def test_share_gate_needs_link_approval_then_password(browser, tunnel_stub):
     r, gate = _open_link(b, path, tunnel)
     assert r.status_code == 200 and "secure" in r.headers["set-cookie"].lower() and "Waiting" in r.text
     assert b.get("/", headers=gate).status_code == 403  # pending
-    assert b.get("/share/status", headers=gate).json() == {"state": "pending"}
+    status = b.get("/share/status", headers=gate).json()
+    assert status["state"] == "pending" and re.fullmatch(r"\d{4}", status["code"])
+    assert b.get("/api/share", headers=cli).json()["pending"][0]["code"] == status["code"]  # the host compares it
+    assert "code" not in b.get("/share/status", headers=tunnel).json()  # another browser doesn't get it
     assert b.get(path, headers=tunnel).status_code == 403  # the link worked once
     assert b.get("/api/share", headers=cli).json()["link"] is None
     assert _allow(b, cli).json() == {"state": "ok"}
@@ -783,6 +789,130 @@ def test_ios_header_without_grant_is_a_browser_login(browser):
     assert {d["kind"] for d in c.get("/api/devices").json()["devices"]} == {"browser"}
     assert b.get("/api/projects").status_code == 423  # it took over like any browser
     assert c.request("DELETE", "/api/push", json={"token": "ExponentPushToken[x]"}).status_code == 404
+
+
+def test_ios_app_on_the_network_is_remote(browser):
+    b = browser
+    b.post("/api/auth/setup", json={"password": "longenough", "confirm": "longenough"})
+    lan = {"x-forwarded-for": "192.168.1.30"}  # not loopback
+    phone, laptop = TestClient(server.app), TestClient(server.app)
+    app_ua = {**lan, "user-agent": "Mozilla/5.0 (iPhone) ShelldeckApp/1 Mobile/15E148"}
+    assert phone.post("/api/auth/login", json={"password": "longenough"}, headers=app_ua).status_code == 200
+    assert b.get("/api/projects").status_code == 200  # the PC browser stays in use
+    assert phone.get("/api/projects", headers=app_ua).status_code == 200
+    assert laptop.post("/api/auth/login", json={"password": "longenough"}, headers=lan).status_code == 200
+    assert b.get("/api/projects").status_code == 423  # a plain LAN browser still takes over
+    kinds = sorted(d["kind"] for d in b.get("/api/devices", headers={"x-shelldeck-token": auth.read_cli_token()}).json()["devices"])
+    assert kinds == ["browser", "browser", "remote"]
+
+
+def test_trusted_device_skips_share_approval(browser, tunnel_stub, monkeypatch):
+    b = browser
+    cli, tunnel = _share_setup(b)
+    sent = []
+    monkeypatch.setattr(server.relay, "publish", lambda devices, url: sent.append(([d["id"] for d in devices], url)))
+    lan = {"x-forwarded-for": "192.168.1.30", "user-agent": "ShelldeckApp/1"}
+    phone = TestClient(server.app)
+    assert b.post("/api/trusted").json() == {"error": "app_only"}  # a host browser can't enrol
+    assert phone.post("/api/auth/login", json={"password": "long enough pass"}, headers=lan).status_code == 200
+    dev = phone.post("/api/trusted", json={"name": "Ada's iPhone"}, headers=lan).json()
+    assert dev["pc"] and dev["cookie"] == "sd_device" and dev["relay"] == "https://ntfy.sh" and len(dev["token"]) > 30
+    assert server.relay.open_(dev["key"], server.relay.seal(dev["key"], {"url": "u"})) == {"url": "u"}
+    assert [d["name"] for d in b.get("/api/trusted").json()["devices"]] == ["Ada's iPhone"]
+    phone.cookies.set("sd_device", dev["token"])
+    assert phone.get("/api/trusted/me", headers=lan).json() == {"trusted": True, "id": dev["id"]}  # reuse, don't enrol again
+    phone.cookies.set("sd_device", "nope")
+    assert phone.get("/api/trusted/me", headers=lan).json()["trusted"] is False
+
+    # a share announces its URL; the trusted phone walks in with no link and no approval, then logs in
+    _start(b, cli)
+    for _ in range(50):
+        if sent:
+            break
+        time.sleep(0.05)
+    assert sent == [([dev["id"]], "https://abc-def.trycloudflare.com")]
+    via = {**tunnel, "user-agent": "ShelldeckApp/1", "cookie": f"sd_device={dev['token']}"}
+    phone2 = TestClient(server.app)
+    assert phone2.get("/", headers=via).status_code == 200
+    assert phone2.get("/", headers={**via, "cookie": "sd_device=wrong"}).status_code == 403
+    r = phone2.post("/api/auth/login", json={"password": "long enough pass"}, headers=via)
+    assert "secure" in r.headers["set-cookie"].lower()  # https at the browser, though sd-ui sees http
+    assert "max-age" in r.headers["strict-transport-security"]
+    authed = {**via, "cookie": f"{via['cookie']}; {r.headers['set-cookie'].split(';')[0]}"}
+    assert phone2.get("/api/projects", headers=authed).status_code == 200
+    assert b.get("/api/projects").status_code == 200  # remote: the host browser stays in use
+    assert b.get("/api/share", headers=cli).json()["pending"] == []
+
+    # untrusting it closes the gate and ends its share login
+    assert phone2.delete(f"/api/trusted/{dev['id']}", headers=authed).json() == {"error": "host_only"}
+    assert b.delete(f"/api/trusted/{dev['id']}").json() == {"status": "ok"}
+    auth._cache.clear()
+    assert phone2.get("/", headers=authed).status_code == 403
+    b.delete("/api/share", headers=cli)
+
+
+def _channel(ws, key: bytes):
+    c = server.e2e.Client(key)
+    ws.send_bytes(c.hello)
+    c.finish(ws.receive_bytes())
+    jar: dict = {}
+    n = [0]
+
+    def call(method, path, body=None, headers=None):
+        n[0] += 1
+        hdrs = {"user-agent": "ShelldeckApp/1", "x-shelldeck-client": "ios", **(headers or {})}
+        if jar:
+            hdrs["cookie"] = "; ".join(f"{k}={v}" for k, v in jar.items())
+        msg = {"id": n[0], "t": "http", "method": method, "path": path, "headers": hdrs}
+        if body is not None:
+            msg["body"] = base64.b64encode(json.dumps(body).encode()).decode()
+            hdrs["content-type"] = "application/json"
+        ws.send_bytes(c.seal(json.dumps(msg).encode()))
+        r = json.loads(c.open(ws.receive_bytes()))
+        assert r["id"] == n[0]
+        for k, v in r["headers"]:
+            if k.lower() == "set-cookie":
+                name, _, value = v.split(";")[0].partition("=")
+                jar[name] = value
+        return r["status"], base64.b64decode(r["body"])
+
+    return c, call, jar
+
+
+def test_e2e_channel_carries_the_whole_share_flow(browser, tunnel_stub):
+    b = browser
+    cli, tunnel = _share_setup(b)
+    path = _start(b, cli)
+    key = base64.urlsafe_b64decode(server.e2e.public() + "=")
+    with TestClient(server.app).websocket_connect("/e2e", headers=tunnel) as ws:
+        c, call, jar = _channel(ws, key)
+        assert call("GET", "/api/projects")[0] == 403  # the share gate still applies inside
+        status, page = call("GET", path)  # the QR link, opened through the channel
+        assert status == 200 and b"Waiting" in page
+        code = json.loads(call("GET", "/share/status")[1])["code"]
+        assert b.get("/api/share", headers=cli).json()["pending"][0]["code"] == code
+        _allow(b, cli)
+        assert call("POST", "/api/auth/login", {"password": "nope"})[0] == 401
+        assert call("POST", "/api/auth/login", {"password": "long enough pass"})[0] == 200
+        assert json.loads(call("GET", "/api/projects")[1])["projects"] == []
+        assert {d["kind"] for d in b.get("/api/devices").json()["devices"]} >= {"remote"}  # via the tunnel, as the app
+        # a WebSocket inside the channel
+        ws.send_bytes(c.seal(json.dumps({"id": 99, "t": "ws", "path": "/ws/alarms", "headers": {"cookie": "; ".join(f"{k}={v}" for k, v in jar.items())}}).encode()))
+        seen = [json.loads(c.open(ws.receive_bytes())) for _ in range(2)]
+        assert seen[0] == {"id": 99, "t": "open"} and json.loads(seen[1]["data"])["type"] == "alarm_snapshot"
+        # a tampered frame ends the channel
+        ws.send_bytes(b"\x00" * 40)
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_bytes()
+    # a client that pinned another key can't talk to this server
+    with TestClient(server.app).websocket_connect("/e2e", headers=tunnel) as ws:
+        c = server.e2e.Client(server.e2e.X25519PrivateKey.generate().public_key().public_bytes_raw())
+        ws.send_bytes(c.hello)
+        c.finish(ws.receive_bytes())
+        ws.send_bytes(c.seal(b'{"id":1,"t":"http","path":"/api/health"}'))
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_bytes()
+    b.delete("/api/share", headers=cli)
 
 
 def test_agent_state_from_output_bursts(monkeypatch):
