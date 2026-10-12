@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shelldeck: your terminals, organised by project</title>
+<meta name="description" content="Real shells grouped by project, in split or floating panes that survive restarts, with your AI coding agents working side by side. In the browser, on your own machine.">
+<meta property="og:title" content="shelldeck">
+<meta property="og:description" content="Your terminals, organised by project. In the browser, on your own machine.">
+<meta property="og:image" content="assets/screenshot.png">
+<meta name="theme-color" content="#0a0a0b">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
+
+<header class="nav">
+  <a class="brand" href="#top"><img src="icon.svg" alt="" width="28" height="28">shelldeck</a>
+  <nav>
+    <a href="#tour">Tour</a>
+    <a href="#features">Features</a>
+    <a href="#agents">Agents</a>
+    <a href="#anywhere">Anywhere</a>
+    <a href="#install">Install</a>
+  </nav>
+  <a class="btn ghost" href="https://github.com/codejunction/shelldeck">GitHub</a>
+</header>
+
+<main id="top">
+  <!-- hero -->
+  <section class="hero">
+    <p class="eyebrow reveal">Windows · Linux · Free and open source</p>
+    <h1 class="split">Your terminals,<br><em>organised by project.</em></h1>
+    <p class="lede reveal">Real shells grouped by project, in split or floating panes that survive restarts, with your AI coding agents working side by side. In the browser, on your own machine.</p>
+    <div class="cta reveal">
+      <a class="btn primary" href="#install">Install shelldeck</a>
+      <button class="cmd copy" data-copy="uvx shelldeck"><span>&gt;&gt;</span> uvx shelldeck <i>Copy</i></button>
+    </div>
+    <div class="hero-shot">
+      <div class="window" id="heroWin">
+        <div class="bar"><i></i><i></i><i></i><span>127.0.0.1:5455</span></div>
+        <img src="assets/screenshot.png" alt="shelldeck with four named terminals in three projects: a git log, Claude Code, Codex asking to trust a folder, and sd top" width="1600" height="900">
+      </div>
+      <span class="float f1 mono">pwsh</span><span class="float f2 mono">bash</span><span class="float f3 mono">WSL</span>
+      <span class="float f4 mono">zsh</span><span class="float f5 mono">Git Bash</span><span class="float f6 mono">fish</span>
+    </div>
+  </section>
+
+  <!-- marquee -->
+  <section class="marquee" aria-label="Shells and agents">
+    <div class="track">
+      <span>PowerShell</span><span>cmd</span><span>Git Bash</span><span>WSL</span><span>bash</span><span>zsh</span><span>fish</span>
+      <span class="ai">Claude Code</span><span class="ai">Codex</span><span class="ai">Gemini CLI</span><span class="ai">Devin</span><span class="ai">Copilot</span>
+      <span class="ai">Cursor Agent</span><span class="ai">opencode</span><span class="ai">Aider</span><span class="ai">Amp</span><span class="ai">Goose</span><span class="ai">Kiro</span>
+    </div>
+  </section>
+
+  <!-- pinned tour -->
+  <section class="tour" id="tour">
+    <div class="tour-text">
+      <p class="eyebrow">The tour</p>
+      <div class="steps">
+        <article class="step"><span class="n">01</span><h3>Projects, <em>not tabs</em></h3><p>Every folder gets a color, its own terminals and a ±N chip for uncommitted work. Close the browser; the shells keep running.</p></article>
+        <article class="step"><span class="n">02</span><h3>Agents <em>side by side</em></h3><p>Claude Code, Codex, Gemini, Devin and more get an AI chip with the model and how full the context window is.</p></article>
+        <article class="step"><span class="n">03</span><h3>It knows when <em>they need you</em></h3><p>Only when an agent asks something: an amber chip, a chime, and a toast or desktop notification.</p></article>
+        <article class="step"><span class="n">04</span><h3>Context that <em>outlives the agent</em></h3><p>Task, next step, facts, decisions and recent activity per project. A new agent runs <code>sd context</code> and continues.</p></article>
+      </div>
+    </div>
+    <div class="tour-stage">
+      <div class="window" id="tourWin">
+        <div class="bar"><i></i><i></i><i></i><span>127.0.0.1:5455</span></div>
+        <div class="view"><div class="shot">
+          <img data-k="0" src="assets/screenshot.png" alt="" width="1600" height="900">
+          <img data-k="3" src="assets/context.png" alt="" width="1600" height="900">
+          <div class="box" data-k="0" style="left:6px;top:206px;width:250px;height:240px"></div>
+          <div class="box" data-k="1" style="left:1330px;top:56px;width:116px;height:20px"></div>
+          <div class="box amber" data-k="2" style="left:278px;top:520px;width:640px;height:200px"></div>
+          <div class="box" data-k="3" style="left:305px;top:206px;width:742px;height:178px"></div>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- bento -->
+  <section class="features" id="features">
+    <p class="eyebrow reveal">Everything else</p>
+    <h2 class="split">The rest of your workday, <em>built in.</em></h2>
+    <div class="bento">
+      <a class="card wide" style="--img:url(assets/git-graph.png);--pos:50% 20%"><div><h3>Git at a glance</h3><p>Changed files with diffs, the full commit graph, one-click checkout.</p></div></a>
+      <a class="card" style="--img:url(assets/palette.png);--pos:50% 10%"><div><h3>Command palette</h3><p><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd> for every command.</p></div></a>
+      <a class="card" style="--img:url(assets/ask-menu.png);--pos:100% 60%"><div><h3>Ask at the prompt</h3><p>Type <kbd>?</kbd>, ask a question, get one command for your shell.</p></div></a>
+      <a class="card" style="--img:url(assets/task-manager.png);--pos:60% 15%"><div><h3>Task manager</h3><p>CPU, RAM and GPU per terminal, with agents and ports.</p></div></a>
+      <a class="card wide" style="--img:url(assets/search-all.png);--pos:50% 12%"><div><h3>Search every terminal</h3><p>One box over all output. Clickable paths open in VS Code or the built-in editor.</p></div></a>
+      <a class="card" style="--img:url(assets/scheduler.png);--pos:30% 15%"><div><h3>Scheduler</h3><p>Cron jobs in a project folder, with logs.</p></div></a>
+      <a class="card" style="--img:url(assets/tasks.png);--pos:40% 15%"><div><h3>Tasks</h3><p>A board with due dates, reminders and <em>Send to agent</em>.</p></div></a>
+      <a class="card" style="--img:url(assets/scratchpad.png);--pos:60% 15%"><div><h3>Scratchpad</h3><p>Markdown notes. Agents add with <code>sd notes</code>.</p></div></a>
+      <a class="card" style="--img:url(assets/bookmarks.png);--pos:40% 12%"><div><h3>Bookmarks and history</h3><p>Saved commands, and every command with exit code and duration.</p></div></a>
+      <a class="card" style="--img:url(assets/radio.png);--pos:100% 20%"><div><h3>Radio</h3><p>cliamp channels in the top bar, streamed by your browser.</p></div></a>
+      <a class="card" style="--img:url(assets/machines.png);--pos:0% 10%"><div><h3>Machines</h3><p>SSH machines and RDP desktops next to your local shells.</p></div></a>
+    </div>
+  </section>
+
+  <!-- agents -->
+  <section class="agents" id="agents">
+    <div class="agents-text">
+      <p class="eyebrow reveal">Agents as a team</p>
+      <h2 class="split">Agents that <em>talk to each other.</em></h2>
+      <p class="lede reveal">Each terminal has a name. From inside one, an agent can list the others, read their screens, type into them, spawn a sub-agent in a new pane or hand off work and get told when it's done. shelldeck installs a skill so agents know these commands.</p>
+      <ul class="ticks reveal">
+        <li>Hooks for Claude Code, Codex, Gemini and Devin report <b>working</b>, <b>blocked</b> and <b>done</b> exactly</li>
+        <li>A sub-agent's questions go to its parent, not to you</li>
+        <li>Sessions can be resumed after a restart</li>
+      </ul>
+    </div>
+    <div class="term" id="term" aria-label="Example sd commands">
+      <div class="bar"><i></i><i></i><i></i><span>Maya · pwsh</span></div>
+      <pre class="mono" id="termOut"></pre>
+    </div>
+  </section>
+
+  <!-- horizontal -->
+  <section class="anywhere" id="anywhere">
+    <div class="anywhere-head">
+      <p class="eyebrow">Anywhere</p>
+      <h2>On your PC. <em>And your phone.</em></h2>
+    </div>
+    <div class="htrack">
+      <article class="panel">
+        <img src="assets/share.png" alt="Share dialog" loading="lazy">
+        <h3>Share in one click</h3><p>A Cloudflare tunnel with a one-use link, valid for 10 minutes. The device waits until you allow it, after matching a 4-digit code.</p>
+      </article>
+      <article class="panel phone">
+        <div class="phones"><img src="assets/ios/iphone-terminal.png" alt="iPhone terminal" loading="lazy"><img src="assets/ios/iphone-terminals.png" alt="iPhone terminals list" loading="lazy"></div>
+        <h3>iPhone and iPad app</h3><p>End-to-end encrypted with X25519 and AES-256-GCM, so Cloudflare and your Wi-Fi only see ciphertext.</p>
+      </article>
+      <article class="panel">
+        <img src="assets/ios/ipad-terminals.png" alt="iPad with four tiled terminals" loading="lazy">
+        <h3>Four panes on iPad</h3><p>Projects in a sidebar, up to four tiled terminals beside it.</p>
+      </article>
+      <article class="panel">
+        <img src="assets/devices.png" alt="Devices page" loading="lazy">
+        <h3>One device at a time</h3><p>A password is mandatory. Devices lists every signed-in browser and signs them out.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- install -->
+  <section class="install" id="install">
+    <img class="big-logo reveal" src="icon.svg" alt="" width="120" height="120">
+    <h2 class="split">Start in <em>one line.</em></h2>
+    <div class="tabs reveal" role="tablist">
+      <button class="on" data-tab="win">Windows</button><button data-tab="linux">Linux</button><button data-tab="uv">uv</button>
+    </div>
+    <div class="installs reveal">
+      <button class="cmd copy" data-tab="win" data-copy="irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 | iex"><span>PS&gt;</span> irm https://raw.githubusercontent.com/codejunction/shelldeck/main/install.ps1 | iex <i>Copy</i></button>
+      <button class="cmd copy" data-tab="linux" hidden data-copy="curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh | sh"><span>$</span> curl -fsSL https://raw.githubusercontent.com/codejunction/shelldeck/main/install.sh | sh <i>Copy</i></button>
+      <button class="cmd copy" data-tab="uv" hidden data-copy="uv tool install shelldeck"><span>$</span> uv tool install shelldeck <i>Copy</i></button>
+    </div>
+    <p class="small reveal">Then run <code>sd</code>. Needs Windows 10 1809+ or Linux x64, and a modern browser.</p>
+    <div class="cta reveal"><a class="btn primary" href="https://github.com/codejunction/shelldeck">Star on GitHub</a><a class="btn ghost" href="https://pypi.org/project/shelldeck/">PyPI</a></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span><img src="icon.svg" alt="" width="20" height="20"> shelldeck · MIT license</span>
+  <span><a href="https://github.com/codejunction/shelldeck">GitHub</a> · <a href="https://github.com/codejunction/shelldeck/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/codejunction/shelldeck#security">Security</a></span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/SplitText.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lenis@1.1.20/dist/lenis.min.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
