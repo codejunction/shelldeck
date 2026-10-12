@@ -15,6 +15,8 @@ $$('.tabs button').forEach(t => t.addEventListener('click', () => {
 }))
 // marquee loops by translating -50%, so it needs its content twice
 const track = $('.track'); track.innerHTML += track.innerHTML
+// background spotlight follows the pointer
+addEventListener('pointermove', e => { const r = document.documentElement.style; r.setProperty('--mx', e.clientX + 'px'); r.setProperty('--my', e.clientY + 'px') }, { passive: true })
 // pointer glow on feature cards
 $$('.card').forEach(c => c.addEventListener('pointermove', e => {
   const r = c.getBoundingClientRect()
@@ -68,13 +70,17 @@ function motion() {
   gsap.utils.toArray('.reveal').forEach(el => gsap.from(el, { y: 30, opacity: 0, duration: .9, ease: 'power3.out',
     delay: el.closest('.hero') ? .6 : 0, scrollTrigger: el.closest('.hero') ? undefined : { trigger: el, start: 'top 88%' } }))
 
+  // scroll progress bar and a denser nav once you leave the hero
+  gsap.to('.progress', { scaleX: 1, ease: 'none', scrollTrigger: { start: 0, end: 'max', scrub: .3 } })
+  ScrollTrigger.create({ start: 80, end: 'max', toggleClass: { targets: '.nav', className: 'scrolled' } })
+
   // hero: the app window lies back and stands up as you scroll; shell chips drift at different speeds
-  gsap.fromTo('#heroWin', { rotateX: 28, scale: .88, y: 40 }, { rotateX: 0, scale: 1, y: 0, ease: 'none',
-    scrollTrigger: { trigger: '.hero-shot', start: 'top 95%', end: 'top 25%', scrub: true } })
-  gsap.from('.hero-shot', { opacity: 0, y: 120, duration: 1.4, ease: 'expo.out', delay: .5 })
+  gsap.fromTo('#heroWin', { rotateY: -16, rotateX: 6 }, { rotateY: 0, rotateX: 0, ease: 'none',
+    scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom top', scrub: true } })
+  gsap.from('.hero-shot', { opacity: 0, x: 120, duration: 1.4, ease: 'expo.out', delay: .5 })
   $$('.float').forEach((f, i) => {
-    gsap.from(f, { opacity: 0, scale: .4, duration: .6, ease: 'back.out(2)', delay: 1 + i * .08 })
-    gsap.to(f, { y: (i % 2 ? -1 : 1) * (60 + i * 25), ease: 'none', scrollTrigger: { trigger: '.hero-shot', start: 'top bottom', end: 'bottom top', scrub: true } })
+    gsap.from(f, { scale: 0, duration: .6, ease: 'back.out(2)', delay: 1 + i * .08 })
+    gsap.to(f, { y: (i % 2 ? -1 : 1) * (40 + i * 12), opacity: 0, ease: 'none', scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom top', scrub: true } })
   })
 
   const mm = gsap.matchMedia()
@@ -86,6 +92,10 @@ function motion() {
   const out = $('#termOut'), state = { n: 0 }
   out.innerHTML = termHTML(0)
   gsap.to(state, { n: TERM.length, duration: 7, ease: 'none', onUpdate: () => (out.innerHTML = termHTML(state.n)), scrollTrigger: { trigger: '#term', start: 'top 70%' } })
+  // feature cards drift at different speeds per column while the grid passes
+  $$('.card').forEach((c, i) => gsap.to(c, { yPercent: [-4, 3, -2, 5][i % 4], ease: 'none', scrollTrigger: { trigger: '.bento', start: 'top bottom', end: 'bottom top', scrub: true } }))
+  // eyebrows slide in from the left with a growing rule
+  gsap.utils.toArray('section:not(.hero) .eyebrow:not(.reveal)').forEach(e => gsap.from(e, { x: -24, opacity: 0, duration: .7, ease: 'power3.out', scrollTrigger: { trigger: e, start: 'top 90%' } }))
   gsap.from('.big-logo', { scale: .3, rotate: -20, duration: 1.1, ease: 'back.out(1.7)', scrollTrigger: { trigger: '.install', start: 'top 70%' } })
 }
 
