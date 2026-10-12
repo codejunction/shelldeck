@@ -16,7 +16,8 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
+<div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div><div class="spot"></div></div>
+<div class="progress" aria-hidden="true"></div>
 
 <header class="nav">
   <a class="brand" href="#top"><img src="icon.svg" alt="" width="28" height="28">shelldeck</a>
@@ -33,15 +34,18 @@
 <main id="top">
   <!-- hero -->
   <section class="hero">
-    <p class="eyebrow reveal">Windows · Linux · Free and open source</p>
-    <h1 class="split">Your terminals,<br><em>organised by project.</em></h1>
-    <p class="lede reveal">Real shells grouped by project, in split or floating panes that survive restarts, with your AI coding agents working side by side. In the browser, on your own machine.</p>
-    <div class="cta reveal">
-      <a class="btn primary" href="#install">Install shelldeck</a>
-      <button class="cmd copy" data-copy="uvx shelldeck"><span>&gt;&gt;</span> uvx shelldeck <i>Copy</i></button>
+    <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="hero-copy">
+      <p class="eyebrow shimmer reveal">Windows · Linux · Free and open source</p>
+      <h1 class="split">Your terminals,<br><em>organised by project.</em></h1>
+      <p class="lede reveal">Real shells grouped by project, in split or floating panes that survive restarts, with your AI coding agents working side by side. In the browser, on your own machine.</p>
+      <div class="cta reveal">
+        <a class="btn primary" href="#install">Install shelldeck</a>
+        <button class="cmd copy" data-copy="uvx shelldeck"><span>&gt;&gt;</span> uvx shelldeck <i>Copy</i></button>
+      </div>
     </div>
     <div class="hero-shot">
-      <div class="window" id="heroWin">
+      <div class="window beam" id="heroWin">
         <div class="bar"><i></i><i></i><i></i><span>127.0.0.1:5455</span></div>
         <img src="assets/screenshot.png" alt="shelldeck with four named terminals in three projects: a git log, Claude Code, Codex asking to trust a folder, and sd top" width="1600" height="900">
       </div>
@@ -71,7 +75,7 @@
       </div>
     </div>
     <div class="tour-stage">
-      <div class="window" id="tourWin">
+      <div class="window beam" id="tourWin">
         <div class="bar"><i></i><i></i><i></i><span>127.0.0.1:5455</span></div>
         <div class="view"><div class="shot">
           <img data-k="0" src="assets/screenshot.png" alt="" width="1600" height="900">
@@ -100,7 +104,7 @@
       <a class="card" style="--img:url(assets/scratchpad.png);--pos:60% 15%"><div><h3>Scratchpad</h3><p>Markdown notes. Agents add with <code>sd notes</code>.</p></div></a>
       <a class="card" style="--img:url(assets/bookmarks.png);--pos:40% 12%"><div><h3>Bookmarks and history</h3><p>Saved commands, and every command with exit code and duration.</p></div></a>
       <a class="card" style="--img:url(assets/radio.png);--pos:100% 20%"><div><h3>Radio</h3><p>cliamp channels in the top bar, streamed by your browser.</p></div></a>
-      <a class="card" style="--img:url(assets/machines.png);--pos:0% 10%"><div><h3>Machines</h3><p>SSH machines and RDP desktops next to your local shells.</p></div></a>
+      <a class="card full" style="--img:url(assets/machines.png);--pos:0% 10%"><div><h3>Machines</h3><p>SSH machines and RDP desktops next to your local shells.</p></div></a>
     </div>
   </section>
 
@@ -116,7 +120,7 @@
         <li>Sessions can be resumed after a restart</li>
       </ul>
     </div>
-    <div class="term" id="term" aria-label="Example sd commands">
+    <div class="term beam" id="term" aria-label="Example sd commands">
       <div class="bar"><i></i><i></i><i></i><span>Maya · pwsh</span></div>
       <pre class="mono" id="termOut"></pre>
     </div>
@@ -150,6 +154,7 @@
 
   <!-- install -->
   <section class="install" id="install">
+    <div class="rings" aria-hidden="true"><i></i><i></i><i></i></div>
     <img class="big-logo reveal" src="icon.svg" alt="" width="120" height="120">
     <h2 class="split">Start in <em>one line.</em></h2>
     <div class="tabs reveal" role="tablist">
