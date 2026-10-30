@@ -97,6 +97,7 @@ The first visit asks you to create a password. Terminals keep running in the bac
 ### Projects
 
 - **Projects sidebar** with a color per project (sidebar dot, pane border, background tint), added through a folder browser and reordered by drag.
+- **Workspaces.** Group projects under a name and show one group at a time with the picker in the *Projects* header. *Move to workspace…* in a project's menu sets it (a new name creates one). The folder browser also lists VS Code `.code-workspace` files: adding one makes each local folder in it a project, in a workspace named after the file.
 - **Git at a glance.** A `±N` chip on projects with uncommitted work; the git dialog shows changed files with their diffs, and the full commit graph with one-click checkout.
 - **Machines.** The picker above *New terminal* switches between this computer and your SSH machines (Linux; key, agent or a password typed in the terminal, LDAP names like `CORP\jdoe` work). Windows machines open as RDP desktops. *Test connection* checks the network and the login. Passwords are never stored.
 

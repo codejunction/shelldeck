@@ -342,6 +342,27 @@ def test_projects_and_fs(client, tmp_path):
     assert client.delete(f"/api/projects/{p['id']}").json() == {"status": "ok"}
 
 
+def test_workspaces(client, tmp_path):
+    for d in ("api", "web", "a//b"):
+        (tmp_path / d).mkdir(parents=True)
+    ws = tmp_path / "Shop.code-workspace"
+    # JSONC: comments, trailing commas, a `//` inside a string, a remote uri folder that is skipped
+    ws.write_text('{\n // the folders\n "folders": [{"path": "api"}, /* web */ {"path": "web",},'
+                  ' {"path": "a//b"}, {"uri": "vscode-remote://x/y"},],\n}', encoding="utf-8")
+    assert "Shop.code-workspace" in client.get("/api/fs/dirs", params={"path": str(tmp_path)}).json()["files"]
+    r = client.post("/api/workspaces/import", json={"path": str(ws)}).json()
+    assert r["workspace"] == "Shop" and [p["name"] for p in r["projects"]] == ["api", "web", "b"]
+    assert {p["workspace"] for p in client.get("/api/projects").json()["projects"]} == {"Shop"}
+    pid = r["projects"][0]["id"]
+    assert client.patch(f"/api/projects/{pid}", json={"workspace": "  Back\tend "}).json()["workspace"] == "Back end"
+    assert client.patch(f"/api/projects/{pid}", json={"workspace": ""}).json()["workspace"] is None
+    (tmp_path / "x").mkdir()
+    assert client.post("/api/projects", json={"path": str(tmp_path / "x"), "workspace": "Ops"}).json()["workspace"] == "Ops"
+    assert client.post("/api/workspaces/import", json={"path": str(tmp_path / "x")}).status_code == 400
+    (tmp_path / "empty.code-workspace").write_text('{"folders": []}')
+    assert client.post("/api/workspaces/import", json={"path": str(tmp_path / "empty.code-workspace")}).json()["error"] == "no_local_folders"
+
+
 def test_project_git_log_and_checkout(client, tmp_path):
     import os
     import subprocess

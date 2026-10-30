@@ -1291,15 +1291,63 @@ async def add_project(payload: dict):
     path = Path(raw).expanduser()
     if not path.is_dir():
         return err("not_a_directory")
-    return db.ensure_project(str(path))
+    p = db.ensure_project(str(path))
+    if ws := _workspace_name(payload.get("workspace")):
+        p = db.update_project(p["id"], {"workspace": ws})
+    return p
+
+
+def _workspace_name(value) -> str | None:
+    """A workspace label: one line, at most 64 characters; empty means none."""
+    name = " ".join(str(value or "").split())[:64]
+    return name if name.isprintable() and name else None
+
+
+def _jsonc(text: str):
+    """VS Code's JSON with comments and trailing commas. Strings are matched first, so `//` in a path survives."""
+    def keep(m):
+        return m.group(1) or ""
+
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', keep, text, flags=re.S)
+    return json.loads(re.sub(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])', keep, text))
+
+
+@app.post("/api/workspaces/import")
+async def import_workspace(payload: dict):
+    """A VS Code .code-workspace file: each local folder in it becomes a project in a workspace named after the file."""
+    file = Path(str(payload.get("path") or "").strip()).expanduser()
+    if file.suffix.lower() != ".code-workspace" or not file.is_file():
+        return err("not_a_workspace_file")
+    try:
+        if file.stat().st_size > 1_000_000:
+            return err("not_a_workspace_file")
+        folders = _jsonc(file.read_text(encoding="utf-8-sig")).get("folders") or []
+    except (OSError, ValueError, AttributeError):
+        return err("not_a_workspace_file")
+    ws = _workspace_name(payload.get("workspace") or file.name.removesuffix(file.suffix))
+    projects = []
+    for f in folders:
+        rel = f.get("path") if isinstance(f, dict) else None  # `uri` folders (remote, virtual) are skipped
+        if isinstance(rel, str) and (d := (file.parent / Path(rel).expanduser())).is_dir():
+            projects.append(db.update_project(db.ensure_project(str(d))["id"], {"workspace": ws}))
+    if not projects:
+        return err("no_local_folders")
+    return {"workspace": ws, "projects": projects}
 
 
 @app.patch("/api/projects/{project_id}")
-async def rename_project(project_id: str, payload: dict):
-    name = str(payload.get("name") or "").strip()
-    if not name:
-        return err("name_required")
-    return db.rename_project(project_id, name) or err("project_not_found", 404)
+async def update_project(project_id: str, payload: dict):
+    """Rename (`name`) and/or move to a workspace (`workspace`; empty takes it out)."""
+    fields = {}
+    if "name" in payload:
+        if not (name := str(payload.get("name") or "").strip()):
+            return err("name_required")
+        fields["name"] = name
+    if "workspace" in payload:
+        fields["workspace"] = _workspace_name(payload["workspace"])
+    if not db.get_project(project_id):
+        return err("project_not_found", 404)
+    return db.update_project(project_id, fields)
 
 
 @app.delete("/api/projects/{project_id}")
@@ -1326,14 +1374,14 @@ async def list_dirs(path: str = ""):
     if not p.is_dir():
         return err("not_a_directory")
     try:
-        dirs = sorted(
-            (e.name for e in os.scandir(p) if e.is_dir() and not e.name.startswith(("$", "."))),
-            key=str.lower,
-        )
+        entries = [e for e in os.scandir(p) if not e.name.startswith(("$", "."))]
+        dirs = sorted((e.name for e in entries if e.is_dir()), key=str.lower)
+        # VS Code workspace files, which import as a workspace of projects
+        files = sorted((e.name for e in entries if e.name.lower().endswith(".code-workspace") and e.is_file()), key=str.lower)
     except OSError:
         return err("permission_denied", 403)
     p = p.resolve()
-    return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "dirs": dirs, "sep": os.sep}
+    return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "dirs": dirs, "files": files, "sep": os.sep}
 
 
 # ---------------------------------------------------------------------------

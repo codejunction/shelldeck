@@ -253,7 +253,9 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         if "color" not in cols:
             conn.execute("ALTER TABLE projects ADD COLUMN color INTEGER")
-        for col in ("remote_id", "remote_path"):  # a folder on a remote machine (remotes table); NULL = this machine
+        # remote_id/remote_path: a folder on a remote machine (remotes table); NULL = this machine
+        # workspace: the named group it belongs to (sidebar filter); NULL = none
+        for col in ("remote_id", "remote_path", "workspace"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE projects ADD COLUMN {col} TEXT")
         missing = conn.execute("SELECT id FROM projects WHERE color IS NULL ORDER BY created_at").fetchall()
@@ -327,9 +329,12 @@ def get_project(project_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-def rename_project(project_id: str, name: str) -> dict | None:
+def update_project(project_id: str, fields: dict) -> dict | None:
+    """Set `name` and/or `workspace` (None clears it)."""
     with _connect() as conn:
-        conn.execute("UPDATE projects SET name = ? WHERE id = ?", (name, project_id))
+        for col in ("name", "workspace"):
+            if col in fields:
+                conn.execute(f"UPDATE projects SET {col} = ? WHERE id = ?", (fields[col], project_id))
         conn.commit()
     return get_project(project_id)
 

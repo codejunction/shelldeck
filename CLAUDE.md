@@ -28,6 +28,7 @@ uv tool install --force -e .        # global sd/shelldeck from this checkout (th
   - Added from the UI through the folder browser (`/api/fs/dirs`).
   - Each gets a palette slot (`projects.color`, 0–7, least-used on add) for the sidebar dot, the pane top line, and the terminal background tint.
   - Sidebar order lives in localStorage.
+  - **Workspaces:** `projects.workspace` (a label, NULL = none; a workspace exists while a project has it). `PATCH /api/projects/{id} {workspace}` moves one (`_workspace_name`: one line, 64 chars), `POST /api/projects` takes `workspace` too. `POST /api/workspaces/import {path}` reads a `.code-workspace` (`_jsonc`: comments and trailing commas; `uri` folders skipped) and adds its local folders under the file's name; `/api/fs/dirs` lists those files as `files`. UI: `S.workspace` (localStorage, per machine) is checked inside `onMachine()`, so the sidebar, agents page and counts follow it; `#workspace` picker in the Projects header.
 - **Layouts:**
   - **tiled** (default): a split tree. New terminals split the largest pane (sideways only if both halves stay ≥380px, else stacked). Panes have a fixed default `min-height: var(--pane-h, 340px)` and `#layout` scrolls vertically only.
   - Opening terminals must not animate (user request); only chrome such as the sidebar, views and dialogs animates.
