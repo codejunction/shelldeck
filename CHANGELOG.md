@@ -4,8 +4,12 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-11-12
+
 ### Added
 
+- Workspaces: group projects under a name and show one group at a time with the picker in the *Projects* header; *Move to workspace…* in a project's menu sets it.
+- VS Code `.code-workspace` files show up in the folder browser; adding one makes each local folder in it a project, in a workspace named after the file.
 - Hand-offs on the AI agents page are a flow of cards: each sender, then the tasks it gave out on connecting lines, with chains (an agent passing part of its task on) nested to the right. A card opens the whole task and result.
 - *Hand off a task…* in a running agent's Actions menu, and *Cancel hand-off* on an open one (the agent is told to stop, the sender is told).
 - Hand-offs and how they ended are recorded in the project's context: `sd context` and the Context page's activity show them, and the Context page lists the project's open hand-offs.
@@ -18,6 +22,7 @@ All notable changes to shelldeck are listed here. The format follows [Keep a Cha
 - The AI agents page is four tabs (Running, Hand-offs, Launch, Setup) instead of one long page; agent cards are a model picker and Launch, and agents that aren't installed fold away.
 - The Context page is quieter: the side column is one card, *Add* opens a field instead of an input under every list, and it shows only hand-offs still in progress.
 - The agent skill and the hand-off file tell agents to save what they learned (`sd remember`) before `sd done`.
+- The README is reorganised into feature tables with diagrams, and has new screenshots of hand-offs and the Context page.
 
 ### Fixed
 
@@ -276,7 +281,8 @@ First public release.
 - Mandatory password with per-browser logins, idle lock, and HTTPS or SSH-tunnel remote access.
 - `sd` CLI with a startup banner, `sd search` (LLM-free code search), and one-line installers for Windows and Linux.
 
-[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.14...HEAD
+[Unreleased]: https://github.com/codejunction/shelldeck/compare/v0.0.15...HEAD
+[0.0.15]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.15
 [0.0.14]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.14
 [0.0.13]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.13
 [0.0.12]: https://github.com/codejunction/shelldeck/releases/tag/v0.0.12
