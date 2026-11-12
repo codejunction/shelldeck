@@ -282,6 +282,41 @@ i[data-icon] svg {
   letter-spacing: 0.06em;
 }
 
+.sb-ws {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sb-ws span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-ws:hover,
+.sb-ws.on {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.sb-ws svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.6;
+}
+
 .sb-projects {
   flex: 1;
   overflow-y: auto;
@@ -1535,7 +1570,8 @@ textarea:focus {
   color: var(--muted);
 }
 
-.fs-item:hover {
+.fs-item:hover,
+.fs-item.on {
   background: var(--hover);
   color: var(--text);
 }
@@ -2742,6 +2778,269 @@ textarea:focus {
   color: var(--bad);
 }
 
+.ho-status[data-status="cancelled"] {
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.ho-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 4px 0 12px;
+}
+
+.cx-link {
+  cursor: pointer;
+}
+
+/* hand-off flow: a sender node, then its hand-offs as cards on tree lines; a chain nests to the right */
+.ho-counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.ho-flow {
+  --ho-line: var(--border-strong);
+  --ho-mid: 23px; /* where a line meets a node or card, from its top */
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: radial-gradient(circle, var(--border) 1px, transparent 1px) 0 0 / 18px 18px, var(--bg);
+  overflow-x: auto;
+}
+
+.ho-group,
+.ho-branch {
+  display: flex;
+  align-items: flex-start;
+}
+
+.ho-node {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 170px;
+  min-height: 46px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 23px;
+  background: var(--panel);
+}
+
+.ho-node div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.ho-node div > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ho-node .faint {
+  font-size: 11px;
+}
+
+.ho-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+.ho-node.me .ho-avatar {
+  background: var(--primary-bg);
+  color: var(--primary-fg);
+}
+
+.ho-kids {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 36px;
+}
+
+.ho-branch {
+  position: relative;
+}
+
+/* the elbow into each card, and the trunk joining siblings */
+.ho-branch::before,
+.ho-branch::after {
+  content: "";
+  position: absolute;
+  left: -18px;
+}
+
+.ho-branch::before {
+  top: var(--ho-mid);
+  width: 18px;
+  border-top: 1.5px solid var(--ho-line);
+}
+
+.ho-branch:first-child::before {
+  left: -36px;
+  width: 36px;
+}
+
+.ho-branch::after {
+  top: -10px;
+  bottom: 0;
+  border-left: 1.5px solid var(--ho-line);
+}
+
+.ho-branch:first-child::after {
+  top: var(--ho-mid);
+}
+
+.ho-branch:last-child::after {
+  bottom: auto;
+  height: calc(var(--ho-mid) + 10px);
+}
+
+.ho-branch:only-child::after {
+  display: none;
+}
+
+.ho-card {
+  --tone: var(--accent);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 290px;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--tone);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+.ho-card:hover,
+.ho-card:focus-visible {
+  border-color: var(--tone);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--tone) 16%, transparent);
+  outline: none;
+}
+
+.ho-card[data-status="open"] {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 60%), var(--panel);
+}
+
+.ho-card[data-status="done"] {
+  --tone: var(--ok);
+}
+
+.ho-card[data-status="failed"],
+.ho-card[data-status="exited"] {
+  --tone: var(--bad);
+}
+
+.ho-card[data-status="cancelled"] {
+  --tone: var(--faint);
+}
+
+.ho-top,
+.ho-to {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ho-when {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.ho-arrow {
+  color: var(--tone);
+  font-weight: 700;
+}
+
+.ho-task,
+.ho-result {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.ho-result {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  padding-top: 5px;
+  border-top: 1px dashed var(--border);
+  color: var(--muted);
+}
+
+.ho-older {
+  margin-top: 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ho-card {
+    transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .ho-group {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .ho-group > .ho-kids {
+    padding-left: 18px;
+  }
+
+  .ho-group > .ho-kids > .ho-branch:first-child::before {
+    left: -18px;
+    width: 18px;
+  }
+
+  .ho-group > .ho-kids > .ho-branch:first-child::after {
+    top: -10px;
+  }
+
+  .ho-group > .ho-kids > .ho-branch:only-child::after {
+    display: block;
+  }
+
+  .ho-card {
+    width: min(320px, 72vw);
+  }
+}
+
 /* ------------------------------------------------------ segmented control */
 
 .seg {
@@ -3665,7 +3964,29 @@ body.embed .pane {
 .attn-banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 14px; }
 .attn-banner b { color: #f59e0b; }
 
+/* AI agents page tabs */
+.ag-top { align-items: center; }
+.ag-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; font-size: 13px; }
+.ag-tabs button span { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.ag-intro { display: flex; align-items: center; gap: 16px; cursor: default; }
+.ag-intro p { margin: 0; flex: 1; color: var(--muted); }
+.ag-empty { padding: 28px; text-align: center; cursor: default; }
+.ag-empty p { margin: 6px 0 0; }
+
 /* Context page: read first, edit on demand */
+/* the side column is one quiet card: sections divided by a line, not boxed */
+.cx-side.card { padding: 0; cursor: default; gap: 0; }
+.cx-side > .cx-section { padding: 14px 16px; border-top: 1px solid var(--border); }
+.cx-side > .cx-section:first-child { border-top: 0; }
+.cx-side .cx-list { margin-bottom: 0; }
+.cx-main > .card { cursor: default; margin: 0; padding: 16px; }
+.cx-adder > summary { display: flex; align-items: center; justify-content: space-between; list-style: none; cursor: pointer; margin-bottom: 10px; }
+.cx-adder > summary::-webkit-details-marker { display: none; }
+.cx-adder > summary h2 { margin: 0; }
+.cx-plus { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--faint); }
+.cx-plus svg, .cx-plus i { width: 12px; height: 12px; }
+.cx-adder > summary:hover .cx-plus, .cx-adder[open] .cx-plus { color: var(--accent); }
+.cx-adder .cx-add { margin-bottom: 12px; }
 .cx-head { margin-bottom: 16px; }
 .cx-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .cx-title h1 { margin: 0; }

@@ -25,6 +25,7 @@ export const S = {
   collapsed: new Set(store.get("collapsed", [])),
   order: store.get("order", []),
   machine: store.get("machine", "local"), // "local" or a remote id: which machine's projects the sidebar shows
+  workspace: store.get("workspace", ""), // "" or a workspace name: which group of that machine's projects it shows
   remotes: [], // saved SSH (Linux) machines (/api/remotes)
   desktops: [], // saved RDP (Windows) machines
   unread: new Set(),
@@ -78,9 +79,9 @@ function focusedProject() {
 
 // ------------------------------------------------------------------ machines
 
-/** Does a project belong to the machine picked in the sidebar? */
+/** Does a project belong to the machine (and workspace, if one is picked) shown in the sidebar? */
 export function onMachine(p) {
-  return (p?.remote_id || "local") === S.machine;
+  return (p?.remote_id || "local") === S.machine && (!S.workspace || p?.workspace === S.workspace);
 }
 
 /** Is this terminal in a project of the picked machine? (agents list, counts) */
@@ -109,8 +110,7 @@ export function setMachine(id) {
   S.machine = id === "local" || S.remotes.some((r) => r.id === id) ? id : "local";
   store.set("machine", S.machine);
   renderMachine();
-  renderSidebar();
-  if (S.view === "agents") views.show("agents", $("#view-agents"));
+  setWorkspace(S.workspace); // workspaces are per machine; renders the sidebar
 }
 
 async function machineMenu(anchor) {
@@ -125,6 +125,48 @@ async function machineMenu(anchor) {
   ]);
 }
 
+// ---------------------------------------------------------------- workspaces
+
+/** Workspace names used by this machine's projects. A workspace exists while a project is in it. */
+function workspaces() {
+  return [...new Set(S.projects.filter((p) => (p.remote_id || "local") === S.machine && p.workspace).map((p) => p.workspace))].sort((a, b) => a.localeCompare(b));
+}
+
+function renderWorkspace() {
+  const b = $("#workspace");
+  if (!b) return;
+  b.querySelector("span").textContent = S.workspace || "All projects";
+  b.classList.toggle("on", !!S.workspace);
+}
+
+export function setWorkspace(name) {
+  S.workspace = workspaces().includes(name) ? name : "";
+  store.set("workspace", S.workspace);
+  renderWorkspace();
+  renderSidebar();
+  if (S.view === "agents") views.show("agents", $("#view-agents"));
+}
+
+function workspaceMenu(anchor) {
+  menu(anchor, [
+    { label: "All projects", icon: S.workspace ? "folder" : "play", onClick: () => setWorkspace("") },
+    ...workspaces().map((w) => ({ label: w, icon: S.workspace === w ? "play" : "layers", hint: `${S.projects.filter((p) => p.workspace === w && (p.remote_id || "local") === S.machine).length}`, onClick: () => setWorkspace(w) })),
+    "sep",
+    { label: "Add folder or .code-workspace…", icon: "folder-plus", onClick: addProject },
+  ]);
+}
+
+async function moveToWorkspace(p) {
+  const name = await promptDialog("Move to workspace", p.workspace || S.workspace, { label: "Workspace (a new name creates it; empty takes the project out)", ok: "Move", optional: true });
+  if (name === null) return;
+  try {
+    await api(`/api/projects/${p.id}`, { method: "PATCH", body: { workspace: name } });
+    await refreshProjects();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
 /** Add project: a local folder (folder browser), or a folder path on the picked remote machine. */
 async function addProject() {
   if (S.machine === "local") return views.addProjectDialog();
@@ -132,6 +174,7 @@ async function addProject() {
   if (!path) return;
   try {
     const p = await api("/api/projects", { method: "POST", body: { remote_id: S.machine, path } });
+    if (S.workspace) await api(`/api/projects/${p.id}`, { method: "PATCH", body: { workspace: S.workspace } });
     await refreshProjects();
     S.collapsed.delete(p.id);
     renderSidebar();
@@ -1475,7 +1518,9 @@ export async function refreshProjects() {
     S.remotes = remotes.filter((r) => r.kind === "ssh"); // Linux machines: their projects and terminals
     S.desktops = remotes.filter((r) => r.kind === "rdp"); // Windows machines: a remote desktop, opened from the picker
     if (S.machine !== "local" && !S.remotes.some((r) => r.id === S.machine)) setMachine("local");
+    if (S.workspace && !workspaces().includes(S.workspace)) setWorkspace(""); // its last project left
     renderMachine();
+    renderWorkspace();
     setOnline(true);
   } catch (e) {
     if (e.message !== "locked") setOnline(false);
@@ -1509,7 +1554,9 @@ export function renderSidebar() {
   const visible = new Set(leaves());
   const projects = machineProjects();
   if (!projects.length) {
-    nav.innerHTML = S.machine === "local"
+    nav.innerHTML = S.workspace
+      ? `<div class="sb-empty">No projects in ${esc(S.workspace)}.</div>`
+      : S.machine === "local"
       ? `<div class="sb-empty">No projects yet. Add a folder to get started.</div>`
       : `<div class="sb-empty">No folders on ${esc(machineName())} yet. <b>New terminal</b> opens a shell in its home; the folder button adds a project there.</div>`;
     return;
@@ -1610,6 +1657,7 @@ function projectMenu(anchor, p) {
     "sep",
     { label: S.settings.editor === "vscode" ? "Open in VS Code" : "Open folder", icon: "external", onClick: () => api(`/api/projects/${p.id}/open`, { method: "POST" }).catch(toastError) },
     { label: "Rename project", icon: "pencil", onClick: () => renameProject(p) },
+    { label: p.workspace ? `Workspace: ${p.workspace}…` : "Move to workspace…", icon: "layers", onClick: () => moveToWorkspace(p) },
     { label: "Copy path", icon: "clipboard", onClick: () => navigator.clipboard.writeText(p.path) },
     "sep",
     { label: "Remove project", icon: "trash", danger: true, onClick: () => removeProject(p) },
@@ -2323,7 +2371,7 @@ function connectAlarms() {
       const h = msg.handoff;
       // done: offer to close the sub-agent's terminal right from the toast
       const close = h.status === "done" && findSession(h.to_sid)?.parent ? [{ label: `Close ${h.to_nick}`, onClick: () => killSession(h.to_sid) }] : [];
-      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : "error", close)) views.chime();
+      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : h.status === "cancelled" ? "warn" : "error", close)) views.chime();
     }
   };
   ws.onclose = (ev) => {
@@ -2417,6 +2465,7 @@ function wireGlobal() {
     else if (act === "palette") commandPalette();
     else if (act === "add-project") addProject();
     else if (act === "machine") machineMenu(a);
+    else if (act === "workspace") workspaceMenu(a);
     else if (act === "view") switchView(S.view === a.dataset.view ? "terminals" : a.dataset.view);
     else if (act === "settings") views.settingsDialog();
     else if (act === "split") splitNew(a.dataset.dir);

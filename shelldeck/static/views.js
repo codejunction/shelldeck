@@ -1,4 +1,4 @@
-import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedProjects, palette, refreshProjects, sessionTitle, shellLabel } from "./app.js";
+import { S, TERMINAL_THEMES, applySettings, findSession, newTerminal, orderedProjects, palette, refreshProjects, sessionTitle, setWorkspace, shellLabel } from "./app.js";
 import { renderMonitor } from "./monitor.js";
 import { renderHistory } from "./history.js";
 import { renderDevices } from "./devices.js";
@@ -506,10 +506,11 @@ export function addProjectDialog() {
     title: "Add project",
     wide: true,
     body: `<form>
-      <label class="field"><span>Folder path</span><input type="text" name="path" class="mono" placeholder="C:\\src\\my-app" autofocus /></label>
+      <label class="field"><span>Folder or .code-workspace file</span><input type="text" name="path" class="mono" placeholder="C:\\src\\my-app" autofocus /></label>
       <div class="row"><button type="button" class="btn sm" data-fs="up">${icon("up")}Up</button><span class="faint" data-fs="where"></span></div>
       <div class="fs-list" role="listbox" aria-label="Folders"></div>
-      <label class="check" style="margin-top:12px"><input type="checkbox" name="open" checked /> Open a terminal in it</label>
+      <label class="field" style="margin-top:12px"><span>Workspace <small class="faint">(optional; a .code-workspace file uses its own name)</small></span><input type="text" name="workspace" list="ws-list" maxlength="64" value="${esc(S.workspace)}" autocomplete="off" /><datalist id="ws-list">${[...new Set(S.projects.map((p) => p.workspace).filter(Boolean))].map((w) => `<option value="${esc(w)}"></option>`).join("")}</datalist></label>
+      <label class="check"><input type="checkbox" name="open" checked /> Open a terminal in it</label>
       <div class="error"></div></form>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-a="add">Add project</button>`,
   });
@@ -523,8 +524,10 @@ export function addProjectDialog() {
       if (r.path) form.path.value = r.path;
       $("[data-fs=where]", d.el).textContent = r.path || "Home and drives";
       const join = (name) => (r.path ? `${r.path.replace(/[\\/]$/, "")}${r.sep}${name}` : name);
-      list.innerHTML = r.dirs.length
-        ? r.dirs.map((n) => `<div class="fs-item" data-path="${esc(join(n))}">${icon("folder")}${esc(n)}</div>`).join("")
+      const files = r.files || [];
+      list.innerHTML = r.dirs.length || files.length
+        ? [...r.dirs.map((n) => `<div class="fs-item" data-path="${esc(join(n))}">${icon("folder")}${esc(n)}</div>`),
+           ...files.map((n) => `<div class="fs-item" data-file="${esc(join(n))}">${icon("layers")}${esc(n)}</div>`)].join("")
         : `<div class="placeholder">No sub-folders</div>`;
       $(".error", d.el).textContent = "";
     } catch (e) {
@@ -533,23 +536,38 @@ export function addProjectDialog() {
   };
   list.addEventListener("click", (e) => {
     const it = e.target.closest(".fs-item");
-    if (it) browse(it.dataset.path);
+    if (it?.dataset.file) {  // a .code-workspace file: pick it; Add or a double-click imports it
+      form.path.value = it.dataset.file;
+      form.workspace.value = "";
+      $$(".fs-item.on", list).forEach((x) => x.classList.remove("on"));
+      it.classList.add("on");
+    } else if (it) browse(it.dataset.path);
   });
+  list.addEventListener("dblclick", (e) => e.target.closest(".fs-item")?.dataset.file && add());
+  // Explorer's "Copy as path" wraps the path in quotes
+  const typed = () => form.path.value.trim().replace(/^"+|"+$/g, "").trim();
   $("[data-fs=up]", d.el).onclick = () => parent !== null && browse(parent);
   form.path.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      browse(form.path.value.trim());
+      if (/\.code-workspace$/i.test(typed())) add();
+      else browse(typed());
     }
   });
   const add = async (e) => {
     e?.preventDefault();
     try {
-      const p = await api("/api/projects", { method: "POST", body: { path: form.path.value.trim() } });
+      const path = typed();
+      const workspace = form.workspace.value.trim();
+      const r = /\.code-workspace$/i.test(path)
+        ? await api("/api/workspaces/import", { method: "POST", body: { path, workspace } })
+        : { projects: [await api("/api/projects", { method: "POST", body: { path, workspace } })] };
       const open = form.open.checked;
       d.close();
       await refreshProjects();
-      if (open) newTerminal(p.id);
+      setWorkspace(r.workspace ?? r.projects[0].workspace ?? "");  // show where it landed
+      if (r.workspace) toast({ title: `${r.workspace}: ${r.projects.length} project${r.projects.length === 1 ? "" : "s"} added`, body: r.skipped?.length ? `Not found, skipped: ${r.skipped.join(", ")}` : "" });
+      if (open) newTerminal(r.projects[0].id);
     } catch (err) {
       $(".error", d.el).textContent = err.message.replaceAll("_", " ");
     }

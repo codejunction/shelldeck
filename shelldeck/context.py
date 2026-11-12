@@ -29,7 +29,7 @@ TASK_STATUSES = ("TODO", "IN_PROGRESS", "BLOCKED", "DONE", "CANCELLED")
 EVENT_TYPES = frozenset({
     "SESSION_START", "SESSION_STOP", "PROMPT", "PLAN", "PLAN_UPDATE", "FILE_READ", "FILE_EDIT", "FILE_CREATE",
     "FILE_DELETE", "COMMAND", "COMMAND_RESULT", "TEST", "TEST_RESULT", "ERROR", "DISCOVERY", "DECISION", "NOTE",
-    "AGENT_MESSAGE", "HANDOFF", "HANDOFF_RECEIVED", "TASK_START", "TASK_UPDATE", "TASK_COMPLETE",
+    "AGENT_MESSAGE", "HANDOFF", "HANDOFF_RECEIVED", "HANDOFF_DONE", "TASK_START", "TASK_UPDATE", "TASK_COMPLETE",
 })
 RELATIONS = frozenset({"related-to", "depends-on", "uses-pattern", "shares-database-with"})
 CONFIDENCE = {"remember": 0.9, "discover": 0.8, "verified": 0.95}
@@ -544,6 +544,17 @@ def _cut(lines: list[str], budget: int) -> list[str]:
     return out
 
 
+def _handoff_note(event: dict) -> str:
+    """What a hand-off event was about: who gave what to whom, or how it ended. Other events stay one word."""
+    if not event["type"].startswith("HANDOFF"):
+        return ""
+    try:
+        p = json.loads(event.get("payload") or "{}")
+    except ValueError:
+        return ""
+    return f": {p.get('id')} {p.get('from')} -> {p.get('to')} [{p.get('status')}] {str(p.get('text') or '')[:160]}".rstrip()
+
+
 def render(pkg: ContextPackage, budget: int = DEFAULT_BUDGET_CHARS, shares: dict | None = None) -> str:
     """Compact text for an agent, each section held to its share of the budget (relevance order already applied)."""
     share = {k: int(budget * v) for k, v in (shares or BUDGET).items()}
@@ -572,7 +583,8 @@ def render(pkg: ContextPackage, budget: int = DEFAULT_BUDGET_CHARS, shares: dict
         lines += [f"  - [{r['project']}] {r['title']}: {' '.join(r['snippet'].split())[:200]}" for r in pkg.relevant_knowledge]
         out += ["Related (reference only; adapt, don't copy):"] + _cut(lines, share["knowledge"])
     if pkg.recent_events:
-        out += ["Recent events:"] + _cut([f"  {e['timestamp']} {e['type']}{' by ' + e['agent'] if e.get('agent') else ''}" for e in pkg.recent_events], share["events"])
+        out += ["Recent events:"] + _cut([f"  {e['timestamp']} {e['type']}{' by ' + e['agent'] if e.get('agent') else ''}{_handoff_note(e)}"
+                                          for e in pkg.recent_events], share["events"])
     if pkg.stale:
         out.append("Warning: may be stale (source changed): " + ", ".join(pkg.stale[:5]))
     return "\n".join(out)

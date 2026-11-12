@@ -1,9 +1,11 @@
 // Context page: what agents keep about a project (context.py, local context.db). Read-first: a "where things stand"
 // summary, facts, decisions and recent activity in plain words; editing opens only when asked. Not polled.
 import { $, api, esc, icon, loadingHTML, toast, toastError } from "./ui.js";
-import { orderedProjects } from "./app.js";
+import { S, findSession, machineProjects, orderedProjects, showSession } from "./app.js";
 
-let selected = null; // project name, as /api/context takes it
+let selected = null; // a shelldeck project's id, or the name of a project only the context store knows
+let choices = []; // [{value, label}] for the project picker
+let handoffs = []; // the selected project's hand-offs, newest first
 let last = null; // the loaded context package
 let editing = false; // the task/state form is open
 let search = null; // {q, agent, model, results, expanded} while showing search results
@@ -44,24 +46,36 @@ export async function renderContext(el) {
     const def = r.default === "auto" ? helpers[0]?.agent : r.default;
     pickedAgent = helpers.some((h) => h.agent === def) ? def : "off";
   }
-  const names = [...new Set([...orderedProjects().map((p) => p.name), ...known.map((p) => p.name)])];
-  if (!selected || !names.includes(selected)) selected = names[0] || null;
+  // the sidebar's machine and workspace; ids, because two workspaces can each have an "api"
+  const mine = machineProjects().filter((p) => !p.remote_id);
+  const taken = new Set(orderedProjects().map((p) => p.name));
+  choices = [...mine.map((p) => ({ value: p.id, label: p.name })), ...(S.workspace ? [] : known.filter((p) => !taken.has(p.name)).map((p) => ({ value: p.name, label: p.name })))];
+  if (!choices.some((c) => c.value === selected)) {
+    const focused = findSession(S.focused)?.project?.id; // the terminal you were just in
+    selected = (choices.find((c) => c.value === focused) || choices[0])?.value || null;
+  }
   last = null;
-  if (selected) last = await api(`/api/context?project=${encodeURIComponent(selected)}`).catch(() => null);
+  handoffs = [];
+  if (selected) {
+    [last, handoffs] = await Promise.all([
+      api(`/api/context?project=${encodeURIComponent(selected)}`).catch(() => null),
+      mine.some((p) => p.id === selected) ? api(`/api/handoffs?project_id=${selected}`).then((r) => r.handoffs).catch(() => []) : [],
+    ]);
+  }
 
-  el.innerHTML = `${header(names)}
+  el.innerHTML = `${header()}
     ${!selected ? empty("No projects yet", "Add a project from the sidebar. Agents fill this page as they work.")
       : search ? results()
       : !last ? empty("Nothing recorded yet", `Agents add to it with <code>sd remember</code> and <code>sd task update</code>, or add a fact below.`)
       : body(last)}`;
 }
 
-function header(names) {
+function header() {
   const related = last?.related_projects || [];
   return `<div class="cx-head">
       <div class="cx-title"><h1>Context</h1>
-        ${names.length ? `<select class="cx-project" data-ctx-project aria-label="Project">${names.map((n) => `<option ${n === selected ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>` : ""}</div>
-      <p class="faint">What agents remember about this project, so the next one can pick up where the last stopped. Kept only on this computer.</p>
+        ${choices.length ? `<select class="cx-project" data-ctx-project aria-label="Project">${choices.map((c) => `<option value="${esc(c.value)}" ${c.value === selected ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>` : ""}
+        <button class="icon-btn" data-cx="refresh" title="Refresh" aria-label="Refresh">${icon("refresh")}</button></div>
       ${selected ? `<form class="cx-search" data-form="recall" role="search">
         ${icon("search")}<input name="q" value="${esc(search?.q || "")}" placeholder="Search what every project knows…" aria-label="Search context" />
         ${helpers?.length ? `<span class="cx-widen" title="The chosen agent and model suggest related words before searching (a few tokens per new search; cached)">
@@ -74,13 +88,14 @@ function header(names) {
 
 function empty(title, text) {
   return `<div class="card cx-empty"><h2>${title}</h2><p class="faint">${text}</p>
+    <p class="faint small">What agents remember about a project, so the next one picks up where the last stopped. Kept only on this computer.</p>
     <form data-form="remember" class="cx-add"><input name="text" placeholder="Add a fact about this project, then press Enter" aria-label="New fact" /></form></div>`;
 }
 
 function body(c) {
   return `<div class="cx-grid">
     <div class="cx-main">${standing(c)}${facts(c)}</div>
-    <div class="cx-side">${decisions(c)}${activity(c)}${relate(c)}</div>
+    <div class="card cx-side">${delegated()}${decisions(c)}${activity(c)}${relate(c)}</div>
   </div>`;
 }
 
@@ -145,21 +160,42 @@ function facts(c) {
     </li>`;
   }).join("");
   return `<section class="card cx-section" aria-label="Facts">
-    <h2>Facts <span class="faint">${c.memory.length || ""}</span></h2>
+    ${adder("Facts", c.memory.length, "remember", "text", "A fact about this project, then Enter")}
     ${items ? `<ul class="cx-list">${items}</ul>` : `<p class="faint">No facts yet. Agents add what they learn; you can too.</p>`}
-    <form data-form="remember" class="cx-add"><input name="text" placeholder="Add a fact, then press Enter" aria-label="New fact" /></form>
   </section>`;
 }
 
 function decisions(c) {
   const items = c.decisions.map((d) => `<li class="cx-item"><div class="cx-text"><b>${esc(d.title)}</b>${d.reason ? `<br><span class="faint">${esc(d.reason)}</span>` : ""}</div>
     <span class="faint small">${esc(d.created_at.slice(0, 10))}</span></li>`).join("");
-  return `<section class="card cx-section" aria-label="Decisions">
-    <h2>Decisions <span class="faint">${c.decisions.length || ""}</span></h2>
+  return `<section class="cx-section" aria-label="Decisions">
+    ${adder("Decisions", c.decisions.length, "decide", "title", "A settled choice, then Enter")}
     ${items ? `<ul class="cx-list">${items}</ul>` : `<p class="faint">Settled choices go here, so no one reopens them.</p>`}
-    <form data-form="decide" class="cx-add"><input name="title" placeholder="Add a decision, then press Enter" aria-label="New decision" /></form>
   </section>`;
 }
+
+/** A section heading with its count and an Add that opens the one field (the page re-renders shut after saving). */
+function adder(title, count, form, field, hint) {
+  return `<details class="cx-adder"><summary><h2>${title} <span class="faint">${count || ""}</span></h2><span class="cx-plus">${icon("plus")}Add</span></summary>
+    <form data-form="${form}" class="cx-add"><input name="${field}" placeholder="${esc(hint)}" aria-label="${esc(hint)}" /></form></details>`;
+}
+
+// ---------------------------------------------------------------- hand-offs
+
+/** Work handed between agents in this project: everything still open, then the latest results. */
+function delegated() {
+  const open = handoffs.filter((h) => h.status === "open");
+  if (!open.length) return "";
+  const items = open.map((h) => `<li class="cx-item ${findSession(h.to_sid) ? "cx-link" : ""}" ${findSession(h.to_sid) ? `data-open-sid="${esc(h.to_sid)}" title="Open ${esc(h.to_nick || "")}'s terminal"` : ""}>
+      <div class="cx-text">${esc(h.from_nick || "You")} → <b>${esc(h.to_nick || "")}</b><br><span class="faint">${esc(clip(h.task, 110))}</span></div>
+      <span class="faint small">${ago(h.updated_at)}</span></li>`).join("");
+  return `<section class="cx-section" aria-label="Open hand-offs">
+    <h2>In progress <span class="faint">${open.length}</span></h2>
+    <ul class="cx-list">${items}</ul>
+  </section>`;
+}
+
+const clip = (s, n = 160) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 // ---------------------------------------------------------------- activity in plain words
 
@@ -182,23 +218,25 @@ function describe(e) {
     case "TASK_START": return ["Started a task", ""];
     case "TASK_COMPLETE": return ["Finished the task", "", "good"];
     case "TASK_UPDATE": return ["Updated progress", ""];
+    case "HANDOFF": return [`${cap(p.from || "someone")} handed a task to ${p.to || "an agent"}`, p.text];
+    case "HANDOFF_DONE": return [`${p.to || "An agent"}'s hand-off: ${p.status || "closed"}`, p.text, p.status === "done" ? "good" : "bad"];
     default: return [cap(e.type.toLowerCase().replace(/_/g, " ")), ""];
   }
 }
 
 function activity(c) {
   if (!c.recent_events.length) return "";
-  const items = c.recent_events.slice(0, 8).map((e) => {
+  const items = c.recent_events.slice(0, 6).map((e) => {
     const [what, detail, tone] = describe(e);
     return `<li class="cx-event ${tone || ""}"><span class="cx-dot" aria-hidden="true"></span><div><span>${esc(what)}</span>${detail ? `<code>${esc(detail)}</code>` : ""}</div><time class="faint">${ago(e.timestamp)}</time></li>`;
   }).join("");
-  return `<section class="card cx-section" aria-label="Recent activity"><h2>Recent activity</h2><ul class="cx-events">${items}</ul></section>`;
+  return `<section class="cx-section" aria-label="Recent activity"><h2>Recent activity</h2><ul class="cx-events">${items}</ul></section>`;
 }
 
 function relate(c) {
   const others = orderedProjects().map((p) => p.name).filter((n) => n !== c.project.name);
   if (!others.length) return "";
-  return `<details class="card cx-section cx-relate"><summary><h2>Link another project</h2></summary>
+  return `<details class="cx-section cx-relate"><summary><h2>Link another project</h2></summary>
     <p class="faint">Linked projects rank higher in search, so an agent here finds their knowledge first.</p>
     <form data-form="relate" class="cx-add">
       <select name="target" aria-label="Project">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>
@@ -235,6 +273,9 @@ async function onClick(e, el) {
     search = null;
     return renderContext(el);
   }
+  if (act === "refresh") return renderContext(el);
+  const sid = e.target.closest("[data-open-sid]")?.dataset.openSid;
+  if (sid) return showSession(sid);
   const id = e.target.closest("[data-verify]")?.dataset.verify || e.target.closest("[data-invalidate]")?.dataset.invalidate;
   if (!id) return;
   const invalid = !!e.target.closest("[data-invalidate]");
@@ -282,7 +323,9 @@ async function onSubmit(e, el) {
     if (form.dataset.form === "relate") await api("/api/context/relationships", { method: "POST", body: { ...where, target: f.target, relation: f.relation } });
     toast({ title: "Saved" });
     await renderContext(el);
-    $(`form[data-form="${form.dataset.form}"] input`, el)?.focus();
+    const again = $(`form[data-form="${form.dataset.form}"] input`, el);
+    again?.closest("details")?.setAttribute("open", "");
+    again?.focus();
   } catch (err) {
     toastError(err);
   }

@@ -1285,21 +1285,77 @@ async def add_project(payload: dict):
         except remotes.RemoteError as e:
             return err(str(e))
         return db.ensure_remote_project(rid, path, None if path != "~" else r["name"])
-    raw = str(payload.get("path") or "").strip()
-    if not raw:
+    if not (raw := _path_arg(payload)):
         return err("path_required")
     path = Path(raw).expanduser()
     if not path.is_dir():
         return err("not_a_directory")
-    return db.ensure_project(str(path))
+    p = db.ensure_project(str(path))
+    if ws := _workspace_name(payload.get("workspace")):
+        p = db.update_project(p["id"], {"workspace": ws})
+    return p
+
+
+def _path_arg(payload: dict) -> str:
+    """The `path` of a request, without the quotes Explorer's "Copy as path" puts around it."""
+    return str(payload.get("path") or "").strip().strip('"').strip()
+
+
+def _workspace_name(value) -> str | None:
+    """A workspace label: one line, at most 64 characters; empty means none."""
+    name = " ".join(str(value or "").split())[:64]
+    return name if name.isprintable() and name else None
+
+
+def _jsonc(text: str):
+    """VS Code's JSON with comments and trailing commas. Strings are matched first, so `//` in a path survives."""
+    def keep(m):
+        return m.group(1) or ""
+
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', keep, text, flags=re.S)
+    return json.loads(re.sub(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])', keep, text))
+
+
+@app.post("/api/workspaces/import")
+async def import_workspace(payload: dict):
+    """A VS Code .code-workspace file: each local folder in it becomes a project in a workspace named after the file."""
+    file = Path(_path_arg(payload)).expanduser()
+    if file.suffix.lower() != ".code-workspace" or not file.is_file():
+        return err("not_a_workspace_file")
+    try:
+        if file.stat().st_size > 1_000_000:
+            return err("workspace_file_too_large")
+        folders = _jsonc(file.read_text(encoding="utf-8-sig")).get("folders") or []
+    except (OSError, ValueError, AttributeError):  # unreadable, not JSON, or not an object
+        return err("workspace_file_unreadable")
+    ws = _workspace_name(payload.get("workspace") or file.name.removesuffix(file.suffix))
+    projects, skipped = [], []
+    for f in folders:
+        rel = f.get("path") if isinstance(f, dict) else None  # `uri` folders (remote, virtual) are skipped
+        if not isinstance(rel, str):
+            continue
+        if (d := (file.parent / Path(rel).expanduser())).is_dir():
+            projects.append(db.update_project(db.ensure_project(str(d))["id"], {"workspace": ws}))
+        else:
+            skipped.append(rel)
+    if not projects:
+        return err("no_local_folders")
+    return {"workspace": ws, "projects": projects, "skipped": skipped}
 
 
 @app.patch("/api/projects/{project_id}")
-async def rename_project(project_id: str, payload: dict):
-    name = str(payload.get("name") or "").strip()
-    if not name:
-        return err("name_required")
-    return db.rename_project(project_id, name) or err("project_not_found", 404)
+async def update_project(project_id: str, payload: dict):
+    """Rename (`name`) and/or move to a workspace (`workspace`; empty takes it out)."""
+    fields = {}
+    if "name" in payload:
+        if not (name := str(payload.get("name") or "").strip()):
+            return err("name_required")
+        fields["name"] = name
+    if "workspace" in payload:
+        fields["workspace"] = _workspace_name(payload["workspace"])
+    if not db.get_project(project_id):
+        return err("project_not_found", 404)
+    return db.update_project(project_id, fields)
 
 
 @app.delete("/api/projects/{project_id}")
@@ -1326,14 +1382,14 @@ async def list_dirs(path: str = ""):
     if not p.is_dir():
         return err("not_a_directory")
     try:
-        dirs = sorted(
-            (e.name for e in os.scandir(p) if e.is_dir() and not e.name.startswith(("$", "."))),
-            key=str.lower,
-        )
+        entries = [e for e in os.scandir(p) if not e.name.startswith(("$", "."))]
+        dirs = sorted((e.name for e in entries if e.is_dir()), key=str.lower)
+        # VS Code workspace files, which import as a workspace of projects
+        files = sorted((e.name for e in entries if e.name.lower().endswith(".code-workspace") and e.is_file()), key=str.lower)
     except OSError:
         return err("permission_denied", 403)
     p = p.resolve()
-    return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "dirs": dirs, "sep": os.sep}
+    return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "dirs": dirs, "files": files, "sep": os.sep}
 
 
 # ---------------------------------------------------------------------------
@@ -2336,12 +2392,24 @@ async def _agent_in(session_id: str) -> str | None:
 
 
 def _handoff_files(handoff: dict) -> None:
-    project = db.get_project(handoff["project_id"])
+    """A hand-off was created or closed: rewrite its files and note it in the project's context activity, so the
+    next agent's `sd context` shows what was delegated and how it ended."""
+    h, project = handoff, db.get_project(handoff["project_id"])
+    if not project or project.get("remote_id"):
+        return
     try:
-        if project:
-            team.write_files(project["path"], handoff, db.list_handoffs(project["id"]), _snapshot(project["path"]))
+        team.write_files(project["path"], h, db.list_handoffs(project["id"]), _snapshot(project["path"]))
     except OSError:
         log.warning("writing hand-off files failed", exc_info=True)
+    try:
+        if p := context.project_for(project["path"]):
+            opened = h["status"] == "open"
+            context.record_event(p, "HANDOFF" if opened else "HANDOFF_DONE", {
+                "id": h["id"], "from": h["from_nick"] or "user", "to": h["to_nick"], "status": h["status"],
+                "text": team.one_line(h["task"] if opened else h.get("result") or "", 300)},
+                agent=h.get("agent"), session_id=h["to_sid"], importance=2 if opened else 3)
+    except Exception:  # noqa: BLE001 - context is an enhancement, not a dependency
+        log.warning("hand-off context event failed", exc_info=True)
 
 
 def _snapshot(path: str) -> str:
@@ -2558,19 +2626,25 @@ async def create_handoff(payload: dict):
 
 @app.post("/api/handoffs/{handoff_id}/done")
 async def finish_handoff(handoff_id: str, payload: dict):
-    """The receiver closes a hand-off; the sender hears about it."""
+    """The receiver closes a hand-off (`sd done`), or the user cancels it (`cancelled`, from the AI agents page);
+    the sender hears about it, and a cancelled receiver is told to stop."""
     h = db.get_handoff(handoff_id)
     if not h:
         return err("handoff_not_found", 404)
     if h["status"] != "open":
         return err("already_closed", 409)
-    status = "failed" if payload.get("failed") else "done"
-    result = str(payload.get("result") or "").strip()[:20000]
+    status = "cancelled" if payload.get("cancelled") else "failed" if payload.get("failed") else "done"
+    result = str(payload.get("result") or "").strip()[:20000] or ("cancelled by the user" if status == "cancelled" else "")
     db.close_handoff(handoff_id, status, result)
     h = db.get_handoff(handoff_id)
     await asyncio.to_thread(_handoff_files, h)
     _emit("handoff.completed", {"id": h["id"], "status": h["status"], "to": h["to_nick"], "to_sid": h["to_sid"]})
-    await _tell_sender(h, f"[shelldeck] {h['to_nick']} {'finished' if status == 'done' else 'gave up on'} hand-off {h['id']}: {result or '(no summary)'}")
+    if status == "cancelled":
+        if h.get("to_sid") and await _agent_in(h["to_sid"]):
+            await _type(h["to_sid"], f"[shelldeck] hand-off {h['id']} was cancelled by the user: stop working on it")
+        await _tell_sender(h, f"[shelldeck] hand-off {h['id']} to {h['to_nick']} was cancelled by the user")
+    else:
+        await _tell_sender(h, f"[shelldeck] {h['to_nick']} {'finished' if status == 'done' else 'gave up on'} hand-off {h['id']}: {result or '(no summary)'}")
     return h
 
 
