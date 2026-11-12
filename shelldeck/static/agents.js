@@ -1,6 +1,6 @@
 // AI agents page: coding agents running in terminals, every known agent CLI with its models, and launch.
 import { ATTENTION, S, attentionOf, machineProjects, projectColor, refreshProjects, sessionOnMachine, showSession } from "./app.js";
-import { api, esc, icon, promptDialog, toast, toastError } from "./ui.js";
+import { $, api, dialog, esc, icon, promptDialog, store, toast, toastError } from "./ui.js";
 
 // pasted into an agent so it knows how to reach the others in its project
 const TEAM_PROMPT = `You are one of several AI coding agents working in this project, each in its own shelldeck terminal with a person's name ($SHELLDECK_NICK).
@@ -11,6 +11,9 @@ const TEAM_PROMPT = `You are one of several AI coding agents working in this pro
 Split the work, say what you are taking before you start, avoid editing the same files, and finish hand-offs with sd done.`;
 
 let data = null;
+// one thing at a time: what runs, who handed what to whom, starting an agent, one-time setup
+const TABS = [["running", "Running"], ["handoffs", "Hand-offs"], ["launch", "Launch"], ["setup", "Setup"]];
+let tab = store.get("agentsTab", "running");
 
 export async function renderAgents(el) {
   if (!el.dataset.wired) {
@@ -72,11 +75,7 @@ export async function renderAgents(el) {
   const current = S.focused && projects.find((p) => p.sessions.some((s) => s.id === S.focused));
   const projectOpts = projects.map((p) => `<option value="${p.id}" ${p === current ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   const known = [...data.agents].sort((a, b) => b.installed - a.installed);
-  const cards = known
-    .map((a) => {
-      const models = a.models.length
-        ? `<details class="ag-models"><summary>${a.models.length} model${a.models.length > 1 ? "s" : ""}</summary><div>${a.models.map((m) => `<code>${esc(m)}</code>`).join("")}</div></details>`
-        : `<p class="faint">Models: whatever the tool is set up with.</p>`;
+  const card = (a) => {
       const launch = a.installed
         ? `<div class="ag-launch">
             ${a.models.length ? `<select data-model aria-label="Model"><option value="">Default model${a.default_model ? ` (${esc(a.default_model)})` : ""}</option>${a.models.map((m) => `<option>${esc(m)}</option>`).join("")}</select>` : ""}
@@ -90,49 +89,118 @@ export async function renderAgents(el) {
         : "";
       return `<div class="card ag-card ${a.installed ? "" : "missing"}" data-key="${a.key}">
         <div class="ag-title">${icon("sparkle")}<b>${esc(a.label)}</b><code class="faint">${esc(a.command)}</code>${a.installed ? skill : ""}</div>
-        ${a.default_model ? `<p class="muted">Configured model: <code>${esc(a.default_model)}</code></p>` : ""}
-        ${models}${launch}
+        ${launch}
       </div>`;
-    })
-    .join("");
+  };
+  const missing = known.filter((a) => !a.installed);
 
-  el.innerHTML = `<div class="page-head"><div><h1>AI agents</h1>
-      <p>Coding agents running in your terminals are marked AI in their header. Each terminal has a name; agents in a project can see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>.</p></div>
-      <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
+  if (!TABS.some(([k]) => k === tab)) tab = "running";
+  const openHandoffs = (data.handoffs || []).filter((h) => h.status === "open" && machineProjects().some((p) => p.id === h.project_id)).length;
+  const counts = { running: ordered.length, handoffs: openHandoffs };
+  const panes = {
+    running: () => `<div class="card mon-table"><table>
+        <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th><th></th></tr></thead>
+        <tbody>${running}</tbody></table></div>
+      ${resumeSection()}${outsideSection()}`,
+    handoffs: () => handoffSection() || `<div class="card ag-empty"><b>No hand-offs yet</b>
+        <p class="faint">Agents hand work to each other with <code>sd spawn</code> and <code>sd handoff</code>. You can too: Running, then Actions, then Hand off a task.</p></div>`,
+    launch: () => `<div class="ag-head"><h2>Start an agent</h2>
+        ${projects.length ? `<label class="muted">in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
+      <div class="ag-grid">${known.filter((a) => a.installed).map(card).join("") || `<p class="faint">No agent CLI found on PATH.</p>`}</div>
+      ${missing.length ? `<details class="ag-later"><summary class="faint">${missing.length} more not installed</summary><div class="ag-grid">${missing.map(card).join("")}</div></details>` : ""}
+      ${devinSection()}`,
+    setup: () => `<div class="card ag-intro"><p>Each terminal has a name. Agents in a project see, message and hand work to each other with <code>sd agents</code>, <code>peek</code>, <code>tell</code>, <code>spawn</code>, <code>handoff</code> and <code>done</code>; the skill (Launch tab) teaches them.</p>
+        <button class="btn" data-copy-prompt>${icon("clipboard")}Copy team prompt</button></div>
+      ${integrationSection()}`,
+  };
+  el.innerHTML = `<div class="page-head ag-top"><h1>AI agents</h1>
+      <div class="seg ag-tabs" role="tablist">${TABS.map(([k, label]) => `<button role="tab" data-tab="${k}" aria-selected="${k === tab}" class="${k === tab ? "on" : ""}">${label}${counts[k] ? `<span>${counts[k]}</span>` : ""}</button>`).join("")}</div></div>
     ${banner}
-    <div class="card mon-table"><table>
-      <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th>Model</th><th>Project</th><th>Terminal</th><th></th></tr></thead>
-      <tbody>${running}</tbody></table></div>
-    ${handoffSection()}
-    ${resumeSection()}
-    ${integrationSection()}
-    <div class="ag-head"><h2>Available agents</h2>
-      ${projects.length ? `<label class="muted">Launch in <select data-project>${projectOpts}</select></label>` : `<span class="faint">Add a project to launch agents.</span>`}</div>
-    <div class="ag-grid">${cards}</div>
-    ${outsideSection()}
-    ${devinSection()}`;
+    ${panes[tab]()}`;
   restore(el, kept);
 }
 
 /** Tasks handed between terminals (sd spawn / handoff / done), newest first. */
 function handoffSection() {
-  if (!data.handoffs?.length) return "";
-  return pagedTable("handoffs", {
-    title: "Hand-offs",
-    sub: "Also in each project's .shelldeck/handoff.md",
-    cols: ["ID", "Status", "From → to", "Task", "Result"],
-    items: data.handoffs,
-    text: (h) => [h.id, h.status, h.from_nick, h.to_nick, h.model, h.task, h.result, S.projects.find((x) => x.id === h.project_id)?.name].join(" "),
-    row: (h) => {
-      const p = S.projects.find((x) => x.id === h.project_id);
-      return `<tr ${h.to_sid && S.projects.some((x) => x.sessions.some((s) => s.id === h.to_sid)) ? `data-sid="${h.to_sid}" title="Open ${esc(h.to_nick)}'s terminal"` : ""}>
-        <td class="mono">${esc(h.id)}</td>
-        <td><span class="ho-status" data-status="${esc(h.status)}">${esc(h.status)}</span></td>
-        <td>${esc(h.from_nick || "you")} → <b>${esc(h.to_nick || "")}</b><br><span class="faint">${esc(p?.name || "")}${h.model ? ` · ${esc(h.model)}` : ""}</span></td>
-        <td class="ag-clip" title="${esc(h.task)}">${esc(h.task)}</td>
-        <td class="ag-clip" title="${esc(h.result || "")}">${esc(h.result || "") || '<span class="faint">pending</span>'}</td>
-      </tr>`;
-    },
+  // the picked machine and workspace, like the agents above
+  const shown = new Set(machineProjects().map((p) => p.id));
+  const all = (data.handoffs || []).filter((h) => shown.has(h.project_id));
+  if (!all.length) return "";
+  const count = (s) => all.filter((h) => h.status === s).length;
+  // a hand-off hangs under the task its sender was given (the newest earlier hand-off to that terminal): a chain.
+  // The rest start at their sender, grouped per project. `all` is newest first.
+  const parentOf = (h) => h.from_sid && all.find((x) => x.to_sid === h.from_sid && x.id !== h.id && x.created_at <= h.created_at);
+  const kids = new Map();
+  const groups = new Map();
+  for (const h of all) {
+    const up = parentOf(h);
+    const [map, key] = up ? [kids, up.id] : [groups, `${h.project_id} ${h.from_sid || ""}`];
+    map.set(key, [...(map.get(key) || []), h]);
+  }
+  const byAge = (x, y) => x.created_at.localeCompare(y.created_at); // drawn in the order the work was given
+  const branch = (h) => `<div class="ho-branch">${handoffCard(h)}${kids.has(h.id) ? `<div class="ho-kids">${kids.get(h.id).sort(byAge).map(branch).join("")}</div>` : ""}</div>`;
+  // groups with open work first; closed history folds to HO_RECENT per sender until "Show all"
+  const open = (list) => list.some((h) => h.status === "open");
+  const html = [...groups.values()].sort((a, b) => open(b) - open(a)).map((list) => {
+    const first = list[0];
+    const p = S.projects.find((x) => x.id === first.project_id);
+    const visible = hoAll ? list : [...list.filter((h) => h.status === "open"), ...list.filter((h) => h.status !== "open").slice(0, HO_RECENT)];
+    const who = first.from_nick || "You";
+    return `<div class="ho-group">
+      <div class="ho-node ${first.from_sid ? "" : "me"}"><span class="ho-avatar" style="${p && first.from_sid ? `background:${projectColor(p)}` : ""}">${esc(who[0].toUpperCase())}</span>
+        <div><b>${esc(who)}</b><span class="faint">${esc(p?.name || "")}</span><span class="faint">${list.length} hand-off${list.length === 1 ? "" : "s"}</span></div></div>
+      <div class="ho-kids">${visible.sort(byAge).map(branch).join("")}${list.length > visible.length ? `<div class="ho-branch"><button class="btn sm ho-older" data-ho-all>${list.length - visible.length} older…</button></div>` : ""}</div>
+    </div>`;
+  }).join("");
+  return `<div class="ag-head"><h2>Hand-offs</h2>
+      <span class="faint tbl-sub">Who gave what to whom. Click a card for the whole task and result; also in each project's .shelldeck/handoff.md</span>
+      <span class="ho-counts">${["open", "done", "failed", "exited", "cancelled"].filter(count).map((s) => `<span class="ho-status" data-status="${s}">${count(s)} ${s}</span>`).join("")}
+        ${hoAll ? `<button class="btn sm" data-ho-all>Show recent</button>` : ""}</span></div>
+    <div class="ho-flow">${html}</div>`;
+}
+
+const HO_RECENT = 3;
+let hoAll = false; // show every closed hand-off, not just the latest per sender
+const HO_WORD = { open: "working", done: "done", failed: "failed", exited: "terminal closed", cancelled: "cancelled" };
+
+function handoffCard(h) {
+  const label = data.agents.find((a) => a.key === h.agent)?.label || h.agent || "";
+  return `<button type="button" class="ho-card" data-ho="${esc(h.id)}" data-status="${esc(h.status)}" aria-label="Hand-off ${esc(h.id)} to ${esc(h.to_nick || "")}: ${esc(HO_WORD[h.status] || h.status)}">
+    <span class="ho-top"><span class="ho-status" data-status="${esc(h.status)}">${esc(HO_WORD[h.status] || h.status)}</span>
+      <span class="faint mono">${esc(h.id)}</span><span class="faint ho-when">${ago(Date.parse(h.updated_at) / 1000)} ago</span></span>
+    <span class="ho-to"><span class="ho-arrow" aria-hidden="true">→</span><b>${esc(h.to_nick || "")}</b>${label ? `<span class="ai-chip">${icon("sparkle")}${esc(label)}</span>` : ""}${h.model ? `<span class="faint mono">${esc(h.model)}</span>` : ""}</span>
+    <span class="ho-task">${esc(h.task)}</span>
+    ${h.result ? `<span class="ho-result">${esc(h.result)}</span>` : ""}
+  </button>`;
+}
+
+/** One hand-off in full: the task, the result, its terminal, and Cancel while it is open. */
+function handoffDialog(h, el) {
+  const p = S.projects.find((x) => x.id === h.project_id);
+  const alive = S.projects.some((x) => x.sessions.some((s) => s.id === h.to_sid));
+  const d = dialog({
+    title: `Hand-off ${h.id}`,
+    wide: true,
+    body: `<p><span class="ho-status" data-status="${esc(h.status)}">${esc(h.status)}</span>
+        ${esc(h.from_nick || "you")} → <b>${esc(h.to_nick || "")}</b> <span class="faint">· ${esc(p?.name || "")}${h.model ? ` · ${esc(h.model)}` : ""} · ${esc(new Date(h.created_at).toLocaleString())}</span></p>
+      <h3>Task</h3><div class="ho-text">${esc(h.task)}</div>
+      <h3>Result</h3><div class="ho-text">${esc(h.result || "") || '<span class="faint">Pending: the agent closes it with sd done.</span>'}</div>
+      ${p ? `<p class="faint mono">${esc(p.path)}/.shelldeck/handoffs/${esc(h.id)}.md</p>` : ""}`,
+    foot: `${h.status === "open" ? `<button class="btn danger" data-ho-cancel>Cancel hand-off</button>` : ""}
+      ${alive ? `<button class="btn" data-ho-open>Open ${esc(h.to_nick || "terminal")}</button>` : ""}<button class="btn primary" data-close>Close</button>`,
+  });
+  $("[data-ho-open]", d.el)?.addEventListener("click", () => {
+    d.close();
+    showSession(h.to_sid);
+  });
+  $("[data-ho-cancel]", d.el)?.addEventListener("click", async () => {
+    try {
+      await api(`/api/handoffs/${h.id}/done`, { method: "POST", body: { cancelled: true } });
+      d.close();
+      renderAgents(el);
+    } catch (err) {
+      toastError(err);
+    }
   });
 }
 
@@ -211,6 +279,7 @@ function commandMenu(r) {
     <option value="">Actions…</option>
     <option value="extract">Extract facts</option>
     <option value="message">Message…</option>
+    <option value="handoff">Hand off a task…</option>
     ${opts ? `<optgroup label="${esc(r.label)} commands">${opts}</optgroup>` : ""}</select>`;
 }
 
@@ -240,6 +309,14 @@ async function onCommand(e, el) {
       await api("/api/agent-prompt", { method: "POST", body: { session_id: sid, text } });
       return toast({ title: "Sent" });
     }
+    if (choice === "handoff") {
+      // tracked, unlike a message: it gets a task file, a status here, and the agent closes it with sd done
+      const task = await promptDialog("Hand off a task", "", { label: "Task (the agent reports back with sd done)", ok: "Hand off" });
+      if (!task?.trim()) return;
+      const h = await api("/api/handoffs", { method: "POST", body: { to: sid, task } });
+      toast({ title: `Hand-off ${h.id} sent to ${h.to_nick}` });
+      return renderAgents(el);
+    }
     const r = await api(`/api/sessions/${sid}/agent-command`, { method: "POST", body: { command: choice.slice(4) } });
     toast({ title: `Sent ${r.typed}`, body: `to ${r.agent}` });
   } catch (err) {
@@ -249,6 +326,11 @@ async function onCommand(e, el) {
 
 async function onClick(e, el) {
   if (e.target.closest("select")) return; // the command menu, not "open terminal"
+  const picked = e.target.closest("[data-tab]")?.dataset.tab;
+  if (picked) {
+    store.set("agentsTab", (tab = picked));
+    return renderAgents(el);
+  }
   const again = e.target.closest("[data-resume-agent]")?.dataset.resumeAgent;
   if (again) {
     try {
@@ -271,6 +353,12 @@ async function onClick(e, el) {
       return toastError(err);
     }
   }
+  if (e.target.closest("[data-ho-all]")) {
+    hoAll = !hoAll;
+    return renderAgents(el);
+  }
+  const ho = e.target.closest("[data-ho]")?.dataset.ho;
+  if (ho) return handoffDialog(data.handoffs.find((h) => h.id === ho), el);
   const next = e.target.closest("[data-open-next]")?.dataset.openNext;
   if (next) return showSession(next);
   if (e.target.closest("[data-copy-prompt]")) {

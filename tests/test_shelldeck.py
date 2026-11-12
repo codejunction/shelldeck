@@ -159,6 +159,12 @@ def test_team(client, tmp_path, monkeypatch):
     h2 = client.post("/api/spawn", json={"parent": a["id"], "task": "another"}).json()["handoff"]
     assert [x["id"] for x in server._orphan(h2["to_sid"])] == [h2["id"]]
     assert db.get_handoff(h2["id"])["status"] == "exited"
+    # the user cancels one from the page; hand-offs and how they ended are in the project's context
+    h3 = client.post("/api/spawn", json={"parent": a["id"], "task": "third"}).json()["handoff"]
+    assert client.post(f"/api/handoffs/{h3['id']}/done", json={"cancelled": True}).json()["status"] == "cancelled"
+    ctx = client.get("/api/context", params={"project": a["project_id"]}).json()
+    assert {"HANDOFF", "HANDOFF_DONE"} <= {e["type"] for e in ctx["recent_events"]}
+    assert f"HANDOFF_DONE by claude: {h['id']}" in ctx["text"] and "[done] fixed it" in ctx["text"]
 
     # a sub-agent's question goes to its parent (here a plain shell, so it's broadcast to the user), once
     import asyncio
@@ -180,7 +186,7 @@ def test_team(client, tmp_path, monkeypatch):
     server.ask_buf[kid["id"]] = "\x1b[20;1H Do you want to proceed?\r\n 1. Yes  2. No"
     assert asyncio.run(server._check_questions(quiet=0)) == []  # the same prompt redrawn
     server.ask_buf.clear()
-    assert [x["id"] for x in client.get("/api/handoffs", params={"project_id": a["project_id"]}).json()["handoffs"]] == [h2["id"], h["id"]]
+    assert [x["id"] for x in client.get("/api/handoffs", params={"project_id": a["project_id"]}).json()["handoffs"]] == [h3["id"], h2["id"], h["id"]]
 
 
 def test_file_editor_and_scratch(client, tmp_path):
@@ -359,6 +365,13 @@ def test_workspaces(client, tmp_path):
     (tmp_path / "x").mkdir()
     assert client.post("/api/projects", json={"path": str(tmp_path / "x"), "workspace": "Ops"}).json()["workspace"] == "Ops"
     assert client.post("/api/workspaces/import", json={"path": str(tmp_path / "x")}).status_code == 400
+    # Explorer's "Copy as path" quotes it; folders that are gone are reported, not fatal
+    (tmp_path / "q.code-workspace").write_text('{"folders": [{"path": "api"}, {"path": "gone"}]}')
+    r = client.post("/api/workspaces/import", json={"path": f'"{tmp_path / "q.code-workspace"}"'}).json()
+    assert r["workspace"] == "q" and r["skipped"] == ["gone"] and len(r["projects"]) == 1
+    assert client.post("/api/projects", json={"path": f'"{tmp_path / "x"}"'}).status_code == 200
+    (tmp_path / "bad.code-workspace").write_text("{nope")
+    assert client.post("/api/workspaces/import", json={"path": str(tmp_path / "bad.code-workspace")}).json()["error"] == "workspace_file_unreadable"
     (tmp_path / "empty.code-workspace").write_text('{"folders": []}')
     assert client.post("/api/workspaces/import", json={"path": str(tmp_path / "empty.code-workspace")}).json()["error"] == "no_local_folders"
 

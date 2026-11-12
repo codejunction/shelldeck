@@ -97,7 +97,7 @@ The first visit asks you to create a password. Terminals keep running in the bac
 ### Projects
 
 - **Projects sidebar** with a color per project (sidebar dot, pane border, background tint), added through a folder browser and reordered by drag.
-- **Workspaces.** Group projects under a name and show one group at a time with the picker in the *Projects* header. *Move to workspace…* in a project's menu sets it (a new name creates one). The folder browser also lists VS Code `.code-workspace` files: adding one makes each local folder in it a project, in a workspace named after the file.
+- **Workspaces.** Group projects under a name and show one group at a time with the picker in the *Projects* header. *Move to workspace…* in a project's menu sets it (a new name creates one). The folder browser also lists VS Code `.code-workspace` files: adding one makes each local folder in it a project, in a workspace named after the file. Double-click the file, paste its path, or run `sd open X.code-workspace`; folders that no longer exist are skipped and listed.
 - **Git at a glance.** A `±N` chip on projects with uncommitted work; the git dialog shows changed files with their diffs, and the full commit graph with one-click checkout.
 - **Machines.** The picker above *New terminal* switches between this computer and your SSH machines (Linux; key, agent or a password typed in the terminal, LDAP names like `CORP\jdoe` work). Windows machines open as RDP desktops. *Test connection* checks the network and the login. Passwords are never stored.
 
@@ -264,7 +264,7 @@ In the sidebar, Ctrl+click or middle-click a terminal to open it in a split. Rig
 
 ```text
 sd [--port N] [--no-window] [--app]  start the server if needed, print the banner and open the browser (= sd web)
-sd PATH / sd open [PATH] [--shell S] add PATH as a project and open a terminal in it
+sd PATH / sd open [PATH] [--shell S] add PATH as a project and open a terminal in it (a .code-workspace file adds every folder in it)
 sd list / sd info                    terminals grouped by project / the terminal you're in
 sd restart / sd stop                 restart the web app (terminals keep running) / stop everything
 sd serve [--host H]                  run the server in the foreground

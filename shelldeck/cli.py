@@ -593,10 +593,15 @@ def open_(
     path: str = typer.Argument(".", help="Project folder."),
     shell: str = typer.Option("", "--shell", "-s", help="Shell kind, e.g. pwsh, cmd, wsl, bash, zsh (default from settings)."),
 ):
-    """Add a folder as a project and open a terminal in it."""
+    """Add a folder as a project and open a terminal in it. A .code-workspace file adds every folder in it."""
     folder = str(Path(path).resolve())
     ensure_server()
-    project = _api("/api/projects", "POST", {"path": folder})
+    if folder.lower().endswith(".code-workspace"):
+        r = _api("/api/workspaces/import", "POST", {"path": folder})
+        typer.echo(f"{r['workspace']}: {', '.join(p['name'] for p in r['projects'])}")
+        project = r["projects"][0]
+    else:
+        project = _api("/api/projects", "POST", {"path": folder})
     session = _api("/api/sessions", "POST", {"project_id": project["id"], "shell": shell})
     _show(f"/?session={session['id']}")
 

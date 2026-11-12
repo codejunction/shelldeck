@@ -106,7 +106,8 @@ def write_files(project_path: str, handoff: dict, all_handoffs: list[dict], snap
         f"- To: {h['to_nick']} (terminal {h['to_sid']}){_agent(h)}\n"
         f"- Created: {h['created_at'][:19].replace('T', ' ')} UTC\n\n"
         f"## Task\n\n{h['task'].strip()}\n\n"
-        f"## When done\n\nRun `sd done {h['id']} \"<summary>\"` (add `--failed` if you could not do it). "
+        f"## When done\n\nSave what the next agent should know with `sd remember \"fact\"`, then run "
+        f"`sd done {h['id']} \"<summary>\"` (add `--failed` if you could not do it). "
         f"Ask {h['from_nick'] or 'the sender'} with `sd tell {h['from_nick'] or h['from_sid']} \"...\"`.\n\n"
         f"## Result\n\n{(h.get('result') or '(pending)').strip()}\n{snapshot}",
         encoding="utf-8",
@@ -210,6 +211,8 @@ Rules:
 - A sub-agent (`SHELLDECK_PARENT` is set) cannot spawn more agents, and asks its parent (`sd tell`), not the user.
 - Give each spawn a self-contained task: files, expected result and how to check it.
 - Do not reply to every message with another `sd tell`; finish with `sd done`.
+- Before `sd done`, store what you learned with `sd remember`: the summary goes to the sender, memory is for
+  whoever works here next. Hand-offs and their results show up in `sd context` as recent events.
 """
 
 BLOCK_START, BLOCK_END = "<!-- SHELLDECK_START -->", "<!-- SHELLDECK_END -->"

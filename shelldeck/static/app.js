@@ -2371,7 +2371,7 @@ function connectAlarms() {
       const h = msg.handoff;
       // done: offer to close the sub-agent's terminal right from the toast
       const close = h.status === "done" && findSession(h.to_sid)?.parent ? [{ label: `Close ${h.to_nick}`, onClick: () => killSession(h.to_sid) }] : [];
-      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : "error", close)) views.chime();
+      if (notify(h.from_sid || h.to_sid, `Hand-off ${h.id}: ${h.status}`, msg.text.replace(/^\[shelldeck\] /, ""), h.status === "done" ? "" : h.status === "cancelled" ? "warn" : "error", close)) views.chime();
     }
   };
   ws.onclose = (ev) => {
